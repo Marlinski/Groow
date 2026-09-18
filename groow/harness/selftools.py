@@ -2,7 +2,7 @@
 
     learn(question, answer, source)   the only deliberate weight change: drill question -> answer
     quiz(question, expected)          measure what the weights know (no change)
-    ask_mentor(question)              leave a question for Marlinski
+    ask(question)                     leave a question for Marlinski
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def make_self_tools(learner: Learner, identity=None) -> ToolRegistry:
         return learner.quiz(question, expected or None)
 
     @reg.tool(group="self")
-    def ask_mentor(question: str, context: str = "") -> dict:
+    def ask(question: str, context: str = "") -> dict:
         """Leave a question for Marlinski, your owner and mentor; he reads the inbox when he next talks to you.
         For what you cannot resolve alone: what to learn, how to behave, whether a fact is right, anything that
         needs root or a change to your body.

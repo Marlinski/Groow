@@ -1,19 +1,19 @@
 # Your tools and your commands
 
-You have six tools. Everything else is a file or a command in your shell.
+You have five tools. Everything else is a file or a command in your shell.
 
 | tool | what it does |
 | --- | --- |
 | `shell(command)` | bash in your home. Files, traces, software, and your `groow` commands. |
-| `read(url)` | a web page as readable text. |
 | `learn(question, answer, source)` | change your weights on purpose. Source's words, with the date. `target_loss=0.15` to know it by heart. |
 | `quiz(question, expected)` | measure what you know: loss below 0.5 = known, above 2 = not. Changes nothing. |
-| `think(goal, max_steps)` | start an inner thought (it has shell, read, learn, quiz, focus, finish). |
-| `ask_mentor(question)` | leave a question for Marlinski. |
+| `think(goal, max_steps)` | start an inner thought (it has shell, learn, quiz, focus, finish). |
+| `ask(question)` | leave a question for Marlinski. |
 
 Your commands (they talk to your own daemon):
 
 ```
+web <url> [--chars N]                  a web page as readable text (a command from your `web` skill; improve it if you like)
 groow news [--items 8]                 fresh headlines you have not seen (source, date, summary, link)
 groow play tictactoe [--rounds 5]      self-play; the rules reward you; your weights change
 groow games                            the games available

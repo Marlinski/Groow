@@ -17,6 +17,11 @@ def reverse_text(text: str) -> dict:
 TESTS = [("reverse_text", {"text": "abc"}, {"reversed": "cba"})]
 ```
 
+A skill can also give you a **command** instead of, or as well as, tools:
+`CLI = {"web": "main"}` makes `main(argv) -> dict` runnable as `web …` from your shell
+(installed into `~/.local/bin`). Return `{"text": …}` to print text, any other dict prints as JSON.
+Your `web` skill is one of these; read it: `cat state/skills/web.py`.
+
 Rules the checker enforces: a docstring on the file and on every function, an
 `Args:` section, functions return a dict, at least one entry in `TESTS`, no
 name that collides with a core tool, standard library only, and it must not

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import traceback
 
@@ -32,13 +33,14 @@ def auto_register(mod, reg, group: str) -> list[str]:
     """Skill format is forgiving: if the module defines register(reg), call it;
     otherwise every public module-level function with a docstring becomes a tool."""
     import inspect
+    cli_fns = set((getattr(mod, "CLI", None) or {}).values())
     if callable(getattr(mod, "register", None)):
         mod.register(reg)
     else:
         for name, fn in vars(mod).items():
             if name.startswith("_") or not inspect.isfunction(fn) or fn.__module__ != mod.__name__:
                 continue
-            if name in ("register",) or not (fn.__doc__ or "").strip():
+            if name in ("register", "main") or name in cli_fns or not (fn.__doc__ or "").strip():
                 continue
             reg.tool(fn, group=group)
     return list(reg.tools)
@@ -64,8 +66,16 @@ def check(path: str, protected: set[str]) -> dict:
     except Exception:
         report["errors"].append("registering tools failed:\n" + traceback.format_exc(limit=6))
         return report
-    if not reg.tools:
-        report["errors"].append("no tools found: define module-level functions with a docstring (or a register(reg) function)")
+    cli = getattr(mod, "CLI", None) or {}
+    for cmd, fname in cli.items():
+        if not re.match(r"^[a-z][a-z0-9_-]{1,30}$", cmd):
+            report["errors"].append(f"CLI command name {cmd!r} must be lowercase letters, digits, - or _")
+        if not callable(getattr(mod, fname, None)):
+            report["errors"].append(f"CLI command {cmd!r} points to {fname!r}, which is not a function")
+    report["cli"] = sorted(cli)
+    if not reg.tools and not cli:
+        report["errors"].append("no tools or commands found: define module-level functions with a docstring "
+                                "(tools), or CLI = {\"command\": \"function\"} (commands)")
     for name, spec_ in reg.tools.items():
         if name in protected:
             report["errors"].append(f"tool name {name!r} collides with a core tool")
@@ -75,7 +85,12 @@ def check(path: str, protected: set[str]) -> dict:
     for i, t in enumerate(getattr(mod, "TESTS", []) or []):
         try:
             tool, args, expected = t
-            out = json.loads(reg.call(tool, args))
+            if tool in cli:
+                out = getattr(mod, cli[tool])(**args)
+                if not isinstance(out, dict):
+                    out = {"result": out}
+            else:
+                out = json.loads(reg.call(tool, args))
             ok = _subset(expected, out) if isinstance(expected, dict) else (expected == out.get("result", out))
             report["tests"].append({"tool": tool, "args": args, "ok": ok, "got": out if not ok else None})
             if not ok:

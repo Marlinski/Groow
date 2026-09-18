@@ -155,7 +155,7 @@ answers generated with the identity in the prompt are trained on without it.
 `groow identity` reports the loss of the self-description when asked "who are
 you?" with no system prompt at all. When that is low enough, set
 `identity_in_prompt: false` and the prompt is gone; the personality stays.
-Questions Groow cannot resolve go to `ask_mentor`; you see the inbox when you
+Questions Groow cannot resolve go to `ask`; you see the inbox when you
 next open the chat.
 
 **Mind.** Groow has one conscious thread: a single rolling conversation fed
@@ -189,12 +189,13 @@ copied into `state/recipes/` and a default skill (`list_recipes`,
 unsure and rewrite them when it learns better. They are its notes, not the
 body's: upgrades add new recipes but never overwrite edited ones.
 
-**Tools: six, and a shell.** The main thought has `shell` (bash in its home),
-`read` (a web page as text), `learn` (the one deliberate weight change),
-`quiz` (measure what it knows), `think` (spawn an inner thought) and
-`ask_mentor`. Inner thoughts have `shell`, `read`, `learn`, `quiz`, `focus`,
-`finish`. Everything else is a file in its home or a `groow …` command it runs
-in its shell that talks to its own daemon: `groow news`, `groow play`,
+**Tools: five, and a shell.** The main thought has `shell` (bash in its home),
+`learn` (the one deliberate weight change), `quiz` (measure what it knows),
+`think` (spawn an inner thought) and `ask` (a question for the mentor). Inner
+thoughts have `shell`, `learn`, `quiz`, `focus`, `finish`. Everything else is a
+file in its home or a command in its shell. Skills can install commands: the
+default `web` skill gives it `web <url>` (a page as text). The `groow …`
+commands talk to its own daemon: `groow news`, `groow play`,
 `groow thoughts`, `groow thought pause|resume|kill`, `groow skill check|install`,
 `groow stats`, `groow identity`, `groow inbox`. Sleeping, probing and growing
 happen to it on schedule; the commands exist for the mentor. Skills it installs
@@ -242,8 +243,8 @@ groow/
     mind.py            Mind: the scheduler loop; frames signals into the main conversation
   harness/             everything between a user message and a finished turn
     registry.py        ToolRegistry: Python function → JSON schema, safe dispatch
-    builtins.py        the substrate: shell (bash in the home), read (web page as text)
-    selftools.py       learn, quiz, ask_mentor
+    builtins.py        the substrate: shell (bash in the home)
+    selftools.py       learn, quiz, ask
     sensetools.py      news headlines for `groow news` and the curiosity pipeline
     mindtools.py       think (main); focus, finish (inner thoughts)
     skills.py          SkillManager: draft → sandbox check → install → rollback / quarantine; incidents; patches
@@ -259,7 +260,7 @@ groow/
     creature.py        the sprout: animation frames per mood
   birth.py             the birth certificate (state/birth.json, written once, read-only)
   recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
-  default_skills/      skills installed on first start (recipes: list_recipes, read_recipe, write_recipe)
+  default_skills/      skills installed on first start: recipes (list/read/write_recipe tools), web (the `web <url>` command)
   ops.py               the operations table (play, sleep, probe, news, thoughts, skill, …) used by /op, slash commands and the CLI
   cli.py               App wiring + commands (init, start, ui, chat, ask, status, stop, doctor, operations)
 birth                  host script: create the home, build the body, wake Groow (idempotent)

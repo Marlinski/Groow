@@ -2,7 +2,7 @@
 
     registry   ToolRegistry: Python functions -> tool schemas + safe dispatch
     builtins   the substrate: shell, read
-    selftools  learn, quiz, ask_mentor
+    selftools  learn, quiz, ask
     mindtools  think (main); focus, finish (inner thoughts)
     sensetools news headlines for `groow news` and curiosity
     skills     SkillManager: tools Groow writes for itself (draft -> sandbox check -> install -> rollback/quarantine)

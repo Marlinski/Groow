@@ -2,6 +2,8 @@
 
 A skill is one Python file in state/skills/<name>.py: a docstring, plain
 functions with docstrings (each becomes a tool; type hints give the schema),
+optionally CLI = {"command": "function"} (each becomes an executable in
+~/.local/bin, on Groow's PATH; the function takes argv and returns a dict),
 and TESTS. A register(reg) function is accepted too for full control.
 
     \"\"\"Word tools.\"\"\"
@@ -40,7 +42,9 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,30}$")
 
 
 class SkillManager:
-    def __init__(self, state_dir: Path, protected: set[str], memory=None, check_timeout: int = 60):
+    def __init__(self, state_dir: Path, protected: set[str], memory=None, check_timeout: int = 60, home: Path | None = None):
+        self.home = Path(home or Path.home())
+        self.bin = self.home / ".local" / "bin"
         self.dir = Path(state_dir) / "skills"
         self.drafts = self.dir / "_drafts"
         self.quarantine_dir = self.dir / "_quarantine"
@@ -126,18 +130,19 @@ class SkillManager:
             return {"ok": False, "error": "live load failed, previous version kept", "detail": loaded}
         self.manifest[name] = {"version": version, "installed": time.time(), "description": self._describe(dest.read_text()),
                                "sha": hashlib.sha1(dest.read_bytes()).hexdigest()[:10], "tools": loaded["tools"],
-                               "crashes": 0, "enabled": True}
+                               "commands": loaded.get("commands", []), "crashes": 0, "enabled": True}
         self._save_manifest()
         self._log("skill_install", name=name, version=version, tools=loaded["tools"])
         if self.on_change:
             self.on_change()
-        return {"ok": True, "name": name, "version": version, "tools": loaded["tools"]}
+        return {"ok": True, "name": name, "version": version, "tools": loaded["tools"], "commands": loaded.get("commands", [])}
 
     def disable(self, name: str, reason: str = "") -> dict:
         p = self.dir / f"{name}.py"
         if not p.exists():
             return {"ok": False, "error": f"no installed skill {name}"}
         self._unload(name)
+        self._remove_commands(name)
         shutil.move(p, self.quarantine_dir / f"{name}.py")
         self.manifest.setdefault(name, {})["enabled"] = False
         self._save_manifest()
@@ -166,7 +171,7 @@ class SkillManager:
         return {"error": f"no skill {name}"}
 
     def listing(self) -> dict:
-        return {"installed": {n: {k: v for k, v in self.manifest.get(n, {}).items() if k in ("version", "description", "tools", "crashes")}
+        return {"installed": {n: {k: v for k, v in self.manifest.get(n, {}).items() if k in ("version", "description", "tools", "commands", "crashes")}
                               for n in self.installed() if not n.startswith("_")},
                 "drafts": sorted(p.stem for p in self.drafts.glob("*.py")),
                 "quarantined": sorted(p.stem for p in self.quarantine_dir.glob("*.py"))}
@@ -196,11 +201,40 @@ class SkillManager:
                     raise ValueError(f"tool {tname} collides with a core tool")
                 tspec.group = f"skill:{name}"
                 self.registry.tools[tname] = tspec
-            return {"ok": True, "tools": list(tmp.tools)}
+            cli = getattr(mod, "CLI", None) or {}
+            self._write_commands(name, path, cli)
+            return {"ok": True, "tools": list(tmp.tools), "commands": sorted(cli)}
         except Exception:
             tb = traceback.format_exc(limit=6)
             self.record_incident("skill_load", tb, skill=name)
             return {"ok": False, "traceback": tb}
+
+    def _write_commands(self, name: str, path: Path, cli: dict) -> None:
+        """Each CLI entry becomes an executable in ~/.local/bin (on Groow's PATH) that runs the skill's function."""
+        self.bin.mkdir(parents=True, exist_ok=True)
+        for cmd, fname in cli.items():
+            wrapper = self.bin / cmd
+            wrapper.write_text(f"""#!{sys.executable}
+# command '{cmd}' of the groow skill '{name}' (state/skills/{name}.py). Regenerated on install.
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("groow_skill_{name}", {str(path.resolve())!r})
+mod = importlib.util.module_from_spec(spec); sys.modules[spec.name] = mod; spec.loader.exec_module(mod)
+out = getattr(mod, {fname!r})(sys.argv[1:])
+if isinstance(out, dict) and "text" in out and len(out) == 1:
+    print(out["text"])
+else:
+    print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
+sys.exit(1 if isinstance(out, dict) and out.get("error") else 0)
+""")
+            wrapper.chmod(0o755)
+
+    def _remove_commands(self, name: str) -> None:
+        for wrapper in self.bin.glob("*"):
+            try:
+                if f"groow skill '{name}'" in wrapper.read_text()[:300]:
+                    wrapper.unlink()
+            except (OSError, UnicodeDecodeError):
+                pass
 
     def load_all(self) -> dict:
         """At startup: load every installed skill; a skill that fails to load is quarantined."""
@@ -248,4 +282,4 @@ class SkillManager:
             {"id": pid, "ts": time.time(), "path": path, "description": description, "patch": patch, "status": "proposed"},
             ensure_ascii=False, indent=1))
         self._log("patch_proposed", id=pid, path=path)
-        return {"ok": True, "id": pid, "status": "proposed; the mentor reviews it (state/patches/). Tell him with ask_mentor if it matters."}
+        return {"ok": True, "id": pid, "status": "proposed; the mentor reviews it (state/patches/). Tell him with ask if it matters."}

@@ -35,5 +35,5 @@ may be small and non-executable.
 ## Rules of thumb
 
 - Long installs: run in the background, `nohup nix profile install nixpkgs#x > ~/.cache/install.log 2>&1 &`, then check the log later.
-- If something needs root, it is not for you: `ask_mentor`, or `propose_patch` against the Dockerfile.
+- If something needs root, it is not for you: `ask`, or `propose_patch` against the Dockerfile.
 - After installing something useful, write a skill that wraps it, so you do not have to remember the command line.

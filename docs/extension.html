@@ -6,7 +6,7 @@
 <h2>Two tiers</h2>
 <div class="grid">
 <div class="card"><div class="k">Tier 1 · skills</div><b>Groow's own commands.</b> Python files in <code>state/skills/</code>, each registering tools. Groow drafts, tests, installs, disables and rolls them back <em>by itself</em>. Data, not code, from the core's point of view.</div>
-<div class="card"><div class="k">Tier 2 · core</div><b>The harness itself</b> (<code>groow/</code>). Groow cannot edit it. It writes a <code>propose_patch</code> that lands in <code>state/patches/</code> and tells the mentor with <code>ask_mentor</code>. A human applies it.</div>
+<div class="card"><div class="k">Tier 2 · core</div><b>The harness itself</b> (<code>groow/</code>). Groow cannot edit it. It writes a <code>propose_patch</code> that lands in <code>state/patches/</code> and tells the mentor with <code>ask</code>. A human applies it.</div>
 </div>
 <p class="note">Why the split: the supervisor, the safe mode and the sandbox checker are what put a broken Groow back on its feet. If Groow could rewrite them, a single bad edit could remove its own ability to recover. Skills sit above that floor; the floor is static.</p>
 
@@ -60,7 +60,7 @@ flowchart TD
 <tr><td>safe mode itself crashes twice</td><td>the supervisor</td><td>nothing; the session ends and the mentor reads <code>groow doctor</code></td></tr></table>
 
 <h2>Safe mode: the static debugger harness</h2>
-<p>Safe mode is the same harness with a different loadout, chosen so that nothing Groow wrote is running: skills unloaded, passive learning and curiosity off, no inner thoughts carried in. The system prompt is not the identity but a repair brief that includes the incident. The toolset is <code>shell</code> and <code>ask_mentor</code>; repair goes through <code>groow incidents</code>, <code>groow skill check|install|disable</code> and <code>groow patch</code> in that shell. When it says <code>REPAIRED</code> (or you type <code>/restart</code>), the supervisor rebuilds the normal session.</p>
+<p>Safe mode is the same harness with a different loadout, chosen so that nothing Groow wrote is running: skills unloaded, passive learning and curiosity off, no inner thoughts carried in. The system prompt is not the identity but a repair brief that includes the incident. The toolset is <code>shell</code> and <code>ask</code>; repair goes through <code>groow incidents</code>, <code>groow skill check|install|disable</code> and <code>groow patch</code> in that shell. When it says <code>REPAIRED</code> (or you type <code>/restart</code>), the supervisor rebuilds the normal session.</p>
 <p><code>groow doctor</code> is the fully static fallback for when the model cannot even start: it re-checks every installed skill in a sandbox, lists drafts and quarantined skills, prints recent incidents and verifies the state directory, without loading weights.</p>
 
 <h2>Body and home</h2>

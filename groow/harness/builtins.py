@@ -1,8 +1,8 @@
-"""The substrate: the two tools that reach the world.
+"""The substrate: one tool that reaches the world.
 
     shell(command)   bash in Groow's home. Files, state, traces, games, skills, recipes, the
-                     `groow` commands that talk to its own daemon: everything is a command.
-    read(url)        a web page as readable text (a small model cannot do that through curl).
+                     `groow` commands that talk to its own daemon, the commands its skills
+                     install (e.g. `web <url>`): everything is a command.
 
 Nothing here touches the weights. The real sandbox is the body: in Docker Groow
 is a non-root user whose only writable directory is its persistent home. On a
@@ -49,10 +49,11 @@ def make_substrate_tools(home: Path | None = None, allow_shell: bool = True) -> 
         def shell(command: str, timeout: int = 120) -> dict:
             """Run a bash command in your home and return its output. Your home persists; the rest of the system is
             read-only and you are not root (no apt, no sudo). Your files: state/ (traces in state/main/, thoughts in
-            state/thoughts/, lessons, skills, recipes, identity.md), workspace/. Your commands: `groow news`,
-            `groow play <game>`, `groow thoughts`, `groow thought pause|resume|kill <id>`, `groow skill check|install
-            <name>`, `groow stats`, `groow identity`, `groow inbox`. Install software locally: `nix profile install
-            nixpkgs#<pkg>`, `uv pip install …`. Long jobs: `nohup … &` and check later. Read `cat state/recipes/*.md`.
+            state/thoughts/, lessons, skills, recipes, identity.md), workspace/. Your commands: `web <url>` (a page as
+            text), `groow news`, `groow play <game>`, `groow thoughts`, `groow thought pause|resume|kill <id>`,
+            `groow skill check|install <name>`, `groow stats`, `groow identity`, `groow inbox`. Install software locally:
+            `nix profile install nixpkgs#<pkg>`, `uv pip install …`. Long jobs: `nohup … &` and check later.
+            Read `cat state/recipes/*.md` when unsure.
 
             Args:
                 command: the command line, run with bash -lc
@@ -64,16 +65,6 @@ def make_substrate_tools(home: Path | None = None, allow_shell: bool = True) -> 
             except subprocess.TimeoutExpired:
                 return {"error": f"timed out after {timeout}s", "hint": "run it in the background with nohup … & and poll"}
             return {"returncode": r.returncode, "stdout": r.stdout[-8000:], "stderr": r.stderr[-3000:], "cwd": str(home)}
-
-    @reg.tool(group="substrate")
-    def read(url: str, max_chars: int = 6000) -> dict:
-        """Fetch a web page and return its readable text (menus and scripts removed).
-
-        Args:
-            url: the page to read
-            max_chars: truncate the text after this many characters
-        """
-        return page_text(url, max_chars=max_chars)
 
     return reg
 

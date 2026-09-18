@@ -1,0 +1,52 @@
+"""Web reader: `web <url>` prints a page as readable text (menus, scripts and markup removed)."""
+import html
+import json
+import re
+import sys
+import urllib.request
+
+_STRIP = re.compile(r"<(script|style|nav|header|footer|aside)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_TAGS = re.compile(r"<[^>]+>")
+_WS = re.compile(r"[ \t\r\f\v]+")
+_NL = re.compile(r"\n\s*\n+")
+
+
+def _page(url: str, timeout: int = 15, max_chars: int = 6000) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "groow/0.3 (+web skill)"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read(2_000_000).decode("utf-8", errors="replace")
+    title = re.search(r"<title[^>]*>(.*?)</title>", raw, re.DOTALL | re.IGNORECASE)
+    body = _STRIP.sub(" ", raw)
+    body = re.sub(r"</(p|div|h\d|li|br|tr)>", "\n", body, flags=re.IGNORECASE)
+    text = html.unescape(_TAGS.sub(" ", body))
+    text = _NL.sub("\n", _WS.sub(" ", text)).strip()
+    lines = [l.strip() for l in text.splitlines() if len(l.strip()) > 60]
+    text = "\n".join(lines) or text
+    return {"url": url, "title": html.unescape(title.group(1)).strip() if title else "",
+            "chars": len(text), "text": text[:max_chars], "truncated": len(text) > max_chars}
+
+
+def main(argv: list) -> dict:
+    """web <url> [--chars N] [--json]: the readable text of a web page."""
+    if not argv or argv[0] in ("-h", "--help"):
+        return {"text": "usage: web <url> [--chars N] [--json]   the readable text of a web page"}
+    if argv[0] == "--selftest":
+        return {"ok": True}
+    url, chars, as_json = argv[0], 6000, False
+    for i, a in enumerate(argv[1:], 1):
+        if a == "--chars" and i + 1 < len(argv):
+            chars = int(argv[i + 1])
+        if a == "--json":
+            as_json = True
+    try:
+        page = _page(url, max_chars=chars)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}", "url": url}
+    if as_json:
+        return page
+    head = f"# {page['title']}\n{page['url']}\n\n" if page["title"] else f"{page['url']}\n\n"
+    return {"text": head + page["text"] + ("\n\n[truncated]" if page["truncated"] else "")}
+
+
+CLI = {"web": "main"}
+TESTS = [("web", {"argv": ["--selftest"]}, {"ok": True})]

@@ -27,7 +27,7 @@ from .config import Config
 
 console = Console()
 
-SAFE_MODE_PROMPT = """You are Groow, running in SAFE MODE because the normal session crashed. Skills are unloaded, passive learning and curiosity are off. Your job now is repair, not conversation. With shell: `groow incidents` shows the traceback; skills are files in state/skills (installed) and state/skills/_quarantine; fix one and `groow skill check <file>` then `groow skill install <name>`, or leave it quarantined. If the fault is in the core rather than a skill, `groow patch …` and ask_mentor. When you are done, say exactly: REPAIRED. Marlinski, your mentor, is watching.
+SAFE_MODE_PROMPT = """You are Groow, running in SAFE MODE because the normal session crashed. Skills are unloaded, passive learning and curiosity are off. Your job now is repair, not conversation. With shell: `groow incidents` shows the traceback; skills are files in state/skills (installed) and state/skills/_quarantine; fix one and `groow skill check <file>` then `groow skill install <name>`, or leave it quarantined. If the fault is in the core rather than a skill, `groow patch …` and ask. When you are done, say exactly: REPAIRED. Marlinski, your mentor, is watching.
 
 Incident: {incident}"""
 
@@ -82,7 +82,7 @@ class App:
             "thought", event=ev, id=t.id, status=t.status, goal=t.goal[:140], steps=f"{t.steps}/{t.max_steps}", text=text[:300])
         self._mind = make_main_mind_tools(self.thoughts, self.memory)
         core = set(self._substrate.names()) | set(self._self.names()) | set(self._mind.names()) | {"focus", "finish"}
-        self.skills = SkillManager(cfg.state, protected=core, memory=self.memory, check_timeout=cfg.skill_check_timeout)
+        self.skills = SkillManager(cfg.state, protected=core, memory=self.memory, check_timeout=cfg.skill_check_timeout, home=home)
         seed_home(cfg, self.skills, self.emit)
         if cfg.skills_enabled and not safe_mode:
             r = self.skills.load_all()
@@ -143,11 +143,11 @@ class App:
         return getattr(getattr(self, "mind", None), "_req", None)
 
     def refresh_tools(self) -> None:
-        """The main tool set, rebuilt in place. Safe mode: shell and ask_mentor only."""
+        """The main tool set, rebuilt in place. Safe mode: shell and ask only."""
         merged = {}
         if self.safe_mode:
             merged.update(self._substrate.tools)
-            merged["ask_mentor"] = self._self.tools["ask_mentor"]
+            merged["ask"] = self._self.tools["ask"]
         else:
             for r in (self._substrate, self._self, self._mind):
                 merged.update(r.tools)
