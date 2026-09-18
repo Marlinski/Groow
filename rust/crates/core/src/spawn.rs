@@ -115,42 +115,75 @@ impl Spawner {
 
 
 
-/// Make the state directory readable but not writable by the mind, when we have the authority.
+/// Put the state out of the mind's reach, when we have the authority to do it.
 ///
-/// This is the whole point of the split: the conversation, the statistics and the birth
-/// certificate are visible to the mind and beyond its reach. Its own working areas, the
-/// skills it writes and the workspace it uses, stay writable.
+/// Permissions alone are not enough. A home that came from a bind mount is owned by the
+/// account that created it, and if that happens to be the account the mind runs as, then mode
+/// 755 still lets it write everything: the owner bit is the one that applies. So ownership is
+/// moved to root first, and only then do the modes mean what they say.
+///
+/// Its own corners stay its own: the commands it writes, its manual, and somewhere to work.
+///
+/// Returns whether the state is really protected. When it is not, the caller says so plainly
+/// rather than implying a guarantee that is not there.
 pub fn lock_state(state: &Path, agent_uid: Option<u32>) -> std::io::Result<bool> {
     if !crate::peer::is_root() {
         return Ok(false);
     }
     let Some(uid) = agent_uid.filter(|u| *u != 0) else { return Ok(false) };
-    use std::os::unix::fs::PermissionsExt;
 
-    // Root owns the state; everyone else may look.
-    set(state, 0o755)?;
-    for name in ["main", "mailbox", "limbic", "log", "thoughts", "training"] {
-        let p = state.join(name);
-        if p.exists() {
-            set(&p, 0o755)?;
+    // The mind's own places, which it must keep.
+    let mine = ["skills", "recipes", "workspace"];
+
+    own(state, 0, 0o755)?;
+    for entry in std::fs::read_dir(state)?.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if mine.contains(&name.as_str()) {
+            own_tree(&p, uid)?;
+        } else {
+            own_tree(&p, 0)?;
         }
     }
-    // These are the mind's own, so it must be able to write them.
-    for name in ["skills", "recipes", "workspace"] {
+    for name in mine {
         let p = state.join(name);
-        if p.exists() {
-            std::os::unix::fs::chown(&p, Some(uid), None)?;
-            set(&p, 0o755)?;
+        if !p.exists() {
+            std::fs::create_dir_all(&p)?;
+            own_tree(&p, uid)?;
         }
     }
     // How it is being scored is not its business, and that includes the write-ahead files,
     // which hold everything recent.
     crate::db::Db::keep_private(&state.join("groow.db"));
-    return Ok(true);
+    Ok(true)
+}
 
-    fn set(p: &Path, mode: u32) -> std::io::Result<()> {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode))
+/// Give one path to `uid`, with a mode that lets everyone read and only the owner write.
+fn own(p: &Path, uid: u32, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::os::unix::fs::chown(p, Some(uid), None)?;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode))
+}
+
+/// The same, for a whole tree. Directories need the execute bit to be enterable.
+fn own_tree(root: &Path, uid: u32) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(root)?;
+    if meta.file_type().is_symlink() {
+        // Following a link out of the state would change permissions somewhere else entirely.
+        return Ok(());
     }
+    if meta.is_dir() {
+        own(root, uid, 0o755)?;
+        for e in std::fs::read_dir(root)?.filter_map(|e| e.ok()) {
+            own_tree(&e.path(), uid)?;
+        }
+    } else {
+        // The birth certificate is read-only to everyone, including root, and stays that way.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        own(root, uid, if mode == 0o444 { 0o444 } else { 0o644 })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -223,7 +256,44 @@ mod tests {
         let state = d.path().join("state");
         std::fs::create_dir_all(state.join("skills")).unwrap();
         let locked = lock_state(&state, Some(1000)).unwrap();
-        assert_eq!(locked, crate::peer::is_root());
+        assert_eq!(locked, crate::peer::is_root(), "it must not claim a guarantee it cannot give");
+    }
+
+    #[test]
+    fn locking_moves_ownership_and_not_only_the_mode_bits() {
+        // Without the change of owner, a home that came from a bind mount is still the mind's
+        // to write, whatever the mode says.
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().join("state");
+        std::fs::create_dir_all(state.join("main")).unwrap();
+        std::fs::create_dir_all(state.join("workspace")).unwrap();
+        std::fs::write(state.join("main/a.jsonl"), "{}").unwrap();
+        if !crate::peer::is_root() {
+            assert!(!lock_state(&state, Some(1000)).unwrap());
+            return;
+        }
+        assert!(lock_state(&state, Some(1000)).unwrap());
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(std::fs::metadata(state.join("main")).unwrap().uid(), 0, "the conversation is root's");
+        assert_eq!(std::fs::metadata(state.join("main/a.jsonl")).unwrap().uid(), 0);
+        assert_eq!(std::fs::metadata(state.join("workspace")).unwrap().uid(), 1000, "its own place stays its own");
+    }
+
+    #[test]
+    fn the_birth_certificate_keeps_its_read_only_mode() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let cert = state.join("birth.json");
+        std::fs::write(&cert, "{}").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cert, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if !crate::peer::is_root() {
+            return;
+        }
+        lock_state(&state, Some(1000)).unwrap();
+        let mode = std::fs::metadata(&cert).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o444, "nobody should be able to rewrite it, root included");
     }
 
     #[test]
