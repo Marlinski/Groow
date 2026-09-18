@@ -1,18 +1,25 @@
-# docker compose run --rm groow init      # first time: downloads the base model into ./data
-# docker compose up -d groow              # the daemon
-# groow ui                                # from the host: the daemon answers on localhost:7373
-# curl -s localhost:7373/status
+# The body is this image; the home is ./home. Everything Groow is or installs lives in ./home.
+#   mkdir -p home/.nix                     # once; both dirs must be owned by your uid (1000)
+#   docker compose run --rm groow init      # first time: base model into ./home/state (and its HF cache)
+#   docker compose up -d groow              # the daemon on localhost:7373
+#   groow ui  |  groow chat  |  curl -s localhost:7373/status      # from the host
+#   docker compose exec groow bash          # look around as groow (no sudo, read-only body)
 services:
   groow:
     build: .
     image: groow:latest
+    user: "1000:1000"
+    read_only: true                    # the body is immutable; only the home and /tmp are writable
+    tmpfs:
+      - /tmp:size=2g,exec
     stdin_open: true
     tty: true
     ports:
-      - "127.0.0.1:7373:7373"     # the API: groow ui / groow chat / curl from the host
+      - "127.0.0.1:7373:7373"
     volumes:
-      - ./data:/data              # state/ (weights, memory, identity, workspace) + HF download cache
-      - ./groow.json:/app/groow.json
+      - ./home:/home/groow             # Groow's home: state/, workspace/, .venv, .cache, groow.json
+      - ./home/.nix:/nix               # the Nix store, kept inside the home folder on the host (mkdir -p home/.nix first)
     devices:
-      - nvidia.com/gpu=all      # CDI; if this fails after a driver upgrade: sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
+      - nvidia.com/gpu=all             # CDI; if this fails after a driver upgrade: sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
     shm_size: "2gb"
+    restart: unless-stopped

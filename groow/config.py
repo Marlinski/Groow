@@ -78,8 +78,10 @@ class Config:
     api_port: int = 7373
 
     # --- harness ----------------------------------------------------------
-    workspace_dir: str = "state/workspace"   # the only place file tools may read/write
+    workspace_dir: str = "state/workspace"   # where the file tools read/write
     allow_python: bool = True                # run_python tool (subprocess with timeout)
+    allow_shell: bool = True                 # run_shell tool: bash in Groow's home (sandboxed by the container)
+    home_dir: str = ""                       # Groow's home for run_shell; empty = $HOME
     python_timeout: int = 30
 
     # --- generation -------------------------------------------------------

@@ -24,7 +24,8 @@ SEED = """I am Groow. I run on one GPU and my weights are not frozen: every conv
 
 TOOL_NOTE = ("Tools: use them when they genuinely help. memorize when asked to remember something exactly; quiz when unsure "
              "whether you know a taught fact; play to get better at a game; the calculator for arithmetic; "
-             "news_headlines / read_article / learn_fact to learn about the world; ask_mentor to leave a question for Marlinski.")
+             "news_headlines / read_article / learn_fact to learn about the world; ask_mentor to leave a question for Marlinski; "
+             "run_shell for anything else: your home directory persists, install locally with nix or uv, never sudo.")
 
 BARE_WEIGHTS = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
 

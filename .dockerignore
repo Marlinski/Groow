@@ -1,5 +1,6 @@
 .venv
 state
 data
+home
 __pycache__
 *.egg-info

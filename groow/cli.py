@@ -67,7 +67,8 @@ class App:
         self.restart = False
 
         # tool sets ----------------------------------------------------------------
-        self._basic = make_builtin_tools(Path(cfg.workspace_dir), cfg.python_timeout, cfg.allow_python)
+        self._basic = make_builtin_tools(Path(cfg.workspace_dir), cfg.python_timeout, cfg.allow_python,
+                                         cfg.allow_shell, Path(cfg.home_dir) if cfg.home_dir else None)
         self._self = make_self_tools(self.learner, self.identity)
         self._sense = make_sense_tools(self.learner, self.news, cfg.sense_passes)
         self.thoughts = ThoughtManager(cfg.state, self.queue, self._thought_harness, self.memory,

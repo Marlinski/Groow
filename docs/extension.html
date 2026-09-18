@@ -63,6 +63,14 @@ flowchart TD
 <p>Safe mode is the same harness with a different loadout, chosen so that nothing Groow wrote is running: skills unloaded, passive learning and curiosity off, no inner thoughts carried in. The system prompt is not the identity but a repair brief that includes the incident. The toolset is core tools plus <code>read_incidents</code>, <code>read_skill</code>, <code>list_skills</code>, <code>draft_skill</code>, <code>install_skill</code>, <code>disable_skill</code>, <code>rollback_skill</code>, <code>propose_patch</code>, <code>ask_mentor</code>. When it says <code>REPAIRED</code> (or you type <code>/restart</code>), the supervisor rebuilds the normal session.</p>
 <p><code>groow doctor</code> is the fully static fallback for when the model cannot even start: it re-checks every installed skill in a sandbox, lists drafts and quarantined skills, prints recent incidents and verifies the state directory, without loading weights.</p>
 
+<h2>Body and home</h2>
+<p>Skills are code Groow writes; the <b>body</b> is the environment it runs in, and the same split applies. In Docker the body is a read-only image owned by the mentor (CUDA, Python, the <code>groow</code> package under <code>/opt/venv</code>, rebuilt from the Dockerfile). Groow is an unprivileged user whose <b>home</b> is a volume: <code>state/</code> with the weights, memory, identity and skills, the workspace, its Nix profile and any virtualenv it creates. <code>run_shell</code> gives it a real shell there.</p>
+<table><tr><th>It can</th><th>It cannot</th></tr>
+<tr><td>run any command as itself, download binaries, build things</td><td>become root, <code>sudo</code>, <code>apt</code></td></tr>
+<tr><td><code>nix profile install nixpkgs#…</code>, <code>uv pip install</code> into the home</td><td>write anywhere outside the home and <code>/tmp</code> (the image is <code>read_only</code>)</td></tr>
+<tr><td>keep all of it across restarts, rebuilds and moves to another machine (copy <code>./home</code>)</td><td>alter its own runtime or the harness: those live in the body, patched only through <code>propose_patch</code></td></tr></table>
+<p class="note">On first start the entrypoint installs single-user Nix; <code>/nix</code> is a mount backed by <code>./home/.nix</code> on the host (Nix refuses a symlinked store), so even the package manager is part of what persists. On a bare host, without the container, the shell tool runs as you; the container is the sandbox, not the code.</p>
+
 <h2>What this does not protect against</h2>
 <ul>
 <li>A skill that is <em>wrong</em> but passes its own tests. Tests are written by the same model. The mitigation is social: <code>list_skills</code> shows the mentor what was installed, and <code>/bad</code> plus <code>disable_skill</code> are one line each.</li>

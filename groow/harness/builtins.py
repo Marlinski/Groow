@@ -1,15 +1,18 @@
-"""Basic tools every agent needs: a calculator, a clock, a scratch workspace on
-disk, and a Python runner. Nothing here touches the model's weights.
+"""Basic tools every agent needs: a calculator, a clock, files in a workspace,
+a Python runner and a shell. Nothing here touches the model's weights.
 
-All file tools are confined to one workspace directory (state/workspace by
-default). The Python runner executes in a subprocess with a timeout, so a
-runaway script cannot take the loop down with it.
+The real sandbox is the body: in Docker, Groow is a non-root user whose only
+writable directory is its persistent home; the image is read-only. On a bare
+host these tools run as you, so run the daemon in the container when the shell
+tool is on. File tools stay confined to the workspace; the shell is confined
+by the body, not by this code.
 """
 from __future__ import annotations
 
 import ast
 import datetime as dt
 import operator
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,9 +36,11 @@ def _safe_eval(node):
     raise ValueError(f"unsupported expression element: {ast.dump(node)[:40]}")
 
 
-def make_builtin_tools(workspace: Path, python_timeout: int = 30, allow_python: bool = True) -> ToolRegistry:
+def make_builtin_tools(workspace: Path, python_timeout: int = 30, allow_python: bool = True,
+                       allow_shell: bool = True, home: Path | None = None) -> ToolRegistry:
     ws = Path(workspace).resolve()
     ws.mkdir(parents=True, exist_ok=True)
+    home = Path(home or Path.home()).resolve()
     reg = ToolRegistry()
 
     def _inside(rel: str) -> Path:
@@ -98,6 +103,25 @@ def make_builtin_tools(workspace: Path, python_timeout: int = 30, allow_python: 
         with p.open("a" if append else "w") as f:
             f.write(content)
         return {"path": path, "bytes": p.stat().st_size}
+
+    if allow_shell:
+        @reg.tool(group="basic")
+        def run_shell(command: str, timeout: int = 120) -> dict:
+            """Run a shell command (bash) in your home directory and return its output. Your home persists across
+            restarts; the rest of the system is read-only and you are not root (no apt, no sudo). Install what you
+            need locally: `nix profile install nixpkgs#<package>` or `uv pip install --python ~/.venv/bin/python <pkg>`
+            (create the venv once with `uv venv ~/.venv`). Long jobs: use `nohup ... &` and check back.
+
+            Args:
+                command: the command line to run with bash -lc
+                timeout: seconds before the process is killed (max 600)
+            """
+            try:
+                r = subprocess.run(["bash", "-lc", command], cwd=home, capture_output=True, text=True,
+                                   timeout=min(int(timeout), 600), env={**os.environ, "HOME": str(home)})
+            except subprocess.TimeoutExpired:
+                return {"error": f"timed out after {timeout}s", "hint": "run it in the background with nohup … & and poll"}
+            return {"returncode": r.returncode, "stdout": r.stdout[-8000:], "stderr": r.stderr[-3000:], "cwd": str(home)}
 
     if allow_python:
         @reg.tool(group="basic")

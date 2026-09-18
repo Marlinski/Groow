@@ -24,12 +24,19 @@ groow ui            # in another terminal: the fullscreen UI (Textual, WebSocket
 groow chat          # or a minimal line client (SSE); groow ask "…" for a single query; groow status / stop
 ```
 
-Or in a sandbox (Docker with the NVIDIA container toolkit's CDI spec; everything Groow learns lands in `./data`):
+Or in its **body** (Docker). Groow is an unprivileged user whose home,
+`./home` on the host, is the only writable place in its world: the image is
+read-only, there is no `apt` and no `sudo`. It installs what it needs locally
+with Nix (`nix profile install nixpkgs#ffmpeg`) or `uv`, into the home, so it
+all survives restarts, rebuilds and moves. The base model, memory, identity,
+skills and workspace live there too. One directory is Groow.
 
 ```bash
-docker compose run --rm groow init
-docker compose up -d groow            # daemon
-docker compose exec groow groow ui    # UI inside the container
+mkdir -p home/.nix                    # once: the home and its Nix store, owned by your uid (1000)
+docker compose run --rm groow init    # first time: base model into ./home/state
+docker compose up -d groow            # the daemon on localhost:7373
+groow ui                              # from the host (or groow chat, curl …)
+docker compose exec groow bash        # look around as groow
 ```
 
 Groow is a **daemon**. One process owns the GPU and the state; clients speak
@@ -163,6 +170,15 @@ into a single forward pass; a pending user message preempts a thought batch per
 token, so you never wait for background thinking. Every main turn and every
 thought step is an episode that `recall` can read back in full.
 
+**Body and home.** In Docker, Groow runs as a non-root user with a read-only
+image (the body: CUDA, Python, the `groow` package, rebuilt from the
+Dockerfile) and a persistent home volume (everything it is and everything it
+grows: weights, memory, identity, skills, workspace, Nix profile, venvs).
+`run_shell` gives it a real shell in that home. It cannot escape it, cannot
+alter its own runtime under `/opt/venv`, cannot become root; it can download
+binaries, build things, and install anything nixpkgs or PyPI has. On a bare
+host the same tools run as you, so keep the shell tool for the container.
+
 **Self-extension.** Groow writes its own commands. A *skill* is a Python
 file in `state/skills/` that registers tools and ships its own `TESTS`.
 `draft_skill` checks it in a fresh subprocess (imports, schemas, no collision
@@ -210,7 +226,7 @@ groow/
     mind.py            Mind: the scheduler loop; frames signals into the main conversation
   harness/             everything between a user message and a finished turn
     registry.py        ToolRegistry: Python function → JSON schema, safe dispatch
-    builtins.py        calculator, current_time, list/read/write_file (sandboxed), run_python
+    builtins.py        calculator, current_time, list/read/write_file, run_python, run_shell (bash in the home)
     selftools.py       memorize, quiz, recall, play, list_games, invent_game,
                        consolidate, grow, probe, learning_report, ask_mentor,
                        read_identity, update_identity
@@ -230,7 +246,8 @@ groow/
     creature.py        the sprout: animation frames per mood
   birth.py             the birth certificate (state/birth.json, written once, read-only)
   cli.py               App wiring + commands (init, start, ui, chat, status, stop, doctor, one-shots)
-state/                 runtime, created by init (gitignored)
+docker/entrypoint.sh   the body waking up: Nix into the home on first start, PATH, then the command
+state/                 runtime, created by init (gitignored); inside the container it is /home/groow/state
   base/  base.prev/    consolidated weights (HF format), and last night's for rollback
   plastic/             current overlay + optimizer state
   identity.md          the self-description; mentor_inbox.jsonl: questions for you
@@ -287,7 +304,8 @@ one with `invent_game` after setting `"allow_invented_games": true`.
   model's 262k window, is why the prompt budget defaults to 32k.
 - Docker: the GPU is passed with a CDI device (`nvidia.com/gpu=all`). After a
   driver upgrade the spec goes stale; regenerate it with
-  `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`.
+  `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`. The
+  container runs as uid 1000; make `./home` owned by that uid on the host.
 - No quantisation by design: only bitsandbytes NF4/int8 run on Volta, both are
   slower than fp16 here, and merging the overlay into a quantised base is lossy.
   Memory is not the constraint at 4B; quantise only to try a 14B+ base.
