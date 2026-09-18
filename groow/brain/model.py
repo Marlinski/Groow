@@ -86,6 +86,7 @@ class Brain:
         self.meta_path.write_text(json.dumps(self.meta, indent=2))
 
     def load(self) -> "Brain":
+        _disable_triton_overrides()
         if not self.base_dir.exists():
             self.initialize()
         if self.meta_path.exists():
@@ -354,6 +355,16 @@ class Brain:
         return {**self.meta, "trainable_parameters": self.trainable_parameters(),
                 "total_parameters": self.total_parameters(), "gpu_memory_gb": round(mem, 2),
                 "model_id": self.cfg.model_id}
+
+
+def _disable_triton_overrides() -> None:
+    """torch >= 2.14 routes some eager ops (bmm) through Triton kernels that need a C compiler
+    at runtime. The body has none, and cuBLAS is fine, so fall back to the aten kernels."""
+    try:
+        from torch._native import registry
+        registry.deregister_op_overrides(disable_dsl_names="triton")
+    except Exception:
+        pass
 
 
 def _sampling(temperature: float, top_p: float, top_k: int) -> dict:

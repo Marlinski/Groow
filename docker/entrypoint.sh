@@ -10,12 +10,14 @@ export TMPDIR="$HOME/.cache/tmp"          # /tmp may be noexec; installers and b
 [ -f "$HOME/.config/nix/nix.conf" ] || echo "experimental-features = nix-command flakes" > "$HOME/.config/nix/nix.conf"
 
 # Nix, single-user. /nix is a mount backed by ./home/.nix on the host (a symlinked store is refused by Nix).
-if [ ! -x "$HOME/.nix-profile/bin/nix" ] && [ ! -x "$HOME/.local/state/nix/profiles/profile/bin/nix" ]; then
+if [ -x "$HOME/.nix-profile/bin/nix" ] || [ -x "$HOME/.local/state/nix/profiles/profile/bin/nix" ]; then
+  echo "body: nix present in the home"
+else
   if [ -z "$GROOW_SKIP_NIX" ]; then
-    echo "groow-body: installing nix into the home (first start)…"
+    echo "body: installing nix into the home (first start, ~30 s)…"
     curl -fsSL https://nixos.org/nix/install -o "$TMPDIR/nix-install.sh"
     sh "$TMPDIR/nix-install.sh" --no-daemon --yes >"$HOME/.cache/nix-install.log" 2>&1 \
-      && echo "groow-body: nix installed" || { echo "groow-body: nix install failed"; tail -20 "$HOME/.cache/nix-install.log"; }
+      && echo "body: nix installed" || { echo "body: nix install failed"; tail -20 "$HOME/.cache/nix-install.log"; }
   fi
 fi
 for f in "$HOME/.nix-profile/etc/profile.d/nix.sh"; do [ -f "$f" ] && . "$f"; done
@@ -29,8 +31,9 @@ export TMPDIR="$HOME/.cache/tmp"
 RC
 # Birth or waking: no birth certificate in the home means this is the first time.
 if [ "${1:-}" = "start" ] && [ ! -f "$HOME/state/birth.json" ]; then
-  echo "groow-body: no birth certificate in the home. This is a birth: fetching the base model into the home…"
+  echo "body: no birth certificate in the home. This is a birth."
   groow init
   chmod -R u+w "$HF_HOME/hub" 2>/dev/null; rm -rf "$HF_HOME/hub"   # the working copy is state/base; the download cache would double the home
 fi
+echo "body: waking groow ($*)"
 exec "$@"

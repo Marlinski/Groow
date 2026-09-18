@@ -20,7 +20,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
 from ..gateway import Client
-from .creature import CAPTIONS, frame
+from .creature import render as render_creature
 
 _HIDE = re.compile(r"<tool_call>.*?(</tool_call>|$)|<think>.*?(</think>|$)", re.DOTALL)
 
@@ -49,15 +49,15 @@ class ChatLog(VerticalScroll):
 class Creature(Static):
     mood = "idle"
     tick = 0
+    born: float | None = None        # set from hello; age picks the life stage
 
     def on_mount(self) -> None:
-        self.set_interval(0.45, self.animate)
+        self.set_interval(0.5, self.animate)
 
     def animate(self) -> None:
         self.tick += 1
-        t = Text(frame(self.mood, self.tick), style=MINT)
-        t.append(f"\n {CAPTIONS.get(self.mood, self.mood)}", style=DIM)
-        self.update(t)
+        age = (time.time() - self.born) if self.born else 0.0
+        self.update(render_creature(age, self.mood, self.tick))
 
 
 class IdCard(Static):
@@ -156,7 +156,7 @@ class GroowUI(App):
     .sys {{ border: none; color: {DIM}; padding: 0 2; }}
     Input {{ border: tall {MOSS}; background: #0f161d; color: #e6ecf1; }}
     Input:focus {{ border: tall {MINT}; }}
-    Creature {{ height: 8; padding: 0 1; content-align: left middle; }}
+    Creature {{ height: 15; padding: 0 0; content-align: left top; }}
     IdCard {{ padding: 0 1; border-top: solid #1e2a33; height: auto; }}
     #thoughts-title, #chat-title {{ color: {DIM}; padding: 0 1; height: 1; }}
     Thoughts {{ padding: 0 1; border-top: solid #1e2a33; height: 1fr; }}
@@ -211,6 +211,7 @@ class GroowUI(App):
         creature = self.query_one(Creature)
         if k == "hello":
             card.birth = ev["birth"]
+            creature.born = ev["birth"]["born"]
             card.status = ev["status"]
             card.identity_version = ev["status"].get("identity_version", 1)
             self.query_one(StatusBar).show(ev["status"])

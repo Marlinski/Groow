@@ -258,6 +258,7 @@ class Daemon:
         from ..cli import App, run_command
         from ..mind import Mind
         self.loop = loop = asyncio.get_running_loop()
+        print(f"groow: waking up: loading {self.cfg.model_id} into the GPU (~30 s), then memory, skills, senses…", flush=True)
         self.app = app = App(self.cfg, emit=self.emit, safe_mode=self.safe_mode, incident=self.incident)
         app.queue.bind(loop)
         app.thoughts.bind(loop)

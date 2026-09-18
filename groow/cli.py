@@ -357,12 +357,16 @@ def cmd_init(cfg: Config, args) -> None:
     cfg.state.mkdir(parents=True, exist_ok=True)
     if not Path("groow.json").exists() and not (cfg.state.parent / "groow.json").exists():
         cfg.save(cfg.state.parent / "groow.json")
-    with console.status(f"[dim]copying {cfg.model_id} into {cfg.state}/base ...[/dim]"):
-        Brain(cfg).initialize(force=args.force)
+    if not (cfg.state / "base").exists() or args.force:
+        console.print(f"birth: fetching the base model {cfg.model_id} from Hugging Face (~8 GB for a 4B model, once)…")
+    Brain(cfg).initialize(force=args.force)
+    console.print(f"birth: weights written to {cfg.state}/base (the working copy)")
     birth = load_or_create(cfg.state, cfg.model_id)
+    console.print(f"birth: certificate written: id {birth.id}, born {birth.born_text()}")
+    console.print("birth: loading the weights into the GPU and measuring baseline probes…")
     app = _boot(cfg)
     r = app.learner.probe()
-    console.print(f"[green]born.[/green] {birth.line()} · {app.brain.total_parameters()/1e9:.2f}B parameters, "
+    console.print(f"birth: [green]born.[/green] {birth.line()} · {app.brain.total_parameters()/1e9:.2f}B parameters, "
                   f"{app.brain.trainable_parameters()/1e6:.1f}M plastic · baseline probe loss {r['mean_loss']:.3f}")
     app.brain.save()
 
