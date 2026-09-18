@@ -272,7 +272,7 @@ class Brain:
             self.model.eval()
         return total
 
-    def pg_step(self, decisions: list[Decision], micro_batch: int = 4) -> float:
+    def pg_step(self, decisions: list[Decision], micro_batch: int = 2) -> float:
         """REINFORCE / GRPO-style policy gradient: raise the log-probability of
         completions with positive advantage, lower it for negative ones."""
         decisions = [d for d in decisions if d.completion_ids and d.advantage != 0.0]
@@ -284,21 +284,29 @@ class Brain:
             n = len(decisions)
             for i in range(0, n, micro_batch):
                 chunk = decisions[i:i + micro_batch]
-                seqs = [d.prompt_ids + d.completion_ids for d in chunk]
+                # Long prompts are trimmed from the front: the completion is the part being
+                # reinforced and must survive whole, and the words just before it are the
+                # ones that decided it.
+                budget = max(64, self.cfg.train_max_len)
+                seqs, kept = [], []
+                for d in chunk:
+                    comp = d.completion_ids[-budget // 2:]
+                    room = budget - len(comp)
+                    prompt = d.prompt_ids[-room:] if room > 0 else []
+                    seqs.append(prompt + comp)
+                    kept.append((len(prompt), len(prompt) + len(comp)))
                 L = max(len(s) for s in seqs)
                 pad = self.tok.pad_token_id
                 ids = torch.full((len(chunk), L), pad, device=self.device)
                 mask = torch.zeros((len(chunk), L), device=self.device)
                 adv = torch.tensor([d.advantage for d in chunk], device=self.device)
-                for j, (d, s) in enumerate(zip(chunk, seqs)):
+                for j, (s, (start, end)) in enumerate(zip(seqs, kept)):
                     ids[j, :len(s)] = torch.tensor(s, device=self.device)
-                    mask[j, len(d.prompt_ids):len(s)] = 1.0
+                    mask[j, start:end] = 1.0
                 with torch.autocast(self.device.type, dtype=self.dtype, enabled=self.device.type == "cuda"):
                     logits = self.model(input_ids=ids, attention_mask=(ids != pad).long() | (mask > 0).long(),
                                         use_cache=False).logits
-                logp = F.log_softmax(logits[:, :-1].float(), dim=-1)
-                tgt = ids[:, 1:]
-                tok_logp = logp.gather(-1, tgt.unsqueeze(-1)).squeeze(-1)
+                tok_logp = _target_logprobs(logits[:, :-1], ids[:, 1:])
                 m = mask[:, 1:]
                 seq_logp = (tok_logp * m).sum(-1) / m.sum(-1).clamp(min=1)
                 loss = -(adv * seq_logp).sum() / n
@@ -408,13 +416,29 @@ def _sampling(temperature: float, top_p: float, top_k: int) -> dict:
     return {"do_sample": True, "temperature": temperature, "top_p": top_p, "top_k": top_k}
 
 
+def _target_logprobs(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """The log-probability of each target token, and nothing else.
+
+    The obvious way to write this is a log-softmax over the whole vocabulary followed by a
+    gather. On a 150k vocabulary that allocates two tensors the size of the logits, and in
+    float32 it is four times the size again: for one micro-batch of a few thousand tokens that
+    is more memory than the weights themselves. It was the single allocation that put a real
+    training step over the top of a 32 GB GPU, twice.
+
+    Cross-entropy computes the same number with a fused kernel that never materialises the
+    distribution, and accumulates in float32 internally, so nothing is lost by leaving the
+    logits in half precision.
+    """
+    flat = logits.reshape(-1, logits.shape[-1])
+    return -F.cross_entropy(flat, targets.reshape(-1), reduction="none").view(targets.shape)
+
+
 def _weighted_ce(logits: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
     """Weighted next-token loss. Positive weights: cross-entropy. Negative weights:
     unlikelihood -log(1 - p) scaled by |w|. Normalised by total |weight|."""
-    logits = logits[:, :-1].float()
     tgt = ids[:, 1:]
     w = weights[:, 1:]
-    logp = F.log_softmax(logits, dim=-1).gather(-1, tgt.unsqueeze(-1)).squeeze(-1)
+    logp = _target_logprobs(logits[:, :-1], tgt)
     pos = w.clamp(min=0)
     neg = (-w).clamp(min=0)
     ce = -logp
