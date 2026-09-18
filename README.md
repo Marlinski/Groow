@@ -24,20 +24,23 @@ groow ui            # in another terminal: the fullscreen UI (Textual, WebSocket
 groow chat          # or a minimal line client (SSE); groow ask "…" for a single query; groow status / stop
 ```
 
-Or in its **body** (Docker). Groow is an unprivileged user whose home,
-`./home` on the host, is the only writable place in its world: the image is
-read-only, there is no `apt` and no `sudo`. It installs what it needs locally
-with Nix (`nix profile install nixpkgs#ffmpeg`) or `uv`, into the home, so it
-all survives restarts, rebuilds and moves. The base model, memory, identity,
-skills and workspace live there too. One directory is Groow.
+Or in its **body** (Docker), which is the intended way to run it:
 
 ```bash
-mkdir -p home/.nix                    # once: the home and its Nix store, owned by your uid (1000)
-docker compose run --rm groow init    # first time: base model into ./home/state
-docker compose up -d groow            # the daemon on localhost:7373
-groow ui                              # from the host (or groow chat, curl …)
-docker compose exec groow bash        # look around as groow
+./birth          # first time: builds the body, creates ./home, gives birth (fetches the base model), wakes it
+groow ui         # from the host; also groow chat, groow ask "…", curl localhost:7373/status
+./birth stop     # sleep. ./birth again wakes it; ./birth logs, ./birth shell, ./birth status, ./birth rebuild
 ```
+
+Groow is an unprivileged user whose home, `./home` on the host, is the only
+writable place in its world: the image is read-only, there is no `apt` and no
+`sudo`. It installs what it needs locally with Nix (`nix profile install
+nixpkgs#ffmpeg`) or `uv`, into the home, so it all survives restarts, rebuilds
+and moves. The base model, memory, identity, skills and workspace live there
+too. One directory is Groow. The `birth` script and the body's entrypoint are
+the only two startup scripts, and both are outside Groow's reach: the body
+checks for `state/birth.json` and gives birth when it is missing, otherwise it
+just wakes up.
 
 Groow is a **daemon**. One process owns the GPU and the state; clients speak
 HTTP: `POST /ask` for a single query, `GET /events` (Server-Sent Events) for
@@ -256,7 +259,8 @@ groow/
   recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
   default_skills/      skills installed on first start (recipes: list_recipes, read_recipe, write_recipe)
   cli.py               App wiring + commands (init, start, ui, chat, status, stop, doctor, one-shots)
-docker/entrypoint.sh   the body waking up: Nix into the home on first start, PATH, then the command
+birth                  host script: create the home, build the body, wake Groow (idempotent)
+docker/entrypoint.sh   the body waking up: Nix into the home, birth if no certificate, then the command
 state/                 runtime, created by init (gitignored); inside the container it is /home/groow/state
   base/  base.prev/    consolidated weights (HF format), and last night's for rollback
   plastic/             current overlay + optimizer state
@@ -316,7 +320,7 @@ one with `invent_game` after setting `"allow_invented_games": true`.
 - Docker: the GPU is passed with a CDI device (`nvidia.com/gpu=all`). After a
   driver upgrade the spec goes stale; regenerate it with
   `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`. The
-  container runs as uid 1000; make `./home` owned by that uid on the host.
+  container runs as your uid (`./birth` passes it), so `./home` is simply yours.
 - No quantisation by design: only bitsandbytes NF4/int8 run on Volta, both are
   slower than fp16 here, and merging the overlay into a quantised base is lossy.
   Memory is not the constraint at 4B; quantise only to try a 14B+ base.

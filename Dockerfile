@@ -27,7 +27,7 @@ RUN chmod 0755 /usr/local/bin/groow-entrypoint
 
 USER groow
 WORKDIR /home/groow
-ENV HOME=/home/groow HF_HOME=/home/groow/.cache/huggingface \
+ENV HOME=/home/groow USER=groow HF_HOME=/home/groow/.cache/huggingface \
     PATH=/home/groow/.venv/bin:/home/groow/.local/bin:/home/groow/.nix-profile/bin:/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
 VOLUME ["/home/groow", "/nix"]
 EXPOSE 7373

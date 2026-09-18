@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# birth: the one script. Prepares Groow's home, builds its body if needed, and wakes it up.
+# The first time, the body finds no birth certificate in the home and gives birth (fetches the
+# base model). Every later time it just wakes up. Idempotent. Lives outside Groow's reach.
+#
+#   ./birth            start (or give birth)        ./birth stop      put it to sleep
+#   ./birth logs       follow the body's log        ./birth shell     a shell in the home, as groow
+#   ./birth status     is it awake?                 ./birth rebuild   rebuild the body, keep the home
+set -euo pipefail
+cd "$(dirname "$0")"
+export GROOW_UID="$(id -u)" GROOW_GID="$(id -g)"
+URL="http://127.0.0.1:${GROOW_PORT:-7373}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "birth: $1 is required"; exit 1; }; }
+need docker
+
+case "${1:-start}" in
+  stop)    docker compose stop groow; echo "groow is asleep (home kept in ./home)";;
+  logs)    docker compose logs -f groow;;
+  shell)   docker compose exec groow bash -l;;
+  status)  curl -fsS "$URL/status" 2>/dev/null | python3 -m json.tool || echo "not awake ($URL)";;
+  rebuild) docker compose build groow && docker compose up -d groow;;
+  start)
+    mkdir -p home/.nix home/state home/workspace       # owned by you, so the body (running as you) can write them
+    if ! docker image inspect groow:latest >/dev/null 2>&1; then
+      echo "birth: building the body (first time, a few minutes)…"
+      docker compose build groow
+    fi
+    if [ ! -f home/state/birth.json ]; then
+      echo "birth: no birth certificate in ./home. The body will give birth on start (fetches the base model, ~8 GB)."
+    fi
+    docker compose up -d groow
+    echo -n "birth: waiting for groow to wake up"
+    for i in $(seq 1 900); do
+      if curl -fsS "$URL/hello" >/dev/null 2>&1; then
+        echo; curl -fsS "$URL/hello" | python3 -c 'import sys,json; h=json.load(sys.stdin); b=h["birth"]; print(b["name"], "is awake · id", b["id"], "· born", b["born_text"], "· age", b["age"], "·", h["url"])'
+        echo "birth: groow ui   |   groow chat   |   ./birth logs"
+        exit 0
+      fi
+      if ! docker compose ps --status running groow >/dev/null 2>&1 || [ -z "$(docker compose ps -q --status running groow)" ]; then
+        echo; echo "birth: the body stopped. Last lines:"; docker compose logs --tail 20 groow; exit 1
+      fi
+      echo -n "."; sleep 2
+    done
+    echo; echo "birth: still not awake after 30 minutes; see ./birth logs";;
+  *) echo "usage: ./birth [start|stop|logs|shell|status|rebuild]"; exit 2;;
+esac

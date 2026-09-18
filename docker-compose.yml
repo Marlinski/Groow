@@ -1,14 +1,12 @@
 # The body is this image; the home is ./home. Everything Groow is or installs lives in ./home.
-#   mkdir -p home/.nix                     # once; both dirs must be owned by your uid (1000)
-#   docker compose run --rm groow init      # first time: base model into ./home/state (and its HF cache)
-#   docker compose up -d groow              # the daemon on localhost:7373
+# Use ./birth (it creates the home, builds the body, starts the daemon, gives birth on the first run).
+#   ./birth            ./birth stop       ./birth logs       ./birth shell       ./birth status
 #   groow ui  |  groow chat  |  curl -s localhost:7373/status      # from the host
-#   docker compose exec groow bash          # look around as groow (no sudo, read-only body)
 services:
   groow:
     build: .
     image: groow:latest
-    user: "1000:1000"
+    user: "${GROOW_UID:-1000}:${GROOW_GID:-1000}"   # ./birth sets these to your uid/gid
     read_only: true                    # the body is immutable; only the home and /tmp are writable
     tmpfs:
       - /tmp:size=2g,exec

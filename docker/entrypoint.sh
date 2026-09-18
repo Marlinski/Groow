@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Groow's body wakes up: make sure the home has what it needs, then run the command.
+# Groow's body wakes up: prepare the home, install Nix on first start, give birth if there is no
+# birth certificate yet, then run the command. This file is part of the body: Groow cannot change it.
 # Runs as the unprivileged user `groow`; the only writable place is $HOME (a volume).
 set -e
 export HOME=/home/groow
@@ -26,4 +27,10 @@ grep -q "nix.sh" "$HOME/.bashrc" 2>/dev/null || cat >> "$HOME/.bashrc" <<'RC'
 export PATH="$HOME/.venv/bin:$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/venv/bin:$PATH"
 export TMPDIR="$HOME/.cache/tmp"
 RC
+# Birth or waking: no birth certificate in the home means this is the first time.
+if [ "${1:-}" = "start" ] && [ ! -f "$HOME/state/birth.json" ]; then
+  echo "groow-body: no birth certificate in the home. This is a birth: fetching the base model into the home…"
+  groow init
+  rm -rf "$HF_HOME/hub/models--"* 2>/dev/null || true     # the working copy is state/base; the download cache would double the home
+fi
 exec "$@"
