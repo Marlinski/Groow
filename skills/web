@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Web reader: `web <url>` prints a page as readable text (menus, scripts and markup removed)."""
 import html
 import json
@@ -48,5 +49,18 @@ def main(argv: list) -> dict:
     return {"text": head + page["text"] + ("\n\n[truncated]" if page["truncated"] else "")}
 
 
-CLI = {"web": "main"}
 TESTS = [("web", {"argv": ["--selftest"]}, {"ok": True})]
+
+
+def _run():
+    import sys
+    out = main(sys.argv[1:])
+    if isinstance(out, dict) and "text" in out and len(out) == 1:
+        print(out["text"])
+    else:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    raise SystemExit(0 if not (isinstance(out, dict) and out.get("error")) else 1)
+
+
+if __name__ == "__main__":
+    _run()

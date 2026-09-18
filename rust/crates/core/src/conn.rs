@@ -412,7 +412,7 @@ mod tests {
     async fn a_turn_runs_end_to_end_over_one_connection() {
         let (mut s, hub, _d) = rig(Role::Agent).await;
         hub.say("what is a river", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
-        hub.next_duty(groow_proto::event::now()).await.unwrap();
+        hub.next_duty().await.unwrap();
 
         let ctx = match s.call(1, "turn.claim", json!({})).await {
             Frame::Rep { ok, .. } => ok,
@@ -438,18 +438,21 @@ mod tests {
     async fn a_turn_whose_process_vanishes_does_not_block_the_next_one() {
         let (mut s, hub, _d) = rig(Role::Agent).await;
         hub.say("first", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
-        hub.next_duty(groow_proto::event::now()).await.unwrap();
+        hub.next_duty().await.unwrap();
         s.call(1, "turn.claim", json!({})).await;
 
         // The process dies without ending its turn.
         drop(s);
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-        // The message was a person's, so it comes back rather than being lost.
-        let duty = hub.next_duty(groow_proto::event::now()).await.unwrap();
-        match duty {
+        // The turn is released rather than left open, and the message is not lost: the core
+        // waits a moment before trying again, which is what stops a failing brain becoming a
+        // loop, and then hands the same message back.
+        assert!(hub.status().await.unwrap()["busy"] == false, "the core stayed stuck on the dead turn");
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+        match hub.next_duty().await.unwrap() {
             crate::hub::Duty::Turn(sig) => assert_eq!(sig.text, "first"),
-            other => panic!("the core stayed stuck on the dead turn: {other:?}"),
+            other => panic!("a person's message was dropped: {other:?}"),
         }
     }
 

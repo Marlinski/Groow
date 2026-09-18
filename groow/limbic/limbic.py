@@ -27,7 +27,8 @@ from .judge import make_judge
 
 
 class Limbic:
-    def __init__(self, state_dir: Path | str, judge_kind: str = "laya", decay_halflife_s: float = 1800.0):
+    def __init__(self, state_dir: Path | str, judge_kind: str = "laya", decay_halflife_s: float = 1800.0,
+                 hold_seconds: float = 300.0):
         self.dir = Path(state_dir) / "limbic"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.valence_log = self.dir / "valence.jsonl"
@@ -37,6 +38,7 @@ class Limbic:
         if hasattr(self.judge, "warm"):
             self.judge.warm()
         self.halflife = decay_halflife_s
+        self.hold_seconds = hold_seconds
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {
             "pain": 0.0, "pleasure": 0.0, "ts": time.time(), "turns": 0, "surprise_mean": None}
         self.pending = json.loads(self.pending_path.read_text()) if self.pending_path.exists() else None
@@ -107,9 +109,12 @@ class Limbic:
             f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
         self._accumulate(rec["valence"])
 
-    def flush_pending(self) -> dict | None:
-        """Nobody reacted (the session is ending, or it has been a long time): finalise on sensors alone."""
+    def flush_pending(self, force: bool = False) -> dict | None:
+        """Nobody reacted. A turn waits `hold_seconds` for a reaction before it is felt on sensors
+        alone: silence is neutral, but only after we have really waited for it."""
         if self.pending is None:
+            return None
+        if not force and time.time() - self.pending.get("ts", 0) < self.hold_seconds:
             return None
         rec = self.pending
         self.pending = None

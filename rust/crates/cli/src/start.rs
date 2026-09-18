@@ -48,6 +48,14 @@ pub async fn start(state: PathBuf, config: PathBuf, as_user: Option<String>) -> 
         socket: paths.socket(),
         state: state.clone(),
     };
+    // Put the shipped commands in its bin directory, without touching any it has changed.
+    let home = home_for(&cfg);
+    match groow_core::skills::seed(&home, &shipped_skills()) {
+        Ok(put) if !put.is_empty() => eprintln!("  skills   installed {}", put.join(", ")),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("could not install the shipped skills: {e}"),
+    }
+
     match groow_core::spawn::lock_state(&state, agent_uid) {
         Ok(true) => tracing::info!("the state is readable and not writable by the mind"),
         Ok(false) => {}
@@ -129,6 +137,20 @@ pub async fn run_thought(id: String) -> anyhow::Result<()> {
         .await
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Where the skills that ship with the project live, next to the binary or in the checkout.
+fn shipped_skills() -> PathBuf {
+    if let Ok(p) = std::env::var("GROOW_SKILLS") {
+        return PathBuf::from(p);
+    }
+    for c in ["skills", "../skills", "../../skills"] {
+        let p = PathBuf::from(c);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    PathBuf::from("/usr/share/groow/skills")
 }
 
 fn home_for(cfg: &Config) -> PathBuf {

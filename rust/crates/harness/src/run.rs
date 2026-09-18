@@ -77,9 +77,9 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
     let mut history: Vec<Message> = Vec::with_capacity(ctx.window.len() + 2);
     history.push(Message::system(&ctx.system));
     history.extend(ctx.window.iter().cloned());
-    let incoming = Message::user(&ctx.framed);
-    history.push(incoming.clone());
-    client.append(&ctx.turn, ctx.epoch, &incoming).await?;
+    // The core has already recorded what came in, so that a turn which fails and is retried
+    // does not write the same message to the conversation twice.
+    history.push(Message::user(&ctx.framed));
 
     let schemas = tools::schemas(settings.surface);
     let mut seen_calls: Vec<String> = Vec::new();
@@ -403,11 +403,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_incoming_message_is_recorded_before_anything_is_generated() {
+    async fn the_turn_does_not_record_what_came_in() {
+        // The core writes that once, when it opens the turn. A retried turn that wrote it
+        // again would leave the same message in the conversation several times over.
         let (_out, log, _d) = run(vec!["ok".into()], 10).await;
         let appended = &log.lock().unwrap().appended;
-        assert_eq!(appended[0].role, "user");
-        assert_eq!(appended[0].text(), "what is in this folder?");
+        assert!(
+            !appended.iter().any(|m| m.role == "user"),
+            "the turn wrote the incoming message itself: {appended:?}"
+        );
     }
 
     #[tokio::test]

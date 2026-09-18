@@ -84,8 +84,7 @@ impl Core {
     /// cannot drift out of step with what is actually recorded.
     pub async fn run_scheduler(self: Arc<Self>) {
         loop {
-            let now = groow_proto::event::now();
-            let duty = match self.hub.next_duty(now).await {
+            let duty = match self.hub.next_duty().await {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::error!("the core stopped scheduling: {e}");

@@ -39,6 +39,9 @@ const WINDOW: usize = 30;
 /// How many events a subscriber may fall behind before it starts losing them.
 const SUBSCRIBER_DEPTH: usize = 512;
 
+/// How many times a signal may kill the process handling it before it is given up on.
+const MAX_ATTEMPTS: u32 = 3;
+
 type Answer<T> = oneshot::Sender<Result<T, WireError>>;
 
 /// What the scheduler should do next. The hub decides; the scheduler acts, because acting
@@ -73,7 +76,7 @@ pub enum Cmd {
     Emit { event: Event },
 
     /// The scheduler asking what to do, and taking ownership of the answer.
-    NextDuty { now: f64, reply: Answer<Duty> },
+    NextDuty { reply: Answer<Duty> },
     /// A harness process taking the turn it was spawned for.
     Claim { pid: u32, reply: Answer<TurnContext> },
     /// The turn writing a message into the conversation.
@@ -129,8 +132,8 @@ impl Handle {
     pub async fn emit(&self, event: Event) {
         self.tell(Cmd::Emit { event }).await
     }
-    pub async fn next_duty(&self, now: f64) -> Result<Duty, WireError> {
-        self.ask(|reply| Cmd::NextDuty { now, reply }).await
+    pub async fn next_duty(&self) -> Result<Duty, WireError> {
+        self.ask(|reply| Cmd::NextDuty { reply }).await
     }
     pub async fn claim(&self, pid: u32) -> Result<TurnContext, WireError> {
         self.ask(|reply| Cmd::Claim { pid, reply }).await
@@ -202,8 +205,19 @@ pub struct Hub {
     epoch: Epoch,
     /// Consecutive idle nudges, so the mind is left alone for longer the less is happening.
     idle_streak: u32,
+    /// Consecutive turns that ended badly, and when the last one did. A brain that is down
+    /// must not turn into a spawn loop.
+    fail_streak: u32,
+    last_failure: f64,
     last_human: f64,
     running: bool,
+    /// The one source of time in the core.
+    ///
+    /// Everything that compares two moments reads it, so a test can move time without any
+    /// part of the hub disagreeing with another about what "now" is. Taking the time from a
+    /// caller for one decision and from the system clock for another is how a backoff quietly
+    /// becomes permanent.
+    clock: Box<dyn Fn() -> f64 + Send>,
 }
 
 /// How a signal is framed before the mind reads it. Only a person speaks to it unframed.
@@ -221,6 +235,11 @@ pub fn frame(kind: SignalKind, text: &str, meta: &Value) -> String {
             "[no answer came] {text} Your mentor's attention is limited; ask less, and ask what matters."),
         SignalKind::Idle => text.to_string(),
     }
+}
+
+/// How long to wait after a turn has failed, doubling with each consecutive failure.
+pub fn backoff(streak: u32) -> f64 {
+    (2f64.powi(streak.min(6) as i32)).min(60.0)
 }
 
 /// The gap before the next idle nudge, doubling each time nothing comes of it.
@@ -245,8 +264,11 @@ impl Hub {
             active: None,
             epoch: Epoch(0),
             idle_streak: 0,
+            fail_streak: 0,
+            last_failure: 0.0,
             last_human: groow_proto::event::now(),
             running: true,
+            clock: Box::new(groow_proto::event::now),
             cfg,
             paths,
         })
@@ -280,8 +302,8 @@ impl Hub {
                 send(reply, Ok(rx));
             }
             Cmd::Emit { event } => self.fanout(event),
-            Cmd::NextDuty { now, reply } => {
-                let d = self.next_duty(now);
+            Cmd::NextDuty { reply } => {
+                let d = self.next_duty();
                 send(reply, d);
             }
             Cmd::Claim { pid, reply } => {
@@ -357,7 +379,7 @@ impl Hub {
 
     // ------------------------------------------------------------ introspection
     fn hello(&self, who: &str) -> Value {
-        let now = groow_proto::event::now();
+        let now = self.now();
         json!({
             "birth": {
                 "id": self.birth.id, "name": self.birth.name, "born": self.birth.born,
@@ -372,7 +394,7 @@ impl Hub {
     }
 
     fn status(&self) -> Value {
-        let now = groow_proto::event::now();
+        let now = self.now();
         let (pain, pleasure) = self.db.mood(now, self.cfg.mood_halflife_s).unwrap_or((0.0, 0.0));
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
@@ -396,13 +418,35 @@ impl Hub {
     }
 
     // ------------------------------------------------------------ scheduling
+    /// The current time, from the hub's own clock.
+    pub fn now(&self) -> f64 {
+        (self.clock)()
+    }
+
+    /// Replace the clock. For tests, so time can be moved deliberately.
+    #[doc(hidden)]
+    pub fn set_clock(&mut self, f: Box<dyn Fn() -> f64 + Send>) {
+        self.clock = f;
+        self.last_human = self.now();
+    }
+
     /// What to do next. Alarms and expiries are folded into the queue here, so the scheduler
     /// itself holds no policy and cannot drift out of step with the state.
-    fn next_duty(&mut self, now: f64) -> Result<Duty, WireError> {
+    fn next_duty(&mut self) -> Result<Duty, WireError> {
+        let now = self.now();
         if self.active.is_some() {
             // A turn is already running. Say so with a short wait rather than queueing a
             // second one; two conscious turns at once is the thing this design forbids.
             return Ok(Duty::Idle(0.5));
+        }
+        // After a failure, wait before trying again, longer each time. Without this, a brain
+        // that is down becomes a loop that spawns a process as fast as the machine allows.
+        if self.fail_streak > 0 {
+            let wait = backoff(self.fail_streak);
+            let since = now - self.last_failure;
+            if since < wait {
+                return Ok(Duty::Idle((wait - since).min(30.0)));
+            }
         }
 
         for a in self.schedule.due(now).map_err(other)? {
@@ -459,9 +503,20 @@ impl Hub {
 
     /// Open a turn for a signal. The epoch moves, which invalidates anything still holding the
     /// previous turn's credentials.
+    ///
+    /// What came in is written to the journal here, once, rather than by the process that
+    /// handles it. A turn that fails and is retried would otherwise record the same message
+    /// again on every attempt.
     fn begin(&mut self, sig: Signal, now: f64) {
         self.epoch = self.epoch.next();
         let id = turn_id(now);
+        let mut incoming = Message::user(frame(sig.kind, &sig.text, &sig.meta));
+        incoming.kind = Some(sig.kind.as_str().to_string());
+        if sig.attempts == 0 {
+            if let Err(e) = self.journal.append_message(&incoming) {
+                tracing::error!("could not record what came in: {e}");
+            }
+        }
         let _ = self.db.turn_started(&id, sig.kind.as_str(), now);
         self.fanout(Event::new(EventName::TurnStart, json!({
             "who": if sig.kind.is_human() { "user" } else { "signal" },
@@ -479,7 +534,7 @@ impl Hub {
     /// refused so a stray process cannot steal a turn already in progress.
     fn claim(&mut self, pid: u32) -> Result<TurnContext, WireError> {
         let window = restore_window(&self.journal, WINDOW).map_err(io)?;
-        let birth_line = self.birth.line(groow_proto::event::now());
+        let birth_line = self.birth.line(self.now());
         let system = self.identity
             .system_prompt(&birth_line, self.cfg.identity_in_prompt)
             .map_err(io)?;
@@ -534,10 +589,12 @@ impl Hub {
 
     fn finish(&mut self, out: TurnOutcome) -> Result<Value, WireError> {
         self.guard(&out.turn, out.epoch)?;
-        let now = groow_proto::event::now();
+        let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
         let _ = self.db.turn_ended(
             &a.id, now, now - a.started, out.tools_used, a.rounds, &out.flags, "ok");
+        let _ = self.mailbox.ack(&a.signal);
+        self.fail_streak = 0;
 
         // Seeing what the mind said is the only way a question gets closed by conversation,
         // so the answer is matched here rather than anywhere the mind could reach.
@@ -578,13 +635,30 @@ impl Hub {
         let Some(a) = self.active.as_ref().filter(|a| a.id == turn).cloned() else { return };
         self.active = None;
         self.epoch = self.epoch.next();
-        let now = groow_proto::event::now();
+        let now = self.now();
         let _ = self.db.turn_ended(&a.id, now, now - a.started, 0, a.rounds, &["abandoned".into()], why);
-        // A person's message is worth retrying; a nudge is not worth looping on.
-        if a.kind.is_human() {
-            let _ = self.mailbox.push(&a.signal);
+        self.fail_streak = self.fail_streak.saturating_add(1);
+        self.last_failure = now;
+
+        // A person's message is worth another try; a nudge is not worth looping on. Either
+        // way there is a limit, so a message that kills every process it touches is
+        // eventually set down rather than retried forever.
+        let give_up = a.signal.attempts + 1 >= MAX_ATTEMPTS;
+        if a.kind.is_human() && !give_up {
+            let _ = self.mailbox.requeue(&a.signal);
         } else {
             let _ = self.mailbox.ack(&a.signal);
+            if a.kind.is_human() {
+                let note = Message::assistant(format!(
+                    "I could not answer that: {why}. It has been tried {} times and I am setting it down.",
+                    a.signal.attempts + 1
+                ));
+                let _ = self.journal.append_message(&note);
+                self.fanout(Event::new(EventName::TurnEnd, json!({
+                    "turn": a.id, "kind": a.kind.as_str(), "final": note.text(),
+                    "tools_used": 0, "seconds": now - a.started, "flags": ["abandoned"],
+                })));
+            }
         }
         self.fanout(Event::new(EventName::Log, json!({
             "level": "error", "text": format!("turn {} ended badly: {why}", a.id),
@@ -599,7 +673,7 @@ impl Hub {
         let sig = Signal::new(kind, text).with_meta(meta);
         self.mailbox.push(&sig).map_err(io)?;
         if kind.is_human() {
-            self.last_human = groow_proto::event::now();
+            self.last_human = self.now();
             self.idle_streak = 0;
         }
         Ok(json!({"ok": true, "queued": kind.as_str()}))
@@ -610,7 +684,7 @@ impl Hub {
             return Err(WireError::BadArg("a question needs to say something".into()));
         }
         let r = self.inbox.add(question, context).map_err(io)?;
-        let _ = self.db.question_asked(&r.id, groow_proto::event::now());
+        let _ = self.db.question_asked(&r.id, self.now());
         self.fanout(Event::new(EventName::Question, json!({
             "id": r.id, "status": "open", "text": question,
         })));
@@ -690,7 +764,7 @@ impl Hub {
             }
             "clear" => Ok(json!({"cleared": self.inbox.clear().map_err(io)?})),
             "answer" => {
-                let now = groow_proto::event::now();
+                let now = self.now();
                 match self.inbox.resolve(id, QStatus::Answered, answer).map_err(io)? {
                     Some(q) => {
                         let _ = self.db.question_resolved(&q.id, now, "answered", QStatus::Answered.reward());
@@ -700,7 +774,7 @@ impl Hub {
                 }
             }
             "drop" => {
-                let now = groow_proto::event::now();
+                let now = self.now();
                 match self.inbox.resolve(id, QStatus::Dropped, "").map_err(io)? {
                     Some(q) => {
                         let _ = self.db.question_resolved(&q.id, now, "dropped", QStatus::Dropped.reward());
@@ -790,10 +864,41 @@ pub fn hub_for_test(dir: &std::path::Path) -> anyhow::Result<Hub> {
 mod tests {
     use super::*;
 
+    /// A clock the test moves by hand, shared with the hub.
+    #[derive(Clone)]
+    struct Clock(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl Clock {
+        fn new(at: f64) -> Clock {
+            Clock(std::sync::Arc::new(std::sync::atomic::AtomicU64::new((at * 1000.0) as u64)))
+        }
+        fn set(&self, at: f64) {
+            self.0.store((at * 1000.0) as u64, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn advance(&self, by: f64) {
+            self.set(self.read() + by);
+        }
+        fn read(&self) -> f64 {
+            self.0.load(std::sync::atomic::Ordering::SeqCst) as f64 / 1000.0
+        }
+        fn install(&self, h: &mut Hub) {
+            let c = self.clone();
+            h.set_clock(Box::new(move || c.read()));
+        }
+    }
+
     fn hub() -> (Hub, tempfile::TempDir) {
         let d = tempfile::tempdir().unwrap();
         let h = hub_for_test(d.path()).unwrap();
         (h, d)
+    }
+
+    fn hub_at(at: f64) -> (Hub, Clock, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let mut h = hub_for_test(d.path()).unwrap();
+        let c = Clock::new(at);
+        c.install(&mut h);
+        (h, c, d)
     }
 
     fn take<T>(f: impl FnOnce(Answer<T>) -> Cmd, h: &mut Hub) -> Result<T, WireError> {
@@ -806,7 +911,7 @@ mod tests {
     fn a_signal_becomes_a_turn_and_the_turn_can_be_claimed() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        let duty = take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         assert!(matches!(duty, Duty::Turn(_)));
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         assert_eq!(ctx.text, "hello");
@@ -821,8 +926,8 @@ mod tests {
         for i in 0..3 {
             take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
         }
-        assert!(matches!(take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap(), Duty::Turn(_)));
-        let second = take(|reply| Cmd::NextDuty { now: 1001.0, reply }, &mut h).unwrap();
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_)));
+        let second = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         assert!(matches!(second, Duty::Idle(_)), "a second turn must not open while one runs");
     }
 
@@ -830,7 +935,7 @@ mod tests {
     fn a_turn_can_only_be_claimed_once() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "hi".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         let again = take(|reply| Cmd::Claim { pid: 2, reply }, &mut h);
         assert!(matches!(again, Err(WireError::Busy(_))), "a stray process must not steal a turn");
@@ -846,7 +951,7 @@ mod tests {
     fn a_write_from_a_finished_turn_is_refused() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "hi".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish {
             outcome: Box::new(TurnOutcome {
@@ -865,7 +970,7 @@ mod tests {
     fn a_write_from_a_previous_life_is_refused() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "one".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, old_epoch) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn: turn.clone(), why: "process died".into() });
 
@@ -877,12 +982,13 @@ mod tests {
 
     #[test]
     fn an_abandoned_human_message_is_tried_again() {
-        let (mut h, _d) = hub();
+        let (mut h, clock, _d) = hub_at(1000.0);
         take(|reply| Cmd::Say { text: "please answer".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, _) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn, why: "crash".into() });
-        let duty = take(|reply| Cmd::NextDuty { now: 1001.0, reply }, &mut h).unwrap();
+        clock.advance(100.0);
+        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
             Duty::Turn(s) => assert_eq!(s.text, "please answer"),
             other => panic!("a person's message was dropped: {other:?}"),
@@ -893,17 +999,17 @@ mod tests {
     fn an_abandoned_nudge_is_not_retried_forever() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "be curious".into(), kind: SignalKind::Idle, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, _) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn, why: "crash".into() });
-        assert!(matches!(take(|reply| Cmd::NextDuty { now: 1001.0, reply }, &mut h).unwrap(), Duty::Idle(_)));
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)));
     }
 
     #[test]
     fn signals_that_are_not_from_a_person_are_framed() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "the kettle".into(), kind: SignalKind::Alarm, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         assert!(ctx.framed.starts_with("[an alarm you set earlier]"));
         assert_eq!(ctx.text, "the kettle", "the raw text is kept alongside");
@@ -913,7 +1019,7 @@ mod tests {
     fn the_window_comes_back_on_the_next_turn() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "what is a river".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Append { turn: turn.clone(), epoch, msg: Box::new(Message::user("what is a river")), reply }, &mut h).unwrap();
         take(|reply| Cmd::Append { turn: turn.clone(), epoch, msg: Box::new(Message::assistant("water going downhill")), reply }, &mut h).unwrap();
@@ -922,7 +1028,7 @@ mod tests {
         }), reply }, &mut h).unwrap();
 
         take(|reply| Cmd::Say { text: "and a lake".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1002.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         assert_eq!(ctx.window.len(), 2, "the previous exchange should be there");
         assert_eq!(ctx.window[0].text(), "what is a river");
@@ -946,7 +1052,7 @@ mod tests {
         let qid = r["id"].as_str().unwrap().to_string();
 
         take(|reply| Cmd::Say { text: "learn about rivers".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
             turn, epoch, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
@@ -963,7 +1069,7 @@ mod tests {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Ask { question: "what next?".into(), context: String::new(), reply }, &mut h).unwrap();
         take(|reply| Cmd::Say { text: "tick".into(), kind: SignalKind::Alarm, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
             turn, epoch, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
@@ -993,7 +1099,7 @@ mod tests {
         let r = take(|reply| Cmd::Think { goal: "look into rivers".into(), max_steps: 5, reply }, &mut h).unwrap();
         let id = r["id"].as_str().unwrap().to_string();
         take(|reply| Cmd::ThoughtAction { action: "focus".into(), id: id.clone(), text: "found something".into(), reply }, &mut h).unwrap();
-        let duty = take(|reply| Cmd::NextDuty { now: 1000.0, reply }, &mut h).unwrap();
+        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
             Duty::Turn(s) => {
                 assert_eq!(s.kind, SignalKind::Focus);
@@ -1010,7 +1116,7 @@ mod tests {
             action: "add".into(), text: "read the news".into(), when: "in 0s".into(),
             every: String::new(), id: String::new(), by: "groow".into(), reply,
         }, &mut h).unwrap();
-        let duty = take(|reply| Cmd::NextDuty { now: groow_proto::event::now() + 1.0, reply }, &mut h).unwrap();
+        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
             Duty::Turn(s) => assert_eq!(s.kind, SignalKind::Alarm),
             other => panic!("the alarm did not fire: {other:?}"),
@@ -1025,7 +1131,7 @@ mod tests {
         for i in 0..3 {
             take(|reply| Cmd::Ask { question: format!("q{i}"), context: String::new(), reply }, &mut h).unwrap();
         }
-        let duty = take(|reply| Cmd::NextDuty { now: groow_proto::event::now() + 10.0, reply }, &mut h).unwrap();
+        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
             Duty::Turn(s) => {
                 assert_eq!(s.kind, SignalKind::Expired);
@@ -1033,6 +1139,89 @@ mod tests {
             }
             other => panic!("expiry did not reach the mind: {other:?}"),
         }
+    }
+
+    #[test]
+    fn what_came_in_is_recorded_once_even_when_the_turn_is_retried() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "answer me".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        for _ in 0..2 {
+            clock.advance(200.0);
+            take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+            let (turn, _) = h.active_turn().expect("a turn should be open");
+            h.handle(Cmd::Abandon { turn, why: "the brain is down".into() });
+        }
+        let recs = h.journal.tail(50).unwrap();
+        let mine = recs.iter().filter(|r| r["content"] == "answer me").count();
+        assert_eq!(mine, 1, "a retried turn duplicated the message: {recs:?}");
+    }
+
+    #[test]
+    fn a_failing_turn_is_given_up_on_rather_than_retried_forever() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "this will fail".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        let mut attempts = 0;
+        for _ in 0..10 {
+            clock.advance(1000.0);
+            match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+                Duty::Turn(_) => {
+                    attempts += 1;
+                    let (turn, _) = h.active_turn().unwrap();
+                    h.handle(Cmd::Abandon { turn, why: "the brain is down".into() });
+                }
+                Duty::Idle(_) => {}
+                other => panic!("unexpected duty: {other:?}"),
+            }
+        }
+        assert_eq!(attempts, 3, "it should try a few times and then set it down");
+        let recs = h.journal.tail(50).unwrap();
+        let said = recs.iter().any(|r| r["content"].as_str().unwrap_or("").contains("setting it down"));
+        assert!(said, "a person should be told it gave up: {recs:?}");
+    }
+
+    #[test]
+    fn a_failure_is_waited_out_before_trying_again() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        let (turn, _) = h.active_turn().unwrap();
+        h.handle(Cmd::Abandon { turn, why: "crash".into() });
+
+        // Immediately afterwards there is nothing to do but wait.
+        clock.advance(0.5);
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+            Duty::Idle(secs) => assert!(secs > 0.0),
+            other => panic!("it went straight back into a failing turn: {other:?}"),
+        }
+        // Once the wait is over it tries again.
+        clock.advance(100.0);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_)));
+    }
+
+    #[test]
+    fn the_wait_after_a_failure_grows_and_is_capped() {
+        let gaps: Vec<f64> = (1..8).map(backoff).collect();
+        assert!(gaps.windows(2).all(|w| w[1] >= w[0]), "{gaps:?}");
+        assert_eq!(gaps[0], 2.0);
+        assert!(*gaps.last().unwrap() <= 60.0, "the wait must not grow without limit");
+    }
+
+    #[test]
+    fn a_turn_that_finishes_clears_the_failure_streak() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "one".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        let (turn, _) = h.active_turn().unwrap();
+        h.handle(Cmd::Abandon { turn, why: "crash".into() });
+        assert_eq!(h.fail_streak, 1);
+
+        clock.advance(100.0);
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        let (turn, epoch) = h.active_turn().unwrap();
+        take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
+            turn, epoch, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+        }), reply }, &mut h).unwrap();
+        assert_eq!(h.fail_streak, 0, "one good turn should clear the backoff");
     }
 
     #[test]

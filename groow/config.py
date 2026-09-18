@@ -55,7 +55,8 @@ class Config:
     # --- curiosity (idle behaviour) -----------------------------------------
     curiosity: bool = True
     curiosity_mode: str = "agentic"   # "agentic": Groow reads the news through its tools; "pipeline": fixed drill
-    sense_idle_minutes: float = 10.0  # idle time in chat before a curiosity pass
+    sense_idle_minutes: float = 10.0  # idle time before the first curiosity pass
+    sense_idle_max_minutes: float = 90.0  # ... doubling while nobody is there, up to this
     sense_items: int = 6              # news items per pass
     sense_passes: int = 3             # gradient steps per learned fact
     feeds: list[str] = field(default_factory=list)   # empty = groow.senses.news.DEFAULT_FEEDS
@@ -74,6 +75,11 @@ class Config:
     # --- processes -----------------------------------------------------------------
     turn_timeout: float = 900.0       # a turn process is killed past this
     thought_timeout: float = 3600.0   # so is an inner thought
+
+    # --- the mentor's attention ----------------------------------------------------
+    inbox_max_open: int = 5           # open questions at once; asking when full drops the oldest
+    inbox_expiry_hours: float = 48.0  # a question nobody answers expires, and that is a late cost
+    hold_seconds: float = 300.0       # how long a turn waits for a reaction before it is felt on sensors alone
 
     # --- limbic (how things felt) ------------------------------------------------
     judge: str = "laya"               # laya | gliclass | none: the frozen model that judges reactions and outcomes

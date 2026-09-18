@@ -28,6 +28,9 @@ pub struct Signal {
     pub ts: f64,
     #[serde(default)]
     pub meta: Value,
+    /// How many times a process has taken this signal and failed to finish it.
+    #[serde(default)]
+    pub attempts: u32,
     /// The file this came from, so it can be acknowledged. Not part of the stored record.
     #[serde(skip)]
     pub token: Option<PathBuf>,
@@ -41,6 +44,7 @@ impl Signal {
             text: text.into(),
             ts: groow_proto::event::now(),
             meta: json!({}),
+            attempts: 0,
             token: None,
         }
     }
@@ -181,14 +185,16 @@ impl Mailbox {
         Ok(())
     }
 
-    /// Put a claimed signal back at the front of the queue, unhandled.
+    /// Put a claimed signal back in the queue for another attempt, counting the failure.
+    ///
+    /// The count is written back, so a message that keeps killing its process is eventually
+    /// given up on rather than retried until the end of time.
     pub fn requeue(&self, sig: &Signal) -> std::io::Result<()> {
-        if let Some(t) = &sig.token {
-            if let Some(name) = t.file_name() {
-                let _ = fs::rename(t, self.new.join(name));
-            }
-        }
-        Ok(())
+        let mut again = sig.clone();
+        again.attempts += 1;
+        again.token = None;
+        self.push(&again)?;
+        self.ack(sig)
     }
 
     /// Remove every waiting signal of one kind. Used to collapse repeated idle nudges.
@@ -314,13 +320,28 @@ mod tests {
     }
 
     #[test]
-    fn a_requeued_signal_is_handed_out_again() {
+    fn a_requeued_signal_is_handed_out_again_and_remembers_it_failed() {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
         mb.push(&Signal::new(SignalKind::User, "retry me")).unwrap();
         let s = mb.pop().unwrap().unwrap();
+        assert_eq!(s.attempts, 0);
         mb.requeue(&s).unwrap();
-        assert_eq!(mb.pop().unwrap().unwrap().text, "retry me");
+        let again = mb.pop().unwrap().unwrap();
+        assert_eq!(again.text, "retry me");
+        assert_eq!(again.attempts, 1, "a failure that is not counted is a failure repeated forever");
+        mb.requeue(&again).unwrap();
+        assert_eq!(mb.pop().unwrap().unwrap().attempts, 2);
+    }
+
+    #[test]
+    fn requeueing_does_not_leave_the_old_copy_behind() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Mailbox::open(d.path()).unwrap();
+        mb.push(&Signal::new(SignalKind::User, "once")).unwrap();
+        let s = mb.pop().unwrap().unwrap();
+        mb.requeue(&s).unwrap();
+        assert_eq!(mb.len().unwrap(), 1, "a retry must not multiply the message");
     }
 
     #[test]

@@ -8,5 +8,6 @@ pub mod db;
 pub mod hub;
 pub mod peer;
 pub mod server;
+pub mod skills;
 pub mod spawn;
 pub mod store;

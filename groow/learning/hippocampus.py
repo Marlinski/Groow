@@ -56,6 +56,7 @@ class Hippocampus:
         self.activity.parent.mkdir(parents=True, exist_ok=True)
         self.held_path = Path(cfg.state) / "limbic" / "held.json"
         self.held_path.parent.mkdir(parents=True, exist_ok=True)
+        self.awaiting_path = Path(cfg.state) / "limbic" / "awaiting.json"
         self.state_path = Path(cfg.state) / "hippocampus.json"
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {"night_ts": 0.0, "activity_line": 0}
 
@@ -139,11 +140,58 @@ class Hippocampus:
                                          "completion": completion, "reward": reward, "group": group,
                                          "tags": [tag], "by": "hippocampus.nap"})
             out["decisions"] += 1
+            self._await_outcome(m, prompts.get(i, []), completion, turn)
         return out
 
-    def flush(self) -> dict:
-        """Nobody is going to react (idle, or the session is ending): finalise on sensors alone."""
-        rec = self.limbic.flush_pending() if self.limbic else None
+    # ---- decisions whose result comes much later (a question to the mentor) ----------------
+    def _awaiting(self) -> dict:
+        if not self.awaiting_path.exists():
+            return {}
+        try:
+            return json.loads(self.awaiting_path.read_text())
+        except json.JSONDecodeError:
+            return {}
+
+    def _await_outcome(self, msg: dict, prompt: list, completion: str, turn: list) -> None:
+        """An `ask` call is judged by whether it is ever answered, which is not known yet. Keep what
+        would be needed to credit it, and wait."""
+        calls = [c for c in msg.get("tool_calls") or [] if c["function"]["name"] == "ask"]
+        if not calls:
+            return
+        qid = None
+        for j, t in enumerate(turn):
+            if t.get("role") == "tool":
+                try:
+                    qid = json.loads(t.get("content") or "{}").get("id")
+                except json.JSONDecodeError:
+                    qid = None
+                if qid:
+                    break
+        if not qid:
+            return
+        pending = self._awaiting()
+        pending[qid] = {"prompt": prompt, "completion": completion, "ts": time.time()}
+        self.awaiting_path.parent.mkdir(parents=True, exist_ok=True)
+        self.awaiting_path.write_text(json.dumps(pending, ensure_ascii=False, default=str)[:400000])
+
+    def credit_question(self, qid: str, status: str, reward: float) -> dict:
+        """The late result of asking: answered, expired, or dropped for a newer question. The decision
+        to ask is trained on that, long after the turn is over."""
+        pending = self._awaiting()
+        rec = pending.pop(qid, None)
+        if rec is None:
+            return {"credited": False}
+        self.awaiting_path.write_text(json.dumps(pending, ensure_ascii=False, default=str))
+        self.sets.append("actions", {"kind": "pg", "prompt": rec["prompt"], "completion": rec["completion"],
+                                     "reward": float(reward), "group": f"question:{qid}",
+                                     "tags": ["ask", status], "by": "hippocampus.question"})
+        self.memory.log("question_credited", id=qid, status=status, reward=reward,
+                        waited_s=round(time.time() - rec["ts"], 1), step=self.brain.meta["steps"])
+        return {"credited": True, "status": status, "reward": reward}
+
+    def flush(self, force: bool = False) -> dict:
+        """Nobody is going to react: finalise on sensors alone, once the hold has really elapsed."""
+        rec = self.limbic.flush_pending(force=force) if self.limbic else None
         if rec is None:
             return {"released": 0}
         return {"released": 1, **self._release(float(rec.get("valence") or 0.0))}

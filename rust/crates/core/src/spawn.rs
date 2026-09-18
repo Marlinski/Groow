@@ -50,7 +50,15 @@ impl Spawner {
             .current_dir(&self.home)
             .env_clear()
             .env("HOME", &self.home)
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            // Its own commands come first: a skill it writes shadows anything shipped, and
+            // it can reach its skills by name from any directory.
+            .env(
+                "PATH",
+                format!(
+                    "{}:/usr/local/bin:/usr/bin:/bin",
+                    crate::skills::bin_dir(&self.home).display()
+                ),
+            )
             .env("GROOW_SOCKET", &self.socket)
             .env("GROOW_STATE", &self.state)
             // The mark that tells the command line it is being run by the mind itself, so that
@@ -159,6 +167,21 @@ mod tests {
         } else {
             assert!(text.contains("not root"), "it must admit the weaker guarantee: {text}");
         }
+    }
+
+    #[tokio::test]
+    async fn its_own_commands_come_first_on_the_path() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = spawner(&d, None);
+        s.exe = PathBuf::from("/usr/bin/env");
+        let out = s.base(&[]).output().await.unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let path = text.lines().find(|l| l.starts_with("PATH=")).unwrap_or("");
+        assert!(path.contains(".local/bin"), "its skills are not reachable: {path}");
+        assert!(
+            path.find(".local/bin") < path.find("/usr/bin"),
+            "a skill it wrote should shadow anything shipped: {path}"
+        );
     }
 
     #[tokio::test]

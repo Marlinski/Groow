@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Tic-tac-toe: play it yourself (`tictactoe new`, `tictactoe move 5`), or `tictactoe play` self-play in bulk; `tictactoe eval` measures you.
 How a game goes is read from what the commands print; you never annotate it yourself."""
 import json
@@ -14,17 +15,37 @@ SYSTEM = ("You are playing tic-tac-toe. Cells are numbered 1-9 left to right, to
           "Answer with the number of the cell you play, and nothing else.")
 
 
-def _url():
-    p = Path(os.environ.get("GROOW_STATE", "state")) / "groow.url"
-    return p.read_text().strip() if p.exists() else "http://127.0.0.1:7373"
+def _brain():
+    return os.environ.get("GROOW_BRAIN", "http://127.0.0.1:7374")
 
 
-def _complete(convs, max_new_tokens=6, temperature=1.0):
-    req = urllib.request.Request(_url() + "/complete", data=json.dumps(
-        {"messages": convs, "max_new_tokens": max_new_tokens, "temperature": temperature}).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=600) as r:
-        return json.loads(r.read())["completions"]
+def _complete(convs, max_new_tokens=12, temperature=1.0):
+    """Generate one answer per conversation. The brain serves one at a time, so these go in
+    order; the loop is deliberately simple because a game is background work."""
+    out = []
+    for messages in convs:
+        req = urllib.request.Request(
+            _brain() + "/generate",
+            data=json.dumps({
+                "messages": messages, "tools": [], "max_new_tokens": max_new_tokens,
+                "temperature": temperature, "top_p": 0.95, "top_k": 40,
+                "enable_thinking": False, "priority": 4,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        text = ""
+        with urllib.request.urlopen(req, timeout=600) as r:
+            for line in r:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                if d.get("done"):
+                    text = d.get("text", text)
+                elif "error" in d:
+                    raise RuntimeError(d["error"])
+        out.append(text)
+    return out
 
 
 def _winner(b):
@@ -209,5 +230,18 @@ def main(argv: list) -> dict:
     return {"error": f"unknown action {argv[0]}"}
 
 
-CLI = {"tictactoe": "main"}
 TESTS = [("tictactoe", {"argv": ["--selftest"]}, {"ok": True})]
+
+
+def _run():
+    import sys
+    out = main(sys.argv[1:])
+    if isinstance(out, dict) and "text" in out and len(out) == 1:
+        print(out["text"])
+    else:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    raise SystemExit(0 if not (isinstance(out, dict) and out.get("error")) else 1)
+
+
+if __name__ == "__main__":
+    _run()

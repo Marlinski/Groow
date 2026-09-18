@@ -20,6 +20,10 @@ REACTION_Q = {"reaction": {"type": "choice", "instructions": "How did the person
                            "criteria": {"pleased": "satisfied, thanks, praise, accepts the answer",
                                         "neutral": "moves on, asks something else, no judgement",
                                         "displeased": "corrects, complains, repeats the question, says it is wrong"}}}
+ANSWERS_Q = {"answers": {"type": "choice", "instructions": "Does the reply answer the question that was asked?",
+                         "criteria": {"answers": "it gives the information or the decision that was asked for",
+                                      "unrelated": "it is about something else",
+                                      "refuses": "it declines, defers, or says it does not know"}}}
 OUTCOME_Q = {"outcome": {"type": "choice", "instructions": "How did this command turn out?",
                          "criteria": {"useful": "it produced the information or effect that was wanted",
                                       "nothing": "it ran but produced nothing useful",
@@ -36,6 +40,9 @@ class NullJudge:
         return None
 
     def outcome(self, command: str, result: str) -> float | None:
+        return None
+
+    def answers(self, question: str, reply: str) -> float | None:
         return None
 
 
@@ -91,6 +98,13 @@ class LayaJudge:
         return self._choice({"command": command[:500], "result": (result or "")[:1200]},
                             OUTCOME_Q, "outcome", "useful", "failed")
 
+    def answers(self, question: str, reply: str) -> float | None:
+        """Did this reply answer that question? Used to close a question in the mentor's inbox."""
+        if not (question or "").strip() or not (reply or "").strip():
+            return None
+        return self._choice({"question_asked": question[:800], "reply": reply[:1200]},
+                            ANSWERS_Q, "answers", "answers", "unrelated")
+
 
 class GLiClassJudge:
     """A zero-shot GLiClass scorer as the judge (smaller, noisier than Laya)."""
@@ -134,6 +148,11 @@ class GLiClassJudge:
     def outcome(self, command: str, result: str) -> float | None:
         i, p = self._ask(f"Groow ran: {command[:400]}\nThe result was: {result[:1200]}", self.OUTCOME)
         return None if p < self.min_confidence else round((0.5 if i == 0 else -0.5) * p, 3)
+
+    def answers(self, question: str, reply: str) -> float | None:
+        i, p = self._ask(f"Question: {question[:600]}\nReply: {reply[:800]}",
+                         ["the reply answers the question", "the reply is about something else"])
+        return None if p < self.min_confidence else round((0.6 if i == 0 else -0.6) * p, 3)
 
 
 def make_judge(kind: str = "laya", **kw):

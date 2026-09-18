@@ -185,6 +185,7 @@ groow/
   mind/                the scheduler and the records it keeps
     clock.py           Schedule: alarms and periodic tasks (state/schedule.json)
     lock.py            Conscious: one conscious turn at a time (state/conscious.lock)
+    inbox.py           Inbox: the mentor's attention as a budget, with expiry and outcomes
     signals.py         Priority, Signal, Mailbox (the input queue on disk)
     thoughts.py        Thought, ThoughtManager: concurrent coroutine run-loops with own traces
     mind.py            Mind: the scheduler loop; frames signals into the main conversation

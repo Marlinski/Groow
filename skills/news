@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """News: `news [--items N]` prints fresh headlines from your feeds (state/senses/feeds.txt), remembering what you have seen."""
 import hashlib
 import html
@@ -135,5 +136,18 @@ def main(argv: list) -> dict:
     return {"text": "\n".join(lines)}
 
 
-CLI = {"news": "main"}
 TESTS = [("news", {"argv": ["--selftest"]}, {"ok": True})]
+
+
+def _run():
+    import sys
+    out = main(sys.argv[1:])
+    if isinstance(out, dict) and "text" in out and len(out) == 1:
+        print(out["text"])
+    else:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    raise SystemExit(0 if not (isinstance(out, dict) and out.get("error")) else 1)
+
+
+if __name__ == "__main__":
+    _run()
