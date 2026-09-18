@@ -53,6 +53,7 @@ class Mind:
 
     # ------------------------------------------------------------------ the loop
     on_error = None      # callable(kind, traceback) -> None, set by the app (records incidents)
+    idle_nap = None      # async callable() -> dict, set by the app: consume pending training samples when idle
 
     async def run(self) -> None:
         while self.alive:
@@ -61,6 +62,10 @@ class Mind:
                 wait = max(1.0, self.idle_seconds - (time.time() - self.last_human))
             sig = await self.queue.pop(timeout=wait)
             if sig is None:
+                if self.idle_nap is not None:
+                    r = self.idle_nap()
+                    if asyncio.iscoroutine(r):
+                        await r
                 if self.idle_seconds and time.time() - self.last_human >= self.idle_seconds and not self.queue.has():
                     self.queue.push(Priority.IDLE, "idle", self.on_idle_text())
                     self.last_human = time.time()        # one impulse per idle period

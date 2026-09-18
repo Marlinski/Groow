@@ -37,14 +37,8 @@ class Config:
     context_messages_kept: int = 8  # how much conversation context is stored with each episode
 
     # --- active learning --------------------------------------------------
-    memorize_target_loss: float = 0.15
-    memorize_max_steps: int = 60
-    play_batch: int = 16          # parallel episodes per policy-gradient step
-    play_temperature: float = 1.0
-    play_max_new_tokens: int = 12
-    play_explore: float = 0.25    # fraction of decisions replaced by a random legal action (exploration)
-    probe_every: int = 25         # auto-measure drift on the fixed probes every N learning steps
-    allow_invented_games: bool = False   # lets the model exec() its own game code. Sandbox first.
+    nap_max_samples: int = 8          # training samples consumed in the nap after each turn (the rest at night)
+    idle_nap_max_samples: int = 32     # consumed when nobody is talking
 
     # --- sleep (consolidation policy) --------------------------------------
     sleep_every_steps: int = 300      # a night is due after this many learning steps (0 = manual only)

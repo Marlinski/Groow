@@ -6,9 +6,9 @@
   groow status | stop | doctor     snapshot | sleep | static health check
 
   operations on the running Groow (also what Groow runs in its own shell):
-  groow play <game> | games | thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name>
-  groow learn "q" "a" [--source S] | quiz "q" [--expected A] | stats | identity | inbox [--clear] | incidents | patch …
-  mentor only: groow sleep | probe | grow --rank N | rollback | consolidate
+  groow thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name> | training | stats
+  groow identity | inbox [--clear] | incidents | patch …   (games and drills are skills: tictactoe, arithmetic, news, web)
+  mentor only: groow learn "q" "a" | quiz "q" [--expected A] | train | hippocampus | sleep | probe | grow --rank N | rollback | consolidate
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class App:
         transformers.logging.disable_progress_bar()
         from .brain import Brain, GenServer, ServedBrain
         from .memory import Memory, Journal
-        from .learning import Learner, SleepPolicy, Curiosity, Identity
+        from .learning import Learner, SleepPolicy, Curiosity, Identity, TrainingSets, Trainer, Hippocampus
         from .senses import NewsSense
         from .mind import InputQueue, ThoughtManager
         from .birth import load_or_create
@@ -60,9 +60,12 @@ class App:
         self.memory = Memory(cfg.state)
         self.journal = Journal(cfg.state / "main", max_lines=1000)
         self.learner = Learner(self.brain, self.memory, cfg)
+        self.sets = TrainingSets(cfg.state / "training")
+        self.trainer = Trainer(self.brain, self.memory, self.learner, self.sets, cfg)
+        self.hippocampus = Hippocampus(self.brain, self.memory, self.journal, self.sets, cfg)
         self.identity = Identity(cfg, self.memory, self.birth)
         self.news = NewsSense(cfg.state, feeds=cfg.feeds or None)
-        self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity)
+        self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity, trainer=self.trainer, hippocampus=self.hippocampus)
         self.curiosity = Curiosity(self.learner, self.memory, cfg, self.news)
         self.queue = InputQueue(cfg.state / "mailbox")
         self.learning_enabled = cfg.passive_learning and not safe_mode
@@ -73,7 +76,7 @@ class App:
         # tools ----------------------------------------------------------------------
         home = Path(cfg.home_dir).expanduser() if cfg.home_dir else Path.home()
         self._substrate = make_substrate_tools(home, cfg.allow_shell)
-        self._self = make_self_tools(self.learner, self.identity)
+        self._self = make_self_tools(self.learner, self.identity, self.memory)
         self.thoughts = ThoughtManager(cfg.state, self.queue, self._thought_harness, self.memory,
                                        reminder_every=cfg.thought_reminder_every,
                                        learn_from_thoughts=cfg.learn_from_thoughts, learner=self.learner,
@@ -160,8 +163,6 @@ class App:
     def _thought_harness(self, thought):
         reg = self._ToolRegistry()
         reg.include(self._substrate)
-        for name in ("learn", "quiz"):
-            reg.tools[name] = self._self.tools[name]
         if self.cfg.skills_enabled and not self.safe_mode:
             reg.include(self.skills.registry)
         reg.include(self._make_thought_tools(self.thoughts, thought.id))
@@ -173,17 +174,31 @@ class App:
 
     # ---- learning after every main turn (runs on the GPU executor) ------------------
     def _after_turn(self, turn) -> None:
+        """The nap: the turn becomes a training sample, then pending samples are consumed (this turn, anything
+        urgent, and a few from the skills' sets)."""
         if not self.learning_enabled or not turn.messages:
             return
         info = self.learner.passive(turn.context, turn.messages, turn.tools_used, flags=turn.flags)
         self.last_episode = info["episode"]
         if info.get("skipped"):
             self.emit("log", level="info", text=f"not learned from: {', '.join(info['skipped'])}", req=self._req())
-            return
-        self.emit("learned", loss=round(info["loss"], 4), tokens=info["learnable_tokens"], step=self.brain.meta["steps"],
-                  probe=info.get("probe"), req=self._req())
+        else:
+            self.emit("learned", loss=round(info["loss"], 4), tokens=info["learnable_tokens"], step=self.brain.meta["steps"],
+                      probe=info.get("probe"), req=self._req())
+        r = self.trainer.consume(urgent_only=False, max_samples=self.cfg.nap_max_samples)
+        if r.get("consumed"):
+            self.emit("log", level="info", text=f"nap: {r['consumed']} samples consumed {r.get('sets')}", req=self._req())
         if self.brain.meta["steps"] % 10 == 0:
             self.brain.save()
+
+    async def idle_nap(self) -> dict:
+        """Nobody is talking: consume what the skills and the hippocampus prepared."""
+        if not self.learning_enabled or not self.sets.pending(limit=1):
+            return {"consumed": 0}
+        r = await self.server.run_gpu(lambda: self.trainer.consume(max_samples=self.cfg.idle_nap_max_samples))
+        if r.get("consumed"):
+            self.emit("log", level="info", text=f"idle nap: {r['consumed']} samples consumed {r.get('sets')}")
+        return r
 
     # ---- nights ------------------------------------------------------------------------
     async def maybe_sleep(self, force: bool = False) -> bool:
@@ -225,15 +240,27 @@ def seed_home(cfg: Config, skills, emit) -> None:
     rec.mkdir(parents=True, exist_ok=True)
     added = [p.name for p in sorted((src / "recipes").glob("*.md")) if not (rec / p.name).exists()
              and shutil.copy(p, rec / p.name)]
+    import hashlib
     seeded = skills.manifest.setdefault("_seeded", [])
+    shas = skills.manifest.setdefault("_seeded_sha", {})
     for p in sorted((src / "default_skills").glob("*.py")):
+        shipped = hashlib.sha1(p.read_bytes()).hexdigest()[:10]
+        installed = skills.dir / f"{p.name}"
         if p.stem in seeded:
-            continue
+            if shas.get(p.stem) == shipped or not installed.exists():
+                continue                      # unchanged, or Groow removed it: leave it alone
+            if hashlib.sha1(installed.read_bytes()).hexdigest()[:10] != shas.get(p.stem):
+                continue                      # Groow edited it: its version wins
+            what = "upgraded"
+        else:
+            what = "installed"
         (skills.drafts / p.name).write_text(p.read_text())
         r = skills.install(p.stem)
-        seeded.append(p.stem)
+        if p.stem not in seeded:
+            seeded.append(p.stem)
+        shas[p.stem] = shipped
         skills._save_manifest()
-        emit("log", level="info", text=f"default skill {p.stem}: {'installed' if r.get('ok') else r}")
+        emit("log", level="info", text=f"default skill {p.stem}: {what if r.get('ok') else r}")
     if added:
         emit("log", level="info", text=f"recipes added to the home: {added}")
 
@@ -286,7 +313,7 @@ async def run_command(user: str, app: App) -> bool:
     elif cmd == "/inbox":
         r = await run_op(app, "inbox", {"clear": arg == "clear"})
         emit("inbox", questions=r.get("questions", []))
-    elif cmd[1:] in ("sleep", "probe", "stats", "thoughts", "thought", "skill", "identity", "incidents", "play", "games"):
+    elif cmd[1:] in ("sleep", "probe", "stats", "thoughts", "thought", "skill", "identity", "incidents", "train", "training", "hippocampus"):
         args = {}
         if cmd == "/thoughts":
             args = {"all": arg == "all"}
@@ -296,12 +323,10 @@ async def run_command(user: str, app: App) -> bool:
         elif cmd == "/skill" and arg:
             parts = arg.split()
             args = {"action": parts[0], "name": parts[1] if len(parts) > 1 else ""}
-        elif cmd == "/play" and arg:
-            args = {"game": arg.split()[0]}
         r = await run_op(app, cmd[1:], args)
         emit("log", text=json.dumps(r, default=str)[:4000])
     elif cmd == "/help":
-        emit("log", text="/good /bad /sleep /sense /play <game> /games /thoughts [all] /thought <read|pause|resume|kill> <id> "
+        emit("log", text="/good /bad /sleep /sense /train /training /hippocampus /thoughts [all] /thought <read|pause|resume|kill> <id> "
                           "/skill <list|read|check|install|disable|rollback> <name> /identity /inbox [clear] /incidents /stats "
                           "/learn on|off /reasoning on|off /tools /reset /restart /quit")
     else:
@@ -643,11 +668,6 @@ def _op_command(op: str, build_args, local=None):
     return cmd
 
 
-def _local_play(cfg, args):
-    app = _boot(cfg)
-    r = app.learner.play(args.game, rounds=args.rounds); r.pop("history", None); app.brain.save(); return r
-
-
 def _local_probe(cfg, args):
     return _boot(cfg).learner.probe()
 
@@ -707,8 +727,9 @@ def _files_incidents(cfg, args):
     return {"incidents": SkillManager(cfg.state, protected=set()).incidents(args.last)}
 
 
-cmd_play = _op_command("play", lambda a: {"game": a.game, "rounds": a.rounds}, _local_play)
-cmd_games = _op_command("games", lambda a: {}, lambda cfg, a: {"games": {k: g.description for k, g in __import__("groow.games", fromlist=["BUILTIN"]).BUILTIN.items()}})
+cmd_train = _op_command("train", lambda a: {"urgent_only": a.urgent, "max_samples": a.max}, lambda cfg, a: _boot(cfg).trainer.consume(max_samples=a.max))
+cmd_training = _op_command("training", lambda a: {}, lambda cfg, a: {"sets": __import__("groow.learning", fromlist=["TrainingSets"]).TrainingSets(cfg.state / "training").counts()})
+cmd_hippocampus = _op_command("hippocampus", lambda a: {}, lambda cfg, a: _boot(cfg).hippocampus.run())
 cmd_probe = _op_command("probe", lambda a: {}, _local_probe)
 cmd_stats = _op_command("stats", lambda a: {}, _local_stats)
 cmd_sleep = _op_command("sleep", lambda a: {"force": True}, _local_sleep)
@@ -743,6 +764,8 @@ MENTOR_ONLY = {
     "grow": "your capacity is Marlinski's decision", "rollback": "undoing a night is Marlinski's decision",
     "consolidate": "nights happen on their own", "sleep": "nights happen on their own", "probe": "probes run on their own",
     "ask": "asking yourself a question would wait on yourself; use a note (groow say) or think",
+    "learn": "what you learn is decided by the hippocampus and your mentor, not typed in", "quiz": "measuring yourself is the mentor's audit",
+    "train": "naps and nights train you on their own", "hippocampus": "it runs at night on its own",
     "ui": "no terminal here", "chat": "you are the one being talked to",
 }
 
@@ -765,8 +788,9 @@ def main(argv=None) -> None:
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600); s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_ask)
     # operations
-    s = sub.add_parser("play"); s.add_argument("game"); s.add_argument("--rounds", type=int, default=5); s.set_defaults(fn=cmd_play)
-    sub.add_parser("games").set_defaults(fn=cmd_games)
+    s = sub.add_parser("train"); s.add_argument("--urgent", action="store_true"); s.add_argument("--max", type=int, default=64); s.set_defaults(fn=cmd_train)
+    sub.add_parser("training").set_defaults(fn=cmd_training)
+    sub.add_parser("hippocampus").set_defaults(fn=cmd_hippocampus)
     s = sub.add_parser("thoughts"); s.add_argument("--all", action="store_true"); s.set_defaults(fn=cmd_thoughts)
     s = sub.add_parser("thought"); s.add_argument("action", choices=["read", "pause", "resume", "kill"]); s.add_argument("id"); s.add_argument("--last", type=int, default=10); s.set_defaults(fn=cmd_thought)
     s = sub.add_parser("skill"); s.add_argument("action", choices=["list", "read", "check", "install", "disable", "rollback"])

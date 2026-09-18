@@ -12,20 +12,23 @@ import asyncio
 import json
 from pathlib import Path
 
-GPU_OPS = {"play", "probe", "identity", "learn", "quiz", "feedback"}
+GPU_OPS = {"train", "hippocampus", "probe", "identity", "learn", "quiz", "feedback"}
 ASYNC_OPS = {"sleep"}
 
 
-def op_play(app, game: str = "tictactoe", rounds: int = 5, **_) -> dict:
-    r = app.learner.play(game, rounds=int(rounds), on_progress=lambda rec: app.emit("log", level="progress",
-                                                                                     text=f"round {rec['round']}: mean reward {rec['mean_reward']}"))
-    r.pop("history", None)
+def op_train(app, urgent_only: bool = False, max_samples: int = 64, **_) -> dict:
+    r = app.trainer.consume(urgent_only=bool(urgent_only), max_samples=int(max_samples),
+                            on_progress=lambda m: app.emit("log", level="progress", text=m))
     app.brain.save()
     return r
 
 
-def op_games(app, **_) -> dict:
-    return {"games": {k: g.description for k, g in app.learner.games().items()}}
+def op_training(app, **_) -> dict:
+    return {"sets": app.sets.counts(), "hippocampus_last": app.hippocampus.state.get("last_ts")}
+
+
+def op_hippocampus(app, **_) -> dict:
+    return app.hippocampus.run(on_progress=lambda m: app.emit("log", level="progress", text=m))
 
 
 async def op_sleep(app, force: bool = True, **_) -> dict:
@@ -115,9 +118,16 @@ def op_patch(app, path: str = "", description: str = "", patch: str = "", **_) -
 
 
 def op_learn(app, question: str = "", answer: str = "", source: str = "", target_loss: float = 0.0, **_) -> dict:
+    """The mentor teaches: an urgent supervised sample, drilled at once."""
     if not question or not answer:
         return {"error": "question and answer are required"}
-    r = app.learner.learn(question, answer, source, target_loss=target_loss or None)
+    text = answer.strip() + (f" (Source: {source.strip()}.)" if source.strip() else "")
+    from .learning import REHEARSAL_SYSTEM
+    msgs = [{"role": "system", "content": REHEARSAL_SYSTEM}, {"role": "user", "content": question}, {"role": "assistant", "content": text}]
+    app.sets.append("facts", {"kind": "sft", "messages": msgs, "urgent": True, "target_loss": float(target_loss or 0.2),
+                              "source": source or "mentor", "by": "mentor"})
+    app.memory.add_lesson(f"fact: {question[:80]}", text, {"kind": "fact", "source": source, "question": question})
+    r = app.trainer.consume(urgent_only=True)
     app.brain.save()
     return r
 
@@ -133,7 +143,7 @@ def op_feedback(app, value: int = 1, **_) -> dict:
 
 
 OPS = {
-    "play": op_play, "games": op_games, "sleep": op_sleep, "probe": op_probe, "stats": op_stats,
+    "train": op_train, "training": op_training, "hippocampus": op_hippocampus, "sleep": op_sleep, "probe": op_probe, "stats": op_stats,
     "thoughts": op_thoughts, "thought": op_thought, "skill": op_skill, "identity": op_identity, "inbox": op_inbox,
     "incidents": op_incidents, "patch": op_patch, "feedback": op_feedback, "learn": op_learn, "quiz": op_quiz,
 }

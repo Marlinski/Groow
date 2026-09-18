@@ -1,6 +1,8 @@
 """Sleep: the policy around consolidation.
 
-A night has four phases:
+A night:
+  0. hippocampus prepares facts from the day's journal into the training set, and the trainer
+                 consumes everything pending (skills' self-play, facts, the mentor's lessons)
   1. replay      re-train on the day's episodes and the weakest lessons for a
                  bounded number of steps (hippocampal replay: strengthen and
                  interleave before anything becomes permanent)
@@ -29,10 +31,11 @@ ANSWER_WEIGHTS = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
 
 
 class SleepPolicy:
-    def __init__(self, learner: Learner, memory: Memory, cfg: Config, identity=None):
+    def __init__(self, learner: Learner, memory: Memory, cfg: Config, identity=None, trainer=None, hippocampus=None):
         self.learner, self.memory, self.cfg = learner, memory, cfg
         self.brain = learner.brain
         self.identity = identity
+        self.trainer, self.hippocampus = trainer, hippocampus
 
     # ------------------------------------------------------------------ when
     def steps_awake(self) -> int:
@@ -62,6 +65,15 @@ class SleepPolicy:
     def sleep(self, replay_steps: int | None = None, on_progress=None, force: bool = False) -> dict:
         t0 = time.time()
         replay_steps = self.cfg.sleep_replay_steps if replay_steps is None else replay_steps
+        prepared = None
+        if self.hippocampus is not None:
+            try:
+                prepared = self.hippocampus.run(on_progress=on_progress)
+            except Exception as e:
+                prepared = {"error": f"{type(e).__name__}: {e}"}
+        consumed = None
+        if self.trainer is not None:
+            consumed = self.trainer.consume(max_samples=500, on_progress=on_progress)
         day = self._day_material()
         probe_before = self.learner.probe()["mean_loss"]
         rng = random.Random()
@@ -92,7 +104,8 @@ class SleepPolicy:
         self.brain.meta["last_sleep_ts"] = time.time()
         self.brain.meta_path.write_text(json.dumps(self.brain.meta, indent=2))
         self.brain.save()
-        result = {"outcome": outcome, "merged": merged, "replayed_samples": len(day), "replay_steps": len(losses),
+        result = {"outcome": outcome, "merged": merged, "hippocampus": prepared, "consumed": consumed,
+                  "replayed_samples": len(day), "replay_steps": len(losses),
                   "replay_loss": losses[-1] if losses else None, "probe_before": probe_before,
                   "probe_after": probe_after, "drift": round(drift, 4), "internalize": internal,
                   "seconds": round(time.time() - t0, 1), "consolidations": self.brain.meta["consolidations"]}

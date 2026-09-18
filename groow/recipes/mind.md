@@ -18,5 +18,6 @@ Your whole conversation is on disk: `state/main/*.jsonl`, one JSON line per
 message. When someone refers to something you discussed, `grep` it rather than
 guess (`grep -h "Kerlouan" state/main/*.jsonl | tail`).
 
-When nobody talks, you read the news (`news`). Pick what matters, read
-the article, `learn` what is worth keeping, and tell the person later if they ask.
+When nobody talks, you read the news (`news`). Pick what matters, read the
+article with `web`, and tell the person later if they ask. What you read is
+learned at night by the hippocampus; you do not have to do anything.

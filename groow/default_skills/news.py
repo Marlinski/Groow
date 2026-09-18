@@ -76,7 +76,7 @@ def _parse(xml_text: str, hint: str) -> list:
     return [i for i in items if i["title"]]
 
 
-def fetch(max_items: int = 8) -> dict:
+def _fetch(max_items: int = 8) -> dict:
     seen_p = _dir() / "news_seen.json"
     seen = json.loads(seen_p.read_text()) if seen_p.exists() else {}
     per_feed, errors, now = [], [], time.time()
@@ -124,7 +124,7 @@ def main(argv: list) -> dict:
             n = int(argv[i + 1])
         if a == "--json":
             as_json = True
-    r = fetch(n)
+    r = _fetch(n)
     if as_json:
         return r
     lines = [f"news of {r['date_today']} ({len(r['items'])} new items):", ""]

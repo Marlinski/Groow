@@ -68,9 +68,9 @@ One-shot commands on the host (no daemon running; they load their own copy of th
 ```bash
 groow memorize --title "Loire" --text "The Loire is the longest river in France."
 groow quiz "How long is the Loire?" --expected "It is the longest river in France."
-groow play tictactoe --rounds 20
-groow play arithmetic --rounds 10
-groow sense --items 6    # curiosity pass (add --pipeline for the fixed drill instead of tools)
+groow train | training   # consume pending training samples now | what is pending per set
+groow hippocampus        # extract facts from the journal into the training set now
+groow learn "q" "a" --source S   # teach a fact directly (urgent, drilled at once); groow quiz "q" --expected A
 groow sleep --replay 30  # a night now; --force merges even if probes drifted
 groow rollback           # undo the last night (state/base.prev)
 groow identity           # self-description + internalisation loss
@@ -124,12 +124,13 @@ people say), assistant 1.0 (reinforce its own habits and tool use), tool output
 0. Two older episodes are replayed in the same step, preferring turns rated
 good and never those rated bad.
 
-**Active learning.** Tools the model calls on itself. `memorize` repeats a
-lesson until the recite loss is under a target. `quiz` measures the loss of an
-expected answer, so knowing is a number. `play` runs a batch of self-play
-episodes, lets the rules score every decision, normalises rewards into
-advantages and takes one policy-gradient step; a quarter of moves are random
-legal ones so a collapsed policy still explores. `probe` watches for drift.
+**Active learning.** Skills produce samples: `tictactoe play` runs self-play
+through the daemon's `/complete` endpoint, scores every decision by the rules
+(a quarter of moves are random legal ones so a collapsed policy still
+explores) and appends rewarded samples; the trainer normalises rewards within
+each round into advantages and takes policy-gradient steps at the next nap.
+`arithmetic drill` does the same with checked answers. `groow quiz` measures
+the loss of an expected answer, so knowing is a number; `probe` watches drift.
 
 **Sleep.** A night has phases: *replay* the day's episodes and lessons for a
 bounded number of steps (strengthen and interleave before anything becomes
@@ -189,17 +190,25 @@ copied into `state/recipes/` and a default skill (`list_recipes`,
 unsure and rewrite them when it learns better. They are its notes, not the
 body's: upgrades add new recipes but never overwrite edited ones.
 
-**Tools: five, and a shell.** The main thought has `shell` (bash in its home),
-`learn` (the one deliberate weight change), `quiz` (measure what it knows),
-`think` (spawn an inner thought) and `ask` (a question for the mentor). Inner
-thoughts have `shell`, `learn`, `quiz`, `focus`, `finish`. Everything else is a
-file in its home or a command in its shell. Skills can install commands: the
-default `web` skill gives it `web <url>` (a page as text). The `groow …`
-commands talk to its own daemon: `news`, `groow play`,
-`groow thoughts`, `groow thought pause|resume|kill`, `groow skill check|install`,
-`groow stats`, `groow identity`, `groow inbox`. Sleeping, probing and growing
-happen to it on schedule; the commands exist for the mentor. Skills it installs
-add their own tools.
+**Tools: three, and a shell.** The main thought has `shell` (bash in its
+home), `think` (spawn an inner thought) and `ask` (a question for the mentor).
+Inner thoughts have `shell`, `focus`, `finish`. Everything else is a file in
+its home or a command in its shell. Skills install commands: `web <url>`,
+`news`, `tictactoe`, `arithmetic` are default skills, its own files. The
+`groow …` commands talk to its daemon: `groow thoughts`, `groow thought
+pause|resume|kill`, `groow skill check|install`, `groow training`, `groow stats`,
+`groow identity`, `groow inbox`, `groow say` (a note to self).
+
+**Learning is a meta-process, not a tool.** Anyone appends samples to
+training sets in `state/training/` (supervised or rewarded); only the trainer
+consumes them. After every turn a *nap* learns the exchange and a few pending
+samples; idle naps consume what skills produced (self-play, drills); at night
+the **hippocampus** extracts from the journal the facts people stated and the
+things Groow read, keeping only quotes that exist in the journal and only what
+is still surprising, and everything pending is learned before replay,
+identity distillation, probe and merge. The mentor can still teach directly
+(`groow learn`), measure (`groow quiz`) and trigger (`groow train`,
+`groow hippocampus`).
 
 **The journal.** Every message of the main conversation, your inputs, its
 answers, each tool call and each result, is appended to `state/main/` the
@@ -226,17 +235,15 @@ groow/
     episodic.py        Memory: episodes, lessons, learning log, drift probes, recall
     journal.py         Journal: append-only rotating trace (state/main/, one file per day, 1000 lines)
   learning/
-    learner.py         Learner: passive, feedback, memorize, quiz, play, probe, report
+    learner.py         Learner: passive, feedback, quiz, probe, report; learn for the mentor
+    trainingset.py     TrainingSets: state/training/<set>.jsonl, cursor of what was consumed
+    trainer.py         Trainer: the one place gradients come from (SFT and grouped policy-gradient steps)
+    hippocampus.py     Hippocampus: facts from the journal into the training set, grounded and surprise-gated
     sleep.py           SleepPolicy: replay, internalise, drift check, merge, rollback, when to sleep
     curiosity.py       Curiosity: idle behaviour (agentic news reading, pipeline fallback)
     identity.py        Identity: seed, self-edit, context distillation into weights
   senses/
     news.py            NewsSense: RSS/Atom -> dated, sourced items; remembers what it has seen
-  games/               rule systems that score actions without a human
-    base.py            Game / Episode protocol (+ optional explore() for exploration)
-    tictactoe.py       self-play, rewards from the rules only
-    arithmetic.py      mental arithmetic at three levels
-    __init__.py        registry, loading and validating invented games
   mind/                the conscious thread and its inner thoughts
     signals.py         Priority, Signal, InputQueue (thread-safe, asyncio)
     thoughts.py        Thought, ThoughtManager: concurrent coroutine run-loops with own traces
@@ -244,7 +251,7 @@ groow/
   harness/             everything between a user message and a finished turn
     registry.py        ToolRegistry: Python function → JSON schema, safe dispatch
     builtins.py        the substrate: shell (bash in the home)
-    selftools.py       learn, quiz, ask
+    selftools.py       ask
     sensetools.py      news headlines for `news` and the curiosity pipeline
     mindtools.py       think (main); focus, finish (inner thoughts)
     skills.py          SkillManager: draft → sandbox check → install → rollback / quarantine; incidents; patches
@@ -260,7 +267,7 @@ groow/
     creature.py        the sprout: animation frames per mood
   birth.py             the birth certificate (state/birth.json, written once, read-only)
   recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
-  default_skills/      skills installed on first start: recipes (tools), web (`web <url>`), news (`news`, feeds in state/senses/feeds.txt)
+  default_skills/      installed on first start: recipes (tools), web, news (feeds in state/senses/feeds.txt), tictactoe, arithmetic
   ops.py               the operations table (play, sleep, probe, news, thoughts, skill, …) used by /op, slash commands and the CLI
   cli.py               App wiring + commands (init, start, ui, chat, ask, status, stop, doctor, operations)
 birth                  host script: create the home, build the body, wake Groow (idempotent)
@@ -277,6 +284,8 @@ state/                 runtime, created by init (gitignored); inside the contain
   incidents.jsonl      crashes and failed loads with tracebacks; patches/: proposed core changes
   senses/              news items seen and learned
   main/                the conversation journal: every message, one JSONL file per day, rotated
+  mailbox/             the input queue on disk (new/, cur/)
+  training/            training sets waiting to be learned (<set>.jsonl, cursor.json)
   episodes.jsonl lessons.jsonl learning_log.jsonl probes.json
   workspace/           the only directory file tools may touch
   games/               invented games (*.py)
@@ -340,10 +349,10 @@ one with `invent_game` after setting `"allow_invented_games": true`.
 - Memorising a sentence takes ~15 steps. Common words stick first; a rare
   proper noun may still come out wrong at the default target loss of 0.15.
   The intended fix is the loop Groow can run itself: memorize → quiz → memorize.
-- Tic-tac-toe self-play went from 100 % illegal moves to 0 % illegal and a
-  positive score against a random player in 12 rounds (about 3 minutes on the
-  1.7B). Two-digit arithmetic went from 31 % to 92 % in 6 rounds. Part of that
-  is learning the answer format.
+- Tic-tac-toe self-play (`tictactoe play`, then a nap) went from 100 % illegal
+  moves to 0 % illegal and a positive score against a random player in 12 rounds
+  on the 1.7B. Two-digit arithmetic went from 31 % to 92 % in 6 rounds. Part of
+  that is learning the answer format.
 - Passive learning trains on Groow's own answers, which entrenches mistakes as
   well as successes. `/bad`, the rehearsal policy and the probes exist for that.
 

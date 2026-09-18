@@ -1,50 +1,17 @@
-"""Self tools: the acts that only Groow can do to itself, and the one channel to its mentor.
-
-    learn(question, answer, source)   the only deliberate weight change: drill question -> answer
-    quiz(question, expected)          measure what the weights know (no change)
-    ask(question)                     leave a question for Marlinski
-"""
+"""Self tools: the one channel to the mentor. Learning is not a tool: it is a meta-process
+(the trainer consumes training sets prepared by the hippocampus, by skills and by the mentor)."""
 from __future__ import annotations
 
 import json
 import time
 
-from ..learning import Learner
 from .registry import ToolRegistry
 
 
-def make_self_tools(learner: Learner, identity=None) -> ToolRegistry:
+def make_self_tools(learner=None, identity=None, memory=None) -> ToolRegistry:
     reg = ToolRegistry()
-    brain, memory = learner.brain, learner.memory
-    inbox = memory.dir / "mentor_inbox.jsonl"
-
-    @reg.tool(group="self", executor="gpu")
-    def learn(question: str, answer: str, source: str = "", target_loss: float = 0.0) -> dict:
-        """Learn something into your weights: repeated training on question -> answer, then it is filed as a
-        lesson. Use the source's own words for the answer and include the date and origin; never invent. Use it
-        when someone asks you to remember something, or when you read something true and worth keeping.
-
-        Args:
-            question: the question this knowledge answers
-            answer: the answer, in the source's wording, including when it happened
-            source: where it comes from (publication and date, a URL, or "Marlinski, 2026-09-18")
-            target_loss: 0 = a few passes; otherwise keep training until the recite loss is below this (e.g. 0.15 to know it by heart)
-        """
-        r = learner.learn(question, answer, source, target_loss=target_loss or None,
-                          on_progress=lambda s, l: reg.progress(f"learn step {s + 1}: loss {l:.3f}"))
-        brain.save()
-        return r
-
-    @reg.tool(group="self", executor="gpu")
-    def quiz(question: str, expected: str = "") -> dict:
-        """Test yourself: your current answer to a question and, if an expected answer is given, how surprising
-        it is to your weights (loss below 0.5 = you know it, above 2 = you do not). Changes nothing.
-
-        Args:
-            question: the question to ask yourself
-            expected: the correct answer, if known
-        """
-        return learner.quiz(question, expected or None)
+    mem = memory or (learner.memory if learner is not None else None)
+    inbox = mem.dir / "mentor_inbox.jsonl"
 
     @reg.tool(group="self")
     def ask(question: str, context: str = "") -> dict:

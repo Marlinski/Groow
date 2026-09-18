@@ -24,13 +24,13 @@ flowchart LR
 <p>Each step also replays two older episodes drawn from memory, preferring turns rated <code>/good</code> twice as often and never those rated <code>/bad</code>. This rehearsal is the cheapest known defence against catastrophic forgetting. The training sample is capped at <code>train_max_len</code> (4k tokens, tail of the conversation) independently of the 32k prompt budget.</p>
 <p><b>Feedback.</b> <code>/good</code> replays the turn three times at double assistant weight. <code>/bad</code> applies an <em>unlikelihood</em> loss to the assistant tokens, pushing that answer down, and bars the episode from rehearsal.</p>
 
-<h2>Active drills</h2>
-<table><tr><th>Tool</th><th>What happens to the weights</th><th>Measured</th></tr>
-<tr><td><code>memorize(title, text)</code></td><td>three prompt phrasings → the text, trained with rehearsal until the recite loss is under 0.15</td><td>an invented sentence: loss 6.26 → 0.16 in 15 steps</td></tr>
-<tr><td><code>quiz(question, expected)</code></td><td>none. Generates the current answer and measures the loss of the expected one</td><td>under 0.5 means it knows; above 2 means it does not</td></tr>
-<tr><td><code>learn_fact(question, answer, source)</code></td><td>three steps on question → answer in the source's wording with date and origin</td><td>news items: 2.1 → 1.4 typical after 3 steps; nights finish the job</td></tr>
-<tr><td><code>play(game, rounds)</code></td><td>policy gradient on self-play, see below</td><td>tic-tac-toe: 100% illegal → 0% illegal, positive score vs random</td></tr></table>
-
+<h2>Learning is a meta-process</h2>
+<p>Groow does not operate its own learning. Anyone may append <b>training samples</b> to <code>state/training/&lt;set&gt;.jsonl</code>: supervised samples (messages with role weights) or rewarded samples (prompt, completion, reward, group). Only the <b>trainer</b> consumes them, and it does so at three moments:</p>
+<table><tr><th>when</th><th>what is consumed</th></tr>
+<tr><td>a nap, after every turn</td><td>the turn itself (passive learning) plus up to <code>nap_max_samples</code> pending samples</td></tr>
+<tr><td>idle naps, while nobody talks</td><td>what skills produced: self-play outcomes, drills, facts</td></tr>
+<tr><td>the night</td><td>the hippocampus prepares facts from the journal, then everything pending, then replay, identity, probe, merge</td></tr></table>
+<p><b>Producers.</b> The passive step. Skills: <code>tictactoe play</code> and <code>arithmetic drill</code> generate through the daemon's <code>/complete</code> endpoint, score by their rules and append rewarded samples. The <b>hippocampus</b>: at night it reads the journal since the last night, asks the model for the facts that were <em>stated</em> (by the person, or read from a source), keeps only answers that quote the journal verbatim, measures how surprising each still is to the weights, and appends the surprising ones; things the person asked to remember are urgent and drilled to a target loss at the next nap. The mentor: <code>groow learn</code> appends an urgent sample and drills it at once; <code>groow quiz</code> measures.</p>
 <h3>Self-play with rules as the teacher</h3>
 <p>A game is anything with rules that can score an action without a human (<code>groow/games/</code>: tic-tac-toe, arithmetic; the model may invent more when allowed). Each round runs 16 episodes in lockstep with batched generation. Every decision gets its reward from the rules once the episode ends; rewards are normalised across the round into advantages (GRPO-style); one REINFORCE step raises the log-probability of good decisions and lowers bad ones.</p>
 <p class="note">A quarter of decisions are replaced by random <em>legal</em> moves. Without this, a small model's policy sits on one move at ~100% probability, sampling produces no diversity, and the gradient is zero. The saturation problem will recur with any new game.</p>

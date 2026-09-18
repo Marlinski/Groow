@@ -194,6 +194,21 @@ class Daemon:
         return web.json_response({"req": req, "final": end.get("final", ""), "tools_used": end.get("tools_used", []),
                                   "seconds": end.get("seconds"), "events": [e for e in evs if e["ev"] != "text"]}, dumps=encode)
 
+    async def h_complete(self, request: web.Request) -> web.Response:
+        """Raw completions for skills (self-play, drills): a list of conversations in, one text out each,
+        batched by the generation server at inner-thought priority. No learning, no journal."""
+        body = await request.json()
+        convs = body.get("messages") or []
+        if isinstance(convs, dict) or (convs and isinstance(convs[0], dict)):
+            convs = [convs]
+        if not convs or len(convs) > 32:
+            raise web.HTTPBadRequest(text='{"error": "messages: a conversation or a list of at most 32"}', content_type="application/json")
+        max_new = int(body.get("max_new_tokens") or 64)
+        temperature = float(body.get("temperature") if body.get("temperature") is not None else 1.0)
+        texts = await asyncio.gather(*[self.app.server.complete(c, None, priority=2, max_new_tokens=max_new, temperature=temperature,
+                                                                  enable_thinking=False) for c in convs])
+        return web.json_response({"completions": list(texts)}, dumps=encode)
+
     async def h_op(self, request: web.Request) -> web.Response:
         """Operations on the running Groow (what `groow …` commands in its shell call)."""
         from ..ops import run_op
@@ -294,6 +309,7 @@ class Daemon:
                                 idle_seconds=idle_s, maybe_sleep=app.maybe_sleep, emit=self.emit,
                                 run_command=lambda line: run_command(line, app))
         mind.on_error = lambda kind, tb: app.skills.record_incident(kind, tb)
+        mind.idle_nap = app.idle_nap
         app.mind = mind
         if app.thoughts.listing(False) and not self.safe_mode:
             app.queue.push(3, "reminder", "you carried paused thoughts over from your last session: "
@@ -302,7 +318,7 @@ class Daemon:
         web_app = web.Application(client_max_size=2**20)
         web_app.add_routes([web.get("/hello", self.h_hello), web.get("/status", self.h_status),
                             web.post("/say", self.h_say), web.post("/command", self.h_command),
-                            web.post("/ask", self.h_ask), web.post("/op", self.h_op),
+                            web.post("/ask", self.h_ask), web.post("/op", self.h_op), web.post("/complete", self.h_complete),
                             web.get("/events", self.h_events), web.get("/ws", self.h_ws),
                             web.get("/", self.h_hello)])
         runner = web.AppRunner(web_app, access_log=None, shutdown_timeout=2.0)

@@ -24,9 +24,8 @@ ANSWER_WEIGHTS = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
 
 IMPULSE = ("(No one is talking to you right now; this is your own idle time, not a human message.) "
            "Look at what is happening in the world: run `news --items {n}` with shell, pick the items that seem most "
-           "important or most interesting to you, read the ones worth reading with `web <link>` in shell, and for each one call learn "
-           "with a precise question and an answer in the source's own words, including the date and the source. "
-           "Then write two or three sentences about what you learned today.")
+           "important or most interesting to you, and read the ones worth reading with `web <link>`. What you read is "
+           "remembered during your next night on its own. Then write two or three sentences about what you found.")
 
 
 class Curiosity:
@@ -45,8 +44,8 @@ class Curiosity:
         t0 = time.time()
         n = max_items or self.cfg.sense_items
         turn = await harness.turn(IMPULSE.format(n=n))
-        learned = turn.tools_used.count("learn")
-        result = {"mode": "agentic", "tools_used": turn.tools_used, "facts_learned": learned,
+        learned = sum(1 for m in turn.messages if m.get("role") == "tool" and '"stdout"' in (m.get("content") or "") and "# " in (m.get("content") or ""))
+        result = {"mode": "agentic", "tools_used": turn.tools_used, "pages_read": learned,
                   "note": turn.final_text[:600], "seconds": round(time.time() - t0, 1)}
         if learned == 0:
             result["fallback"] = self.tick(max_items, on_progress=on_progress)
