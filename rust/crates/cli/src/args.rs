@@ -80,13 +80,6 @@ pub enum Command {
         id: String,
         text: Vec<String>,
     },
-    /// Your skills: what you have, and how to use one.
-    Skill {
-        /// list, read, or check.
-        #[arg(default_value = "list")]
-        action: String,
-        name: Option<String>,
-    },
     /// Check the state on disk without needing the core.
     Doctor,
 
@@ -112,7 +105,6 @@ impl Command {
             Command::Schedule { .. } => "schedule",
             Command::Thoughts => "thoughts",
             Command::Thought { .. } => "thought",
-            Command::Skill { .. } => "skill",
             Command::Doctor => "doctor",
             Command::RunTurn => "run-turn",
             Command::RunThought { .. } => "run-thought",
@@ -189,19 +181,9 @@ mod tests {
     }
 
     #[test]
-    fn asking_about_skills_defaults_to_listing_them() {
-        let c = Cli::try_parse_from(["groow", "skill"]).unwrap();
-        match c.cmd {
-            Command::Skill { action, name } => {
-                assert_eq!(action, "list");
-                assert_eq!(name, None);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
     fn nonsense_is_refused_with_a_message_rather_than_a_panic() {
+        // Skills are the mind's own files, not a thing the core has a command for.
+        assert!(Cli::try_parse_from(["groow", "skill", "list"]).is_err());
         assert!(Cli::try_parse_from(["groow", "explode"]).is_err());
         assert!(Cli::try_parse_from(["groow"]).is_err(), "a bare command should say what it can do");
         assert!(Cli::try_parse_from(["groow", "thought", "read"]).is_err(), "a thought action needs an id");
@@ -217,7 +199,7 @@ mod tests {
 
     #[test]
     fn the_mind_keeps_the_commands_that_are_its_own_life() {
-        for c in ["say", "inbox", "remind", "schedule", "thoughts", "thought", "recall", "doctor", "skill"] {
+        for c in ["say", "inbox", "remind", "schedule", "thoughts", "thought", "recall", "doctor"] {
             assert_eq!(mentor_only(c), None, "{c} is how it lives; it must not be taken away");
         }
     }
@@ -236,7 +218,6 @@ mod tests {
             vec!["groow", "inbox"], vec!["groow", "remind", "x", "--in", "1h"],
             vec!["groow", "schedule"], vec!["groow", "thoughts"],
             vec!["groow", "thought", "read", "a1"], vec!["groow", "doctor"],
-            vec!["groow", "skill"], vec!["groow", "skill", "read", "web"],
             vec!["groow", "run-turn"], vec!["groow", "run-thought", "a1"],
         ] {
             let c = Cli::try_parse_from(args.clone()).unwrap();

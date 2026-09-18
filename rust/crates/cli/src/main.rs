@@ -2,7 +2,6 @@
 
 mod args;
 mod doctor;
-mod skill;
 mod start;
 mod talk;
 
@@ -55,7 +54,6 @@ async fn run(cli: Cli, state: std::path::PathBuf, config: std::path::PathBuf) ->
         Command::RunTurn => start::run_turn().await,
         Command::RunThought { id } => start::run_thought(id).await,
         Command::Ui => groow_ui::app::run(state.join("core.sock")).await,
-        Command::Skill { action, name } => skill::skill(&action, name.as_deref()),
         Command::Doctor => doctor::doctor(&state, &config),
         other => talk::talk(other, state).await,
     }

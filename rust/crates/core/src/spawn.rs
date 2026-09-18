@@ -50,8 +50,8 @@ impl Spawner {
             .current_dir(&self.home)
             .env_clear()
             .env("HOME", &self.home)
-            // Its own commands come first: a skill it writes shadows anything shipped, and
-            // it can reach its skills by name from any directory.
+            // Its own commands come first: a command it writes shadows anything shipped, and
+            // it can reach them by name from any directory.
             .env(
                 "PATH",
                 format!(
@@ -230,9 +230,9 @@ mod tests {
         let out = s.base(&[]).output().await.unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         let path = text.lines().find(|l| l.starts_with("PATH=")).unwrap_or("");
-        assert!(path.contains(".local/bin"), "its skills are not reachable: {path}");
+        assert!(path.contains("/bin:"), "its own commands are not reachable: {path}");
         assert!(
-            path.find(".local/bin") < path.find("/usr/bin"),
+            path.find("/bin:") < path.find("/usr/bin"),
             "a skill it wrote should shadow anything shipped: {path}"
         );
     }

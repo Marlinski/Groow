@@ -289,11 +289,47 @@ async fn run_call(client: &mut Client, call: &Call, settings: &Settings) -> Tool
                 Err(e) => ToolResult::bad(format!("could not finish cleanly: {e}")),
             }
         }
-        other => ToolResult::bad(format!(
-            "there is no tool called `{other}`. You have: {}",
-            tools::names(settings.surface).join(", ")
-        )),
+        other => ToolResult::bad(unknown_tool(other, settings)),
     }
+}
+
+/// What to say when it calls something that is not a tool.
+///
+/// Almost always it has reached for one of its own skills, which are commands and not tools.
+/// Saying only that the tool does not exist leaves it to guess, and a small model guesses the
+/// same thing again; saying how to run the very thing it wanted ends the loop.
+fn unknown_tool(name: &str, settings: &Settings) -> String {
+    let have = tools::names(settings.surface).join(", ");
+    if is_a_command(name, &settings.home) {
+        return format!(
+            "`{name}` is one of your commands, not a tool. Run it in your shell, as \
+shell with a command of \"{name} ...\". Your tools are: {have}."
+        );
+    }
+    format!("there is no tool called `{name}`. You have: {have}")
+}
+
+/// Whether the mind has a command by that name, in its own bin directory or on its path.
+fn is_a_command(name: &str, home: &std::path::Path) -> bool {
+    if name.is_empty() || name.contains('/') {
+        return false;
+    }
+    let mut dirs: Vec<std::path::PathBuf> = vec![home.join("bin")];
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    dirs.iter().any(|d| {
+        let p = d.join(name);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            return std::fs::metadata(&p)
+                .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false);
+        }
+        #[cfg(not(unix))]
+        p.is_file()
+    })
 }
 
 /// Which thought this process is running, as the core told it when it started it.
@@ -576,6 +612,44 @@ mod tests {
         assert_eq!(out.tools_used, 1, "the call was read as prose instead of run");
         let l = log.lock().unwrap();
         assert!(l.appended.iter().any(|m| m.text().contains("untagged")));
+    }
+
+    #[tokio::test]
+    async fn calling_a_skill_as_a_tool_is_answered_with_how_to_run_it() {
+        // What the real model does: it sees `web` in its prompt and calls it as a tool. Being
+        // told only that no such tool exists sends it round the same loop again.
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cmd = bin.join("web");
+        std::fs::write(&cmd, "#!/bin/sh\necho page\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cmd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let settings = Settings {
+            home: d.path().to_path_buf(),
+            tool_timeout: Duration::from_secs(5),
+            surface: Surface::Main,
+        };
+        let said = unknown_tool("web", &settings);
+        assert!(said.contains("not a tool"), "{said}");
+        assert!(said.contains("in your shell"), "it must show how to run it: {said}");
+        assert!(said.contains("web"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn something_that_is_not_a_command_either_is_simply_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            home: d.path().to_path_buf(),
+            tool_timeout: Duration::from_secs(5),
+            surface: Surface::Main,
+        };
+        let said = unknown_tool("rm_rf_everything", &settings);
+        assert!(said.contains("there is no tool"), "{said}");
+        assert!(said.contains("shell, ask, think"), "{said}");
     }
 
     #[tokio::test]

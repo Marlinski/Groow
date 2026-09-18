@@ -5,7 +5,7 @@
 
 <div class="grid">
 <div class="card"><div class="k">In the prompt</div><b>One line each.</b> The name and the description, so it knows the thing exists and when it is worth using. Nothing more, ever.</div>
-<div class="card"><div class="k">On demand</div><b>The page.</b> <code>groow skill read &lt;name&gt;</code> pulls the rest into context, when it has decided it needs it.</div>
+<div class="card"><div class="k">On demand</div><b>The page.</b> <code>cat ~/skills/&lt;name&gt;/SKILL.md</code> pulls the rest into context, when it has decided it needs it.</div>
 <div class="card"><div class="k">To run</div><b>A command.</b> The scripts in the skill go on its path, so it is used through the shell like anything else, with an exit status it can learn from.</div>
 <div class="card"><div class="k">Over time</div><b>Less needed.</b> A skill practised often enough ends up in the weights, and the page stops being read. That is the point.</div>
 </div>
@@ -20,8 +20,21 @@ should cost nothing to keep.</p>
 every skill in every prompt, is the accumulate-context approach this project was built to
 avoid.</p>
 
+<h2>Whose they are</h2>
+<p>Skills are not a construct of the core. They are files in Groow's home, in
+<code>~/skills</code>, which it owns and may write, rename or delete at will, and there is no
+command for managing them because there is nothing to manage: it edits a file. The state
+directory is the other thing entirely, maintained by the core and not writable by the mind.</p>
+<p>The core does two things for skills and nothing more. It copies the shipped ones into the
+home on a first start, the way a system gives a new account a skeleton, and never touches them
+again. And it puts <code>~/bin</code> first on the path of every process it starts, so a
+command it wrote shadows anything shipped.</p>
+<p>The format below is a convention, not a rule the core enforces. Nothing in the core parses a
+<code>SKILL.md</code>. If Groow decides a plain note in some other shape serves it better, that
+is its business.</p>
+
 <h2>What one looks like</h2>
-<pre><code>news/
+<pre><code>~/skills/news/
   SKILL.md          name, description, and how to use it
   scripts/news      the executable, in any language
   references/       optional: detail it can read when it needs to
@@ -40,9 +53,9 @@ news              headlines you have not seen
 news --json       the items as records, with links
 ```
 …</code></pre>
-<p>The name must be lowercase letters, digits and hyphens, and must match its directory. A
-skill without a description is refused rather than half-loaded: a skill nobody can find is
-worse than an error that says so.</p>
+<p>The name should be lowercase letters, digits and hyphens and match its directory, and the
+description should say what the skill does and when to reach for it, because that line is the
+only part that will be in front of it at the start of a turn.</p>
 
 <h2>The prompt it writes for itself</h2>
 <p>What Groow sees at the start of every turn is not fixed by the core. The core contributes
@@ -52,8 +65,12 @@ start of each turn.</p>
 <pre><code>#!/bin/sh
 echo "Today is $(date '+%A %-d %B %Y, %H:%M')."
 echo
-echo "Skills you have. Each one is a command you run in your shell, not a tool you call."
-groow skill list | sed 's/^/- /'</code></pre>
+echo "Your skills are directories in ~/skills. Each one is a command you run in your shell."
+for d in "$HOME"/skills/*/; do
+  name=$(basename "$d")
+  what=$(sed -n 's/^description: *//p' "$d/SKILL.md" | head -1)
+  echo "- $name: $what"
+done</code></pre>
 <p>It is the same thing a person does when they tune their shell prompt: put what you want in
 front of you, take out what you do not read. Groow can put its skills there, the date, what is
 on its disk, a note about what it is working on, or nothing.</p>

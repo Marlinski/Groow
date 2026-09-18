@@ -35,9 +35,14 @@ pub const DEFAULT: &str = r#"#!/bin/sh
 echo "Today is $(date '+%A %-d %B %Y, %H:%M')."
 echo
 
-echo "Skills you have. Each one is a command you run in your shell, not a tool you call."
-echo "\`groow skill read <name>\` says how to use one and when it is worth it."
-groow skill list 2>/dev/null | sed 's/^/- /'
+echo "Your skills are directories in ~/skills. Each one is a command you run in your shell,"
+echo "not a tool you call, and each has a SKILL.md saying how and when it is worth using."
+for d in "$HOME"/skills/*/; do
+  [ -f "$d/SKILL.md" ] || continue
+  name=$(basename "$d")
+  what=$(sed -n 's/^description: *//p' "$d/SKILL.md" | head -1)
+  echo "- $name: $what"
+done
 "#;
 
 /// Run the script, if there is one, and return what it printed.
@@ -53,6 +58,9 @@ pub async fn greeting(home: &Path) -> Option<String> {
     let mut cmd = tokio::process::Command::new("/bin/sh");
     cmd.arg(&rc)
         .current_dir(home)
+        // The script belongs to this home, so that is the home it should see. Without this it
+        // would read whatever HOME the process happened to inherit.
+        .env("HOME", home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -213,11 +221,39 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         assert!(seed(d.path()).unwrap());
         let rc = d.path().join(RC);
-        assert!(std::fs::read_to_string(&rc).unwrap().contains("groow skill list"));
+        assert!(std::fs::read_to_string(&rc).unwrap().contains("skills"));
 
         std::fs::write(&rc, "#!/bin/sh\necho mine\n").unwrap();
         assert!(!seed(d.path()).unwrap(), "a second start should not overwrite it");
         assert_eq!(std::fs::read_to_string(&rc).unwrap(), "#!/bin/sh\necho mine\n");
+    }
+
+    #[tokio::test]
+    async fn the_default_script_lists_what_is_actually_there() {
+        let d = tempfile::tempdir().unwrap();
+        let skill = d.path().join("skills/tides");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: tides\ndescription: The next high tide at a port.\n---\n\nRun `tides <port>`.\n",
+        )
+        .unwrap();
+        seed(d.path()).unwrap();
+        let g = greeting(d.path()).await.unwrap();
+        assert!(g.contains("- tides: The next high tide at a port."), "{g}");
+    }
+
+    #[tokio::test]
+    async fn a_skill_in_some_other_shape_is_simply_skipped() {
+        // The format is a convention, not a rule. A directory without a SKILL.md is the mind's
+        // business and nothing should object to it.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("skills/notes")).unwrap();
+        std::fs::write(d.path().join("skills/notes/thoughts.txt"), "whatever I like").unwrap();
+        seed(d.path()).unwrap();
+        let g = greeting(d.path()).await.unwrap();
+        assert!(!g.contains("notes"), "it should not be announced as a skill: {g}");
+        assert!(g.contains("Today is"), "and the rest of the prompt still works");
     }
 
     #[tokio::test]
@@ -227,6 +263,7 @@ mod tests {
         let g = greeting(d.path()).await.unwrap();
         assert!(g.contains("Today is"), "{g}");
         assert!(g.contains("in your shell"), "it should say how a skill is run: {g}");
+        assert!(g.contains("~/skills"), "it should say where they are: {g}");
         // `groow` is not on the path in a test, so the skills line is empty; that must not
         // turn the whole thing into a failure.
         assert!(!g.contains("did not run"), "a missing command should not break the prompt: {g}");
