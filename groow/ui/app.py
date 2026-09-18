@@ -130,6 +130,8 @@ class StatusBar(Static):
     def show(self, s: dict) -> None:
         t = Text()
         t.append(f" {s.get('mood', '')} ", style=f"bold {MINT}")
+        if s.get("weights_busy"):
+            t.append(f"· weights: {s['weights_busy']} (no inference) ", style=f"bold {VIOLET}")
         t.append(f"· queue {s.get('queue', 0)} · thoughts {s.get('thoughts_running', 0)} · "
                  f"gen batches {s.get('server', {}).get('batches', 0)} (preempted {s.get('server', {}).get('preempted', 0)}) · "
                  f"gpu {s.get('gpu_gb', 0)} GB · rank {s.get('rank', '')} · "
@@ -265,7 +267,6 @@ class GroowUI(App):
                 chat.add("", f"  ↳ {_short(ev['result'], 220)}", "sys")
         elif k == "learned":
             chat.add("", f"↺ learned · loss {ev['loss']:.3f} · {ev['tokens']} tokens · step {ev['step']}", "sys")
-            creature.mood = "learning"
         elif k == "thought":
             self.query_one(Thoughts).upsert(ev)
             if ev["event"] in ("spawn", "focus", "done", "killed"):
@@ -274,6 +275,8 @@ class GroowUI(App):
             msg = ev.get("text") or ev.get("outcome") or ev.get("why") or ""
             chat.add("night", f"{ev['phase']} {msg}", "signal")
             creature.mood = "sleeping" if ev["phase"] != "done" else "listening"
+        elif k == "weights":
+            creature.mood = "napping" if ev.get("busy") else "listening"
         elif k == "inbox":
             chat.add("inbox", "\n".join("• " + q["question"] for q in ev["questions"]) or "empty", "signal")
         elif k == "log":

@@ -57,6 +57,8 @@ class Brain:
         self.meta = {"steps": 0, "consolidations": 0, "rank": cfg.lora_rank,
                      "tokens_seen": 0, "born": time.time(), "growth": []}
         self._lock = threading.Lock()
+        self.busy: str | None = None          # what is being done to the weights right now, if anything
+        self.on_busy = None                   # callable(op: str | None) -> None; the daemon turns it into events
 
     # ------------------------------------------------------------------ paths
     @property
@@ -244,7 +246,7 @@ class Brain:
         samples = [s for s in samples if s.learnable_tokens > 0]
         if not samples:
             return float("nan")
-        with self._lock:
+        with self._lock, _Busy(self, "training step"):
             self.model.train()
             total = 0.0
             for s in samples:
@@ -266,7 +268,7 @@ class Brain:
         decisions = [d for d in decisions if d.completion_ids and d.advantage != 0.0]
         if not decisions:
             return 0.0   # every reward equal: nothing to learn from this round
-        with self._lock:
+        with self._lock, _Busy(self, "policy gradient step"):
             self.model.train()
             total = 0.0
             n = len(decisions)
@@ -309,7 +311,7 @@ class Brain:
         """Merge the plastic overlay into the base weights (long-term memory),
         write the new base to disk, and start a fresh overlay. With
         `keep_previous` the outgoing base is kept as state/base.prev (rollback)."""
-        with self._lock:
+        with self._lock, _Busy(self, "consolidating the overlay into the base"):
             rank = new_rank or self.meta.get("rank", self.cfg.lora_rank)
             t = time.time()
             base = self.model.merge_and_unload()
@@ -355,6 +357,29 @@ class Brain:
         return {**self.meta, "trainable_parameters": self.trainable_parameters(),
                 "total_parameters": self.total_parameters(), "gpu_memory_gb": round(mem, 2),
                 "model_id": self.cfg.model_id}
+
+
+class _Busy:
+    """Marks a weight manipulation: inference waits for the lock, the outside sees a nap."""
+
+    def __init__(self, brain: "Brain", op: str):
+        self.brain, self.op = brain, op
+
+    def __enter__(self):
+        self.brain.busy = self.op
+        if self.brain.on_busy:
+            try:
+                self.brain.on_busy(self.op)
+            except Exception:
+                pass
+
+    def __exit__(self, *exc):
+        self.brain.busy = None
+        if self.brain.on_busy:
+            try:
+                self.brain.on_busy(None)
+            except Exception:
+                pass
 
 
 def _disable_triton_overrides() -> None:

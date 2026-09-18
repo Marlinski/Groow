@@ -26,6 +26,7 @@ Event types (both SSE and WS carry the same JSON objects):
   learned      {loss, tokens, step, probe?}
   thought      {id, status, goal, steps, event: spawn|step|focus|done|paused|resumed|killed, text?}
   sleep        {phase: start|progress|done, ...}
+  weights      {busy: bool, op}                          the weights are being changed: no inference until done (a nap)
   inbox        {questions: [...]}
   log          {level, text}
   bye          the daemon is shutting down
@@ -57,4 +58,4 @@ def sse(e: dict) -> bytes:
     return f"event: {e['ev']}\ndata: {encode(e)}\n\n".encode()
 
 
-MOODS = ("idle", "listening", "thinking", "tooling", "speaking", "learning", "reading", "dreaming", "sleeping", "repair")
+MOODS = ("idle", "listening", "thinking", "tooling", "speaking", "learning", "reading", "dreaming", "napping", "sleeping", "repair")

@@ -42,6 +42,7 @@ class Daemon:
         self.waiters: dict[str, asyncio.Future] = {}        # /ask correlation id -> future(turn_end event)
         self.req_events: dict[str, list] = {}
         self.mood = "idle"
+        self._night = False
         self.app = None
         self.mind = None
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -91,12 +92,18 @@ class Daemon:
         elif ev == "tool_call":
             n = e.get("name", "")
             self.mood = "learning" if n in LEARN_TOOLS else "reading" if n in READ_TOOLS else "tooling"
+        elif ev == "weights":
+            if e.get("busy"):
+                self.mood = "sleeping" if self._night else "napping"
+            elif self.mood in ("napping",):
+                self.mood = "listening"
         elif ev == "learned":
-            self.mood = "learning"
+            self.mood = "learning" if self.mood != "napping" else self.mood
         elif ev == "turn_end":
             self.mood = "listening"
         elif ev == "sleep":
-            self.mood = "sleeping" if e.get("phase") != "done" else "listening"
+            self._night = e.get("phase") != "done"
+            self.mood = "sleeping" if self._night else "listening"
         elif ev == "thought" and e.get("event") in ("spawn", "step") and self.mood in ("idle", "listening"):
             self.mood = "dreaming"
         if self.safe_mode:
@@ -107,7 +114,7 @@ class Daemon:
         b = a.brain.meta
         if self.mood == "listening" and self.mind and time.time() - self.mind.last_human > 60 and not a.thoughts.running():
             self.mood = "idle"
-        return {"mood": self.mood, "body": os.environ.get("GROOW_BODY", "host"),
+        return {"mood": self.mood, "weights_busy": a.brain.busy, "body": os.environ.get("GROOW_BODY", "host"),
                 "home": str(Path(self.cfg.home_dir).expanduser() if self.cfg.home_dir else Path.home()),
                 "state": str(Path(self.cfg.state).resolve()),
                 "steps": b["steps"], "nights": b["consolidations"], "rank": b["rank"],
@@ -260,6 +267,7 @@ class Daemon:
         self.loop = loop = asyncio.get_running_loop()
         print(f"groow: waking up: loading {self.cfg.model_id} into the GPU (~30 s), then memory, skills, senses…", flush=True)
         self.app = app = App(self.cfg, emit=self.emit, safe_mode=self.safe_mode, incident=self.incident)
+        app.brain.on_busy = lambda op: self.emit("weights", busy=op is not None, op=op or "")
         app.queue.bind(loop)
         app.thoughts.bind(loop)
         idle_s = self.cfg.sense_idle_minutes * 60 if (self.cfg.curiosity and self.cfg.sense_idle_minutes > 0

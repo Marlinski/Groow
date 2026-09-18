@@ -89,7 +89,7 @@ STAGES = [("baby", 0, BABY), ("young", 86400, YOUNG), ("adult", 7 * 86400, ADULT
 CAPTIONS = {
     "idle": "waiting", "listening": "listening", "thinking": "thinking", "tooling": "using a tool",
     "speaking": "speaking", "learning": "learning", "reading": "reading the world", "dreaming": "inner thoughts",
-    "sleeping": "sleeping", "repair": "repairing itself",
+    "sleeping": "sleeping (night: replay, merge)", "napping": "napping (weights updating)", "repair": "repairing itself",
 }
 
 
@@ -115,7 +115,7 @@ def _apply_mood(grid: list[list[str]], mood: str, tick: int) -> list[list[str]]:
     eyes = _find(g, "e")
     mouth = _find(g, "m")
     blink = tick % 6 == 0
-    if mood == "sleeping" or blink and mood not in ("repair",):
+    if mood in ("sleeping", "napping") or blink and mood not in ("repair",):
         for y, x in eyes:
             g[y][x] = "G"                                  # closed eyes
     if mood == "speaking":
@@ -142,11 +142,12 @@ OVERLAYS = {   # small side glyphs drawn to the right of the sprite, per mood an
     "reading": [" ▤", " ▥"],
     "dreaming": ["  ○", " ○ ", "○  "],
     "sleeping": [" z", " z z", " z z z"],
+    "napping": [" z", "  z"],
     "repair": [" ✚", "  ✚"],
     "learning": [" ✦", "  ✦"],
     "speaking": [" ▪", " ▪▪", " ▪▪▪"],
 }
-OVERLAY_COLOR = {"thinking": BODY_LIGHT, "tooling": GEAR, "reading": BOOK, "dreaming": BUBBLE, "sleeping": ZED,
+OVERLAY_COLOR = {"thinking": BODY_LIGHT, "tooling": GEAR, "reading": BOOK, "dreaming": BUBBLE, "sleeping": ZED, "napping": ZED,
                  "repair": WRENCH, "learning": SPARK, "speaking": BODY_LIGHT}
 
 
@@ -155,7 +156,7 @@ def render(age_seconds: float, mood: str, tick: int, caption: bool = True):
     from rich.text import Text
     stage, sprite = stage_for(age_seconds)
     grid = _apply_mood(_grid(sprite), mood, tick)
-    bob = 1 if (tick % 4 in (1, 2) and mood not in ("sleeping",)) else 0     # gentle breathing bob
+    bob = 1 if (tick % 4 in (1, 2) and mood not in ("sleeping", "napping")) else 0     # gentle breathing bob
     t = Text()
     if bob:
         t.append("\n")
