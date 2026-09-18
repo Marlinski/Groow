@@ -133,6 +133,13 @@ def feel(cfg: Config) -> dict:
     convo = exchanges(journal, 400)
     scored = 0
     for t in turns:
+        # A turn the body could not finish is not the mind's failure: the brain was down, or a
+        # process was killed. It is recorded as felt so it is not looked at again, and scored
+        # at nothing, because punishing it for a power cut would teach it the wrong lesson.
+        if t["outcome"] != "ok":
+            db.felt(t["id"], time.time(), 0.0, None, 0.0)
+            scored += 1
+            continue
         flags = [f for f in (t["flags"] or "").split(",") if f]
         sensors = sensor_valence(flags)
         approval = None
@@ -170,9 +177,11 @@ def harvest(cfg: Config) -> dict:
     cursor = json.loads(cursor_path.read_text()) if cursor_path.exists() else {}
     since = float(cursor.get("harvested_ts", 0.0))
 
+    # Only turns the mind actually completed. An abandoned one ends with the core's own
+    # apology in the conversation, and training on that would teach it to apologise.
     rows = list(db.c.execute(
         "SELECT t.*, f.valence FROM turns t JOIN feelings f ON f.turn = t.id "
-        "WHERE t.started > ? ORDER BY t.started", (since,)))
+        "WHERE t.started > ? AND t.outcome = 'ok' ORDER BY t.started", (since,)))
     if not rows:
         return {"harvested": 0}
 

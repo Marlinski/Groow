@@ -1,5 +1,5 @@
 <!doctype html><html lang="en"><head><title>Groow · mind</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
-<nav class="top"><a href="index.html" class="">Overview</a><a href="anatomy.html">Anatomy</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="here">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
+<nav class="top"><a href="index.html">Overview</a><a href="anatomy.html">Anatomy</a><a href="core.html">Core</a><a href="learning.html">Learning</a><a href="mind.html" class="here">Mind</a><a href="extension.html">Skills</a></nav>
 <h1>Mind</h1>
 <p class="lead">One conscious thread over a priority queue of signals, and the inner thoughts it can spawn, watch, pause, resume and kill. The thread is linear because consciousness is; the GPU underneath is not.</p>
 
@@ -14,7 +14,7 @@
 <p>Reminders never pile up (a new one replaces a queued one) and are skipped when something more concrete is right behind them. Slash commands are USER signals executed by the loop itself. After any signal, if a night is due and nothing urgent is queued, the mind pauses all thoughts and sleeps.</p>
 
 <h2>Inner thoughts</h2>
-<p>An inner thought is a separate conversation history driven by its own harness in its own asyncio task, with a restricted toolset (it can read, learn, memorise, play, recall; it cannot talk to anyone, ask the mentor or rewrite the identity). A <b>step</b> is one harness turn: the thought is prompted to continue toward its goal, may call tools, and its trace grows. Concurrent thoughts are batched into one forward pass by the generation server and preempted per token when the person speaks.</p>
+<p>An inner thought is a separate conversation with its own goal, run by its own process. Its toolset is smaller than the conscious one: a shell, and its two ways back. It cannot talk to a person, put a question to the mentor, or start further thoughts. A <b>step</b> is one exchange: it is prompted to continue toward the goal, may run commands, and its trace grows. Generation is ordered, so a thought always waits behind the conscious turn.</p>
 <pre class="mermaid">
 stateDiagram-v2
   [*] --> running : think(goal, max_steps)
@@ -37,7 +37,7 @@ stateDiagram-v2
 <p><code>think</code> spawns. Everything else is in the shell: <code>groow thoughts</code> lists, <code>groow thought read|pause|resume|kill &lt;id&gt;</code> manages, and each trace is a file in <code>state/thoughts/</code>. At most <code>max_thoughts</code> run at once. Thoughts survive restarts: on exit running thoughts are paused, on start the main thought is reminded of them.</p>
 
 <h2>The clock</h2>
-<p>Three things wake the mind on their own: a housekeeping tick every few seconds (idle naps, due alarms), a curiosity impulse after <code>sense_idle_minutes</code> of silence, and a night when enough learning steps or enough hours have passed. Everything else is an <b>alarm</b> Groow sets for itself, through its <code>clock</code> skill (a file in <code>state/skills/</code> it can read and improve):</p>
+<p>Three things wake the mind on their own: an alarm coming due, a question expiring unanswered, and a curiosity nudge after a stretch of silence. The nudge gets rarer the longer nothing comes of it, doubling its gap each time up to a ceiling, so an idle Groow settles rather than fidgeting. Everything else is an <b>alarm</b> it sets for itself:</p>
 <pre><code>remind "check the deploy"   --in 30m
 remind "read the news"      --every 3h
 remind "sum up the day"     --every "daily 22:00"

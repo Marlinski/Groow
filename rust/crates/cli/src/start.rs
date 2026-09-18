@@ -69,6 +69,8 @@ pub async fn start(state: PathBuf, config: PathBuf, as_user: Option<String>) -> 
         spawner: spawner.clone(),
         socket: paths.socket(),
         agent_uid,
+        python: python_for(),
+        config: config.clone(),
     });
 
     let listening = core.clone().listen().await?;
@@ -137,6 +139,20 @@ pub async fn run_thought(id: String) -> anyhow::Result<()> {
         .await
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// The interpreter that runs the learning passes: the one in the body, or whatever is on the
+/// path when this is a development checkout.
+fn python_for() -> String {
+    if let Ok(p) = std::env::var("GROOW_PYTHON") {
+        return p;
+    }
+    for c in ["/opt/venv/bin/python", ".venv/bin/python"] {
+        if std::path::Path::new(c).exists() {
+            return c.to_string();
+        }
+    }
+    "python3".to_string()
 }
 
 /// Where the skills that ship with the project live, next to the binary or in the checkout.

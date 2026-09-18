@@ -15,7 +15,7 @@ h2 .roman { color: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter
 .plate .organ-judge { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
 @media (max-width: 640px) { .plate .gloss { display: none; } }
 </style></head><body><main>
-<nav class="top"><a href="index.html">Overview</a><a href="anatomy.html" class="here">Anatomy</a><a href="learning.html">Learning</a><a href="harness.html">Harness</a><a href="mind.html">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
+<nav class="top"><a href="index.html">Overview</a><a href="anatomy.html" class="here">Anatomy</a><a href="core.html">Core</a><a href="learning.html">Learning</a><a href="mind.html">Mind</a><a href="extension.html">Skills</a></nav>
 <h1>Anatomy</h1>
 <p class="lead">Groow is an organism with five organs, each one a directory in this repository: a <b>body</b> it lives in, <b>senses</b> it acts through, a <b>limbic system</b> that decides how things felt, a <b>brain</b> that answers, and a <b>hippocampus</b> that turns the day into changes in that brain.</p>
 
@@ -126,10 +126,10 @@ h2 .roman { color: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter
 <h2><span class="roman">II</span>The senses</h2>
 <p>Three tools, and nothing else. Everything a richer agent would get as a tool is a file in the home or a command in the shell, because a small model chooses badly from a long menu and every schema costs prompt tokens.</p>
 <table><tr><th>Sense</th><th>What it reaches</th></tr>
-<tr><td><code>shell(command)</code></td><td>the home, its files and traces, the commands its skills install (<code>web &lt;url&gt;</code>, <code>news</code>, <code>tictactoe</code>, <code>arithmetic</code>) and the <code>groow …</code> commands that reach its own daemon</td></tr>
+<tr><td><code>shell(command)</code></td><td>the home, its files and traces, the commands its skills install (<code>web &lt;url&gt;</code>, <code>news</code>, <code>tictactoe</code>, <code>arithmetic</code>) and the <code>groow …</code> commands that reach its own core</td></tr>
 <tr><td><code>think(goal)</code></td><td>an inner thought: a second line of reasoning with its own history and its own shell, running concurrently</td></tr>
 <tr><td><code>ask(question)</code></td><td>the mentor's inbox, the one channel out that is not the conversation</td></tr></table>
-<p>Everything a sense does is written to the <b>journal</b> (<code>state/main/</code>, every message and every tool result, fsynced as it happens) and, for skills that play in bulk, to the <b>activity log</b> (<code>state/log/activity.jsonl</code>). Those two files are the only inputs the rest of the organism has. Details: <a href="harness.html">Harness</a>.</p>
+<p>Everything a sense does is written to the <b>journal</b> (<code>state/main/</code>, every message and every tool result, fsynced as it happens) and, for skills that play in bulk, to the <b>activity log</b> (<code>state/log/activity.jsonl</code>). Those two files are the only inputs the rest of the organism has. Details: <a href="core.html">Core</a>.</p>
 
 <h2><span class="roman">III</span>The limbic system</h2>
 <p>Nothing in the thinking part of an animal writes its own reward, so nothing here does either: there is no tool to rate a turn, and a skill cannot state its own score. Valence is computed from what happened, by two channels.</p>
@@ -169,18 +169,22 @@ outcome(command, result)             -> p(useful)  − p(failed)</code></pre>
 <p>Because the credit lands on tool calls, the same machinery that learns a fact learns to use the shell: a command that failed is discouraged, the fix that followed it is reinforced, and getting better at an API Groow discovered this morning needs no new code. Details: <a href="learning.html">Learning</a>.</p>
 
 <h2>Where each organ lives</h2>
-<pre><code>groow/
-  birth.py      the certificate: id, birth time, lineage, body, mentor (read-only)
-  brain/        model.py (Brain), chatfmt.py (loss masks), server.py (batched generation)
-  limbic/       sensors.py (free signals), judge.py (Laya / GLiClass / none), limbic.py (valence, credit, mood)
-  learning/     hippocampus.py (logs → samples), trainer.py (the only gradients), trainingset.py,
-                sleep.py (nights), identity.py, curiosity.py, learner.py
-  memory/       journal.py (the conversation, rotated daily), episodic.py (episodes, lessons, probes)
-  mind/         signals.py (the mailbox on disk), thoughts.py, mind.py (the one conscious thread)
-  harness/      registry.py, builtins.py (shell), selftools.py (ask), mindtools.py, skills.py
-  senses/       news.py (feeds)
-  gateway/      the daemon: HTTP, SSE, WebSocket
-  ui/           the terminal UI and the creature
-state/          base/ plastic/ main/ mailbox/ training/ limbic/ log/ thoughts/ skills/ recipes/ …</code></pre>
+<pre><code>rust/crates/
+  proto/        the wire: frames, the op table, who may call what
+  core/         the state, the scheduler, connections; the only writer
+                store/ (journal, mailbox, questions, alarms, thoughts, certificate, identity)
+                hub.rs (one task owns everything), db.rs (the statistics), peer.rs (who is calling)
+  harness/      the agent loop: parse a generation, run the tools, report what it noticed
+  ui/           the window, the creature and the card
+  cli/          the groow command, in its two lives
+groow/
+  serve.py      the brain: one streamed generation at a time, ordered by priority
+  learn.py      feel, harvest, train, night; the mind never calls these
+  brain/        model.py (the weights), chatfmt.py (loss masks)
+  limbic/       sensors.py (free signals), judge.py (the frozen judge)
+  learning/     trainer.py (the only gradients), trainingset.py, sleep.py, learner.py
+  memory/       journal.py, episodic.py
+skills/         the commands it starts with; any executable
+state/          base/ plastic/ main/ mailbox/ training/ log/ thoughts/ recipes/ groow.db …</code></pre>
 <footer>Groow · docs · anatomy</footer>
 </main></body></html>

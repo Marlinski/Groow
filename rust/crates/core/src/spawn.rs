@@ -87,7 +87,29 @@ impl Spawner {
 
     /// One inner thought.
     pub fn thought(&self, id: &str) -> std::io::Result<Child> {
-        self.base(&["run-thought", id]).spawn()
+        let mut c = self.base(&["run-thought", id]);
+        c.env("GROOW_THOUGHT", id);
+        c.spawn()
+    }
+
+    /// A learning pass, which the mind neither asks for nor can refuse.
+    ///
+    /// It runs as the core does, not as the mind, because it reads the statistics and writes
+    /// the weights, and neither of those is the mind's to touch.
+    pub fn learn(&self, what: &str, python: &str, config: &Path, state: &Path) -> std::io::Result<Child> {
+        Command::new(python)
+            .args(["-m", "groow.learn", what])
+            .arg("--config").arg(config)
+            .arg("--state").arg(state)
+            .current_dir(&self.home)
+            .env("HOME", &self.home)
+            .env("PATH", "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin")
+            .env("GROOW_STATE", state)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
     }
 }
 

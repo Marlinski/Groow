@@ -1,60 +1,49 @@
 <!doctype html><html lang="en"><head><title>Groow · how it works</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
-<nav class="top"><a href="index.html" class="here">Overview</a><a href="anatomy.html">Anatomy</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="anatomy.html">Anatomy</a><a href="core.html">Core</a><a href="learning.html">Learning</a><a href="mind.html">Mind</a><a href="extension.html">Skills</a></nav>
 <h1>Groow</h1>
-<p class="lead">A small language model whose weights are not frozen. It learns from every conversation, drills itself on purpose, reads the news when nobody talks to it, thinks in the background, and sleeps to make what it learned permanent.</p>
+<p class="lead">A small language model whose weights are not frozen. It learns from every exchange, from commands that worked and commands that did not, and from whether anyone answered when it asked. At night what it practised is merged into the base and becomes what it is.</p>
 
 <div class="grid">
-<div class="card"><div class="k">Base</div><b>Qwen3-4B-Instruct-2507</b><br>4.1B dense parameters, fp16, 262k context. Tesla V100S 32 GB.</div>
-<div class="card"><div class="k">Plastic</div><b>LoRA overlay, rank 32</b><br>66M fp32 parameters on every linear layer. This is what moves every turn.</div>
+<div class="card"><div class="k">Base</div><b>Qwen3-4B</b><br>4.1B dense parameters, fp16. One Tesla V100S, which is Volta: fp16 only, cu126 wheels.</div>
+<div class="card"><div class="k">Plastic</div><b>LoRA overlay, rank 32</b><br>66M fp32 parameters on every linear layer. This is what moves.</div>
 <div class="card"><div class="k">Permanent</div><b>Consolidation</b><br>At night the overlay is merged exactly into the base and a blank one opens.</div>
-<div class="card"><div class="k">Felt</div><b>Limbic system</b><br>Free sensors plus a frozen 421M judge decide how a turn went. Nothing rates itself.</div>
+<div class="card"><div class="k">Felt</div><b>No self-annotation</b><br>Free sensors and a frozen judge decide how a turn went. Nothing rates itself.</div>
 </div>
 
-<h2>One picture</h2>
+<h2>Four parts, one job each</h2>
 <pre class="mermaid">
 flowchart LR
-  P["person"] <--> SH["senses<br/>shell · think · ask"]
-  SH --> LOG[("logs<br/>journal · activity")]
-  B["brain<br/>fp16 base + LoRA overlay"] --> SH
-  LOG --> L["limbic<br/>sensors + frozen judge"]
-  L -->|valence| H["hippocampus<br/>logs → training sets"]
-  LOG --> H
-  H --> T["trainer"]
-  T -->|nap · night| B
+  P["person<br/>groow ui"] --> C
+  A["alarms · inner thoughts<br/>expired questions"] --> C
+  C["<b>core</b> (rust, root)<br/>owns the state<br/>decides what happens next"] -- spawns --> H["<b>harness</b> (rust, uid 1000)<br/>one turn, one process<br/>holds nothing"]
+  H -- shell --> S["skills<br/>any executable"]
+  H -- generate --> B["<b>brain</b> (python)<br/>the card, the weights"]
+  C -- between turns --> L["<b>learning</b> (python)<br/>feel · harvest · train"]
+  L --> B
+  C --- ST[("state/<br/>journal · queue · questions<br/>alarms · statistics")]
 </pre>
 
-<h2>The five organs</h2>
+<p>The core is the only writer of state. The mind cannot edit its own history, because it has no
+handle on it: it asks, and the core decides. When the core runs as root the state directory is
+not writable by the mind at all, and when it is not root the core says so at startup rather
+than implying a guarantee it does not have.</p>
+
+<h2>The pages</h2>
 <table><tr><th>Page</th><th>What it covers</th></tr>
-<tr><td><a href="anatomy.html">Anatomy</a></td><td>The organism end to end: the body it lives in, the three senses, the limbic system that decides how things felt, the brain, and the hippocampus that turns a day into changes in that brain. Start here.</td></tr>
-<tr><td><a href="learning.html">Learning</a></td><td>Two speeds of memory, naps and nights, training sets and the trainer, the hippocampus in detail, drift probes, growth.</td></tr>
-<tr><td><a href="harness.html">Harness</a></td><td>The tool registry, the turn loop, the generation server that batches concurrent requests, the journal and the mailbox, the sandbox.</td></tr>
-<tr><td><a href="mind.html">Mind</a></td><td>The single conscious thread and its signal queue, inner thoughts as concurrent coroutines with their own traces, the lifecycle.</td></tr>
-<tr><td><a href="extension.html">Self-extension</a></td><td>Skills Groow writes for itself, the body and the home, the supervisor, safe mode and <code>groow doctor</code>.</td></tr>
-<tr><td><a href="gateway.html">Daemon &amp; UI</a></td><td><code>groow start</code> runs the mind as a daemon; the UI and clients speak HTTP, SSE and WebSocket.</td></tr>
+<tr><td><a href="anatomy.html">Anatomy</a></td><td>The organism end to end: the body, the senses, the limbic system, the brain, and what turns a day into changes in it. Start here.</td></tr>
+<tr><td><a href="core.html">Core</a></td><td>Why there can be no deadlock, the turn contract and its epochs, the frame protocol, who is allowed to call what, and what happens when a turn dies.</td></tr>
+<tr><td><a href="learning.html">Learning</a></td><td>Two speeds of memory, naps and nights, how a turn is scored without being asked, training sets and the gradient step.</td></tr>
+<tr><td><a href="mind.html">Mind</a></td><td>The single conscious thread and its queue, inner thoughts as their own processes, alarms, and the cost of asking.</td></tr>
+<tr><td><a href="extension.html">Skills</a></td><td>Commands the mind writes for itself, in any language, and the home it lives in.</td></tr>
 </table>
 
 <h2>Running it</h2>
 <pre><code>git clone git@github.com:Marlinski/Groow.git &amp;&amp; cd Groow
-uv venv --python 3.12 .venv &amp;&amp; . .venv/bin/activate &amp;&amp; uv pip install -e .
-
-groow start      # in its body (Docker): first time builds it, creates ./home, gives birth; later just wakes it
-groow ui         # fullscreen UI (WebSocket); groow chat (SSE), groow ask "…" (HTTP), groow status, groow stop
-groow start --nosandbox   # on this host, as you; state in ~/.groow (or state/ in a checkout)</code></pre>
-<p>The body is a read-only image; the home <code>./home</code> is the only writable place and the whole of what Groow is. <code>./birth</code> is the same start script without the CLI. Inside the UI: <code>/good</code> <code>/bad</code>, <code>/sleep</code>, <code>/sense</code>, <code>/thoughts</code>, <code>/skills</code>, <code>/identity</code>, <code>/inbox</code>, <code>/stats</code>, <code>/quit</code>.</p>
-
-<h2>Repository map</h2>
-<pre><code>groow/
-  brain/      model.py (Brain), chatfmt.py (loss masks), server.py (GenServer)
-  memory/     episodic.py (episodes, lessons, log, probes, transcripts)
-  learning/   learner.py, sleep.py, curiosity.py, identity.py
-  senses/     news.py (RSS/Atom)
-  games/      base.py, tictactoe.py, arithmetic.py
-  harness/    registry.py, loop.py, builtins.py, selftools.py, sensetools.py, mindtools.py
-  mind/       signals.py, thoughts.py, mind.py
-  gateway/    protocol.py, daemon.py, client.py
-  ui/         app.py (Textual), creature.py
-  birth.py    the birth certificate
-  cli.py      App wiring + commands
-state/        base/ base.prev/ plastic/ identity.md thoughts/ senses/ workspace/ *.jsonl</code></pre>
-<footer>Groow · docs generated 2026-09-18 · everything here describes the code in this repository, not a plan.</footer>
+./birth              # builds the body, creates ./home, gives birth the first time
+./birth ui           # the window onto it
+./birth say "hello"
+./birth stop</code></pre>
+<p>Without Docker: build the core with <code>cargo build --release --manifest-path rust/Cargo.toml</code>,
+install the learning side with <code>uv pip install -e .</code>, start the brain with
+<code>python -m groow.serve</code>, then <code>groow start</code> and <code>groow ui</code>.</p>
 </main></body></html>

@@ -52,6 +52,8 @@ pub enum Duty {
     Turn(Box<Signal>),
     /// Continue an inner thought in its own process.
     Thought(String),
+    /// Run a learning pass. The mind never asks for this and cannot refuse it.
+    Learn(&'static str),
     /// Nothing to do; look again in this many seconds.
     Idle(f64),
 }
@@ -209,6 +211,9 @@ pub struct Hub {
     /// must not turn into a spawn loop.
     fail_streak: u32,
     last_failure: f64,
+    /// Turns since the last learning pass, and when the last night was.
+    since_learned: u32,
+    last_night: f64,
     last_human: f64,
     running: bool,
     /// The one source of time in the core.
@@ -266,6 +271,8 @@ impl Hub {
             idle_streak: 0,
             fail_streak: 0,
             last_failure: 0.0,
+            since_learned: 0,
+            last_night: groow_proto::event::now(),
             last_human: groow_proto::event::now(),
             running: true,
             clock: Box::new(groow_proto::event::now),
@@ -427,7 +434,12 @@ impl Hub {
     #[doc(hidden)]
     pub fn set_clock(&mut self, f: Box<dyn Fn() -> f64 + Send>) {
         self.clock = f;
-        self.last_human = self.now();
+        // Everything that was stamped with the old clock has to move with it, or the hub is
+        // left comparing two different notions of now.
+        let now = self.now();
+        self.last_human = now;
+        self.last_night = now;
+        self.last_failure = 0.0;
     }
 
     /// What to do next. Alarms and expiries are folded into the queue here, so the scheduler
@@ -484,6 +496,19 @@ impl Hub {
             .find(|t| t.status == ThoughtStatus::Running && t.pid.is_none())
         {
             return Ok(Duty::Thought(t.id));
+        }
+
+        // With nothing waiting, this is the moment to digest what has happened. A night comes
+        // round on the clock; a shorter pass comes round after a handful of turns.
+        let hours = self.cfg.sleep_every_hours.max(0.0);
+        if hours > 0.0 && now - self.last_night >= hours * 3600.0 {
+            self.last_night = now;
+            self.since_learned = 0;
+            return Ok(Duty::Learn("night"));
+        }
+        if self.since_learned >= self.cfg.nap_max_samples.max(1) as u32 {
+            self.since_learned = 0;
+            return Ok(Duty::Learn("nap"));
         }
 
         // Nothing to do. Consider being curious, but less and less often.
@@ -595,6 +620,7 @@ impl Hub {
             &a.id, now, now - a.started, out.tools_used, a.rounds, &out.flags, "ok");
         let _ = self.mailbox.ack(&a.signal);
         self.fail_streak = 0;
+        self.since_learned += 1;
 
         // Seeing what the mind said is the only way a question gets closed by conversation,
         // so the answer is matched here rather than anywhere the mind could reach.
@@ -1222,6 +1248,49 @@ mod tests {
             turn, epoch, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
         assert_eq!(h.fail_streak, 0, "one good turn should clear the backoff");
+    }
+
+    #[test]
+    fn after_enough_turns_it_stops_to_digest_them() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        h.cfg.nap_max_samples = 2;
+        h.cfg.sleep_every_hours = 0.0;
+        for i in 0..2 {
+            take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+            clock.advance(10.0);
+            take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+            let (turn, epoch) = h.active_turn().unwrap();
+            take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
+                turn, epoch, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            }), reply }, &mut h).unwrap();
+        }
+        clock.advance(10.0);
+        assert_eq!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Learn("nap"));
+        // And not again straight away.
+        clock.advance(10.0);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)));
+    }
+
+    #[test]
+    fn a_night_comes_round_on_the_clock() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        h.cfg.sleep_every_hours = 1.0;
+        clock.advance(10.0);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)));
+        clock.advance(3700.0);
+        assert_eq!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Learn("night"));
+    }
+
+    #[test]
+    fn a_person_waiting_always_comes_before_digesting_the_day() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        h.cfg.sleep_every_hours = 1.0;
+        clock.advance(7200.0);
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+            Duty::Turn(s) => assert_eq!(s.text, "hello"),
+            other => panic!("it went to sleep with someone waiting: {other:?}"),
+        }
     }
 
     #[test]

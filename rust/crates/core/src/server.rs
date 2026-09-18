@@ -25,6 +25,9 @@ pub struct Core {
     pub spawner: Spawner,
     pub socket: PathBuf,
     pub agent_uid: Option<u32>,
+    /// The interpreter that runs the learning passes.
+    pub python: String,
+    pub config: PathBuf,
 }
 
 impl Core {
@@ -105,6 +108,26 @@ impl Core {
                             tracing::error!("could not start a turn: {e}");
                             self.hub.emit(Event::log("error", format!("could not start a turn: {e}"))).await;
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+                Duty::Learn(what) => {
+                    // A learning pass is slow and must not block a person who starts talking
+                    // mid-way, so the scheduler waits on it here rather than in the hub, and
+                    // a turn that arrives simply runs next.
+                    match self.spawner.learn(what, &self.python, &self.config, &self.spawner.state) {
+                        Ok(child) => {
+                            self.hub.emit(Event::new(EventName::Learned, json!({
+                                "kind": what, "state": "started",
+                            }))).await;
+                            self.watch(child, "learning pass", None).await;
+                            self.hub.emit(Event::new(EventName::Learned, json!({
+                                "kind": what, "state": "finished",
+                            }))).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("could not start the {what} pass: {e}");
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                         }
                     }
                 }
@@ -191,6 +214,8 @@ mod tests {
             },
             socket: d.path().join("core.sock"),
             agent_uid: None,
+            python: "/bin/true".into(),
+            config: d.path().join("groow.json"),
         })
     }
 

@@ -1,0 +1,90 @@
+<!doctype html><html lang="en"><head><title>Groow · the core</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html">Overview</a><a href="anatomy.html">Anatomy</a><a href="core.html" class="here">Core</a><a href="learning.html">Learning</a><a href="mind.html">Mind</a><a href="extension.html">Skills</a></nav>
+<h1>The core</h1>
+<p class="lead">The core is the only writer of state, the only thing that starts a turn, and the only authority on who may do what. It is written in Rust and it is the part that has to be right, because everything else can be restarted.</p>
+
+<h2>Why there can be no deadlock</h2>
+<p>All mutable state belongs to one task. Commands reach it through a channel and are handled by
+an ordinary synchronous function with no <code>await</code> in it. While a command is being handled,
+nothing else touches the state, and the handler cannot wait on another task. A deadlock needs
+two parties each holding something the other wants; here there is one party and it never waits.</p>
+<p>Everything slow stays outside it. Generation, spawning processes and network traffic happen in
+connection tasks, which come back to the hub only to record what happened. The file and database
+work the hub does itself is local and measured in microseconds.</p>
+<p>The one place a naive design would still deadlock is the event stream, so that is the one place
+that is deliberately lossy: events go to interfaces through bounded queues with a non-blocking
+send. A window that has stopped reading loses events. It can never slow down a turn.</p>
+
+<h2>A turn is a process that holds nothing</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant S as scheduler
+  participant H as hub
+  participant P as turn process
+  participant B as brain
+  S->>H: what next?
+  H->>H: open turn, epoch+1, record what came in
+  S->>P: spawn
+  P->>H: turn.claim
+  H-->>P: window, prompt, budget, turn id, epoch
+  loop until an answer or the budget runs out
+    P->>B: generate
+    B-->>P: text, streamed
+    P->>H: turn.append (turn id, epoch)
+    P->>P: run the tools it asked for
+  end
+  P->>H: turn.end (turn id, epoch)
+</pre>
+<p>The harness owns no durable state. It starts, claims its turn, and receives everything it needs
+in a single reply. Every write it sends back carries the turn id and the epoch it was handed,
+and the core refuses anything from a stale epoch, so re-running a turn is either the same turn or
+a clean refusal, never half of one.</p>
+<p>What came in is recorded by the core when the turn opens, not by the process handling it. A turn
+that fails and is retried would otherwise write the same message to the conversation again on
+every attempt, which is exactly what an early version did.</p>
+
+<h2>When a turn dies</h2>
+<p>The connection is the turn. When the process goes away the socket closes, and the core learns at
+once rather than waiting for a timeout: it releases the turn, moves the epoch on so a late
+message from the corpse is refused, and puts a person's message back in the queue. A turn that
+runs past its time limit is stopped by a watchdog, which amounts to the same thing.</p>
+<p>Retries are counted and waited out. Each consecutive failure doubles the wait, and after three
+attempts the message is set down with a line in the conversation saying so. Without that, a
+brain that is simply not running turns into a loop that spawns a process as fast as the machine
+allows.</p>
+
+<h2>The wire</h2>
+<p>One connection carries everything: requests, streamed generation, events going up and pushes
+coming down. Frames are newline-delimited JSON with an explicit tag, so an unknown or malformed
+frame is a parse error rather than a silent misread.</p>
+<pre><code>{"f":"req", "id":7, "op":"turn.claim", "arg":{}}
+{"f":"part","id":7, "data":{"delta":"hel"}}
+{"f":"rep", "id":7, "ok":{"turn":"01J…"}}
+{"f":"err", "id":7, "code":"stale_epoch", "msg":"turn 01J… is over"}
+{"f":"ev",  "name":"tool_call", "t":1789.5, "data":{"name":"shell"}}
+{"f":"push","name":"cancel", "data":{}}</code></pre>
+
+<h2>Who may call what</h2>
+<p>Authority comes from the kernel. A connection over a Unix socket carries the peer's real user
+id, which cannot be forged, so the core decides what a connection may do before reading a byte
+from it. Nothing a caller says about itself is ever used to grant access.</p>
+<table>
+<tr><th>Role</th><th>Who</th><th>May</th></tr>
+<tr><td>mentor</td><td>root, or whoever started the core</td><td>everything, including stopping it</td></tr>
+<tr><td>agent</td><td>the mind, uid 1000</td><td>run its turn, generate, ask, think, set alarms, read back</td></tr>
+<tr><td>viewer</td><td>a window</td><td>watch, speak, look at the questions</td></tr>
+</table>
+<p>The roles are an explicit table, not a ranking. An early version ordered them and compared, which
+quietly let a terminal claim a turn.</p>
+
+<h2>State</h2>
+<p>Files stay the source of truth and stay readable with ordinary tools: the conversation is
+rotating JSON-lines files, the queue is a directory with one file per waiting signal, and the
+questions, alarms, thoughts and certificate are each their own file. Every write fills a
+temporary file, fsyncs it and renames it over the target, so a crash cannot leave a truncated
+one.</p>
+<p>Beside them is a database of everything measured: turn durations, which tools fail, what each
+turn felt like, whether questions get answered. It is readable only by the core, so the mind can
+neither see nor edit how it is being scored, and nothing in it is irreplaceable, because it could
+be rebuilt by replaying the journal.</p>
+</main></body></html>
