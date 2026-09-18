@@ -1,7 +1,7 @@
 [project]
 name = "groow"
-version = "0.2.0"
-description = "A small language model that learns by rewriting its own weights: passively from every conversation, actively through self-directed drills and self-play."
+version = "0.3.0"
+description = "The learning side of Groow: the model that generates, and the passes that change its weights. The core, the agent loop and the interface are in rust/."
 requires-python = ">=3.12"
 dependencies = [
   "torch",
@@ -9,15 +9,14 @@ dependencies = [
   "peft",
   "accelerate",
   "safetensors",
-  "rich",
   "numpy",
-  "textual>=0.80",
   "aiohttp>=3.9",
   "laya>=0.1.6",
 ]
 
 [project.scripts]
-groow = "groow.cli:main"
+groow-brain = "groow.serve:main"
+groow-learn = "groow.learn:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -25,6 +24,3 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["groow*"]
-
-[tool.setuptools.package-data]
-groow = ["recipes/*.md", "default_skills/*.py"]

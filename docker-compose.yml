@@ -1,23 +1,22 @@
 # The body is this image; the home is ./home. Everything Groow is or installs lives in ./home.
-# Use ./birth (it creates the home, builds the body, starts the daemon, gives birth on the first run).
-#   ./birth            ./birth stop       ./birth logs       ./birth shell       ./birth status
-#   groow ui  |  groow chat  |  curl -s localhost:7373/status      # from the host
+# Use ./birth, which creates the home, builds the body and wakes it up.
+#   ./birth      ./birth stop      ./birth logs      ./birth shell      ./birth status
 services:
   groow:
     build: .
     image: groow:latest
-    user: "${GROOW_UID:-1000}:${GROOW_GID:-1000}"   # ./birth sets these to your uid/gid
+    # The core runs as root so that the state can be kept out of the mind's reach; the mind
+    # itself runs as uid 1000 inside, started by the core.
     read_only: true                    # the body is immutable; only the home and /tmp are writable
     tmpfs:
       - /tmp:size=2g,exec
+      - /run:size=64m
     stdin_open: true
     tty: true
-    ports:
-      - "127.0.0.1:7373:7373"
     volumes:
-      - ./home:/home/groow             # Groow's home: state/, workspace/, .venv, .cache, groow.json
-      - ./home/.nix:/nix               # the Nix store, kept inside the home folder on the host (mkdir -p home/.nix first)
+      - ./home:/home/groow             # state/, workspace, the model, the manual, its own commands
+      - ./home/.nix:/nix               # the Nix store, kept inside the home folder on the host
     devices:
-      - nvidia.com/gpu=all             # CDI; if this fails after a driver upgrade: sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
+      - nvidia.com/gpu=all             # CDI; after a driver upgrade: sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
     shm_size: "2gb"
     restart: unless-stopped

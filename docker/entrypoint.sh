@@ -1,39 +1,43 @@
 #!/usr/bin/env bash
-# Groow's body wakes up: prepare the home, install Nix on first start, give birth if there is no
-# birth certificate yet, then run the command. This file is part of the body: Groow cannot change it.
-# Runs as the unprivileged user `groow`; the only writable place is $HOME (a volume).
+# The body wakes up: prepare the home, start the brain, then hand over to the core.
+# This file is part of the body. The mind cannot change it, and neither can the core.
 set -e
 export HOME=/home/groow
 cd "$HOME"
-mkdir -p "$HOME/.cache/tmp" "$HOME/state" "$HOME/workspace" "$HOME/.config/nix"
-export TMPDIR="$HOME/.cache/tmp"          # /tmp may be noexec; installers and builds need an executable scratch dir
-[ -f "$HOME/.config/nix/nix.conf" ] || echo "experimental-features = nix-command flakes" > "$HOME/.config/nix/nix.conf"
 
-# Nix, single-user. /nix is a mount backed by ./home/.nix on the host (a symlinked store is refused by Nix).
-if [ -x "$HOME/.nix-profile/bin/nix" ] || [ -x "$HOME/.local/state/nix/profiles/profile/bin/nix" ]; then
-  echo "body: nix present in the home"
-else
-  if [ -z "$GROOW_SKIP_NIX" ]; then
-    echo "body: installing nix into the home (first start, ~30 s)…"
-    curl -fsSL https://nixos.org/nix/install -o "$TMPDIR/nix-install.sh"
-    sh "$TMPDIR/nix-install.sh" --no-daemon --yes >"$HOME/.cache/nix-install.log" 2>&1 \
-      && echo "body: nix installed" || { echo "body: nix install failed"; tail -20 "$HOME/.cache/nix-install.log"; }
-  fi
+STATE="$HOME/state"
+mkdir -p "$STATE" "$HOME/workspace" "$HOME/.cache/tmp" "$HOME/.local/bin" "$HOME/.config/nix"
+export TMPDIR="$HOME/.cache/tmp"     # /tmp may be mounted without exec; installers need somewhere to run
+chown -R groow:groow "$HOME/workspace" "$HOME/.local" "$HOME/.cache" "$HOME/.config" 2>/dev/null || true
+[ -f "$HOME/groow.json" ] || cp /opt/groow/groow.json "$HOME/groow.json"
+
+# Nix, installed into the home as the mind, so it can add tools for itself without root.
+if [ -z "$GROOW_SKIP_NIX" ] && [ ! -x "$HOME/.nix-profile/bin/nix" ]; then
+  echo "body: installing nix into the home (first start, about thirty seconds)…"
+  [ -f "$HOME/.config/nix/nix.conf" ] || echo "experimental-features = nix-command flakes" > "$HOME/.config/nix/nix.conf"
+  curl -fsSL https://nixos.org/nix/install -o "$TMPDIR/nix-install.sh"
+  runuser -u groow -- sh "$TMPDIR/nix-install.sh" --no-daemon --yes > "$HOME/.cache/nix-install.log" 2>&1 \
+    && echo "body: nix installed" || { echo "body: nix install failed"; tail -5 "$HOME/.cache/nix-install.log"; }
 fi
-for f in "$HOME/.nix-profile/etc/profile.d/nix.sh"; do [ -f "$f" ] && . "$f"; done
-export PATH="$HOME/.venv/bin:$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/venv/bin:$PATH"
-[ -f "$HOME/groow.json" ] || cp /opt/groow/groow.json "$HOME/groow.json" 2>/dev/null || true
-grep -q "nix.sh" "$HOME/.bashrc" 2>/dev/null || cat >> "$HOME/.bashrc" <<'RC'
+grep -q "groow home" "$HOME/.bashrc" 2>/dev/null || cat >> "$HOME/.bashrc" <<'RC'
 # groow home
 [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ] && . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-export PATH="$HOME/.venv/bin:$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/venv/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin"
 export TMPDIR="$HOME/.cache/tmp"
 RC
-# Birth or waking: no birth certificate in the home means this is the first time.
-if [ "${1:-}" = "start" ] && [ ! -f "$HOME/state/birth.json" ]; then
-  echo "body: no birth certificate in the home. This is a birth."
-  groow init
-  chmod -R u+w "$HF_HOME/hub" 2>/dev/null; rm -rf "$HF_HOME/hub"   # the working copy is state/base; the download cache would double the home
-fi
+
+# The manual, in the home where it can read and rewrite it.
+mkdir -p "$STATE/recipes"
+for f in /usr/share/groow/recipes/*.md; do
+  [ -f "$f" ] && [ ! -f "$STATE/recipes/$(basename "$f")" ] && cp "$f" "$STATE/recipes/"
+done
+chown -R groow:groow "$STATE/recipes" 2>/dev/null || true
+
+# The brain: it holds the card and the weights, so it starts first and keeps running.
+echo "body: starting the brain"
+/opt/venv/bin/python -m groow.serve --config "$HOME/groow.json" --state "$STATE" --port "${GROOW_BRAIN_PORT:-7374}" &
+BRAIN=$!
+trap 'kill $BRAIN 2>/dev/null || true' EXIT
+
 echo "body: waking groow ($*)"
-exec "$@"
+exec /usr/local/bin/groow --config "$HOME/groow.json" --state "$STATE" "$@"
