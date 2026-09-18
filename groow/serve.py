@@ -137,6 +137,22 @@ class Server:
             "generated": self.generated,
         })
 
+    async def h_reload(self, request: web.Request) -> web.Response:
+        """Pick up weights that changed underneath us.
+
+        A night merges the overlay into the base on disk. Without this the running brain would
+        keep answering from the copy it loaded hours ago, and the night would appear to have
+        done nothing at all. Generation is serialised through the queue, so this waits for the
+        current one to finish rather than swapping the model out from under it.
+        """
+        while self.busy or self.queue.qsize():
+            await asyncio.sleep(0.2)
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, self.load)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
+        return web.json_response({"ok": True, "model": self.cfg.model_id, "reloaded": True})
+
     async def h_generate(self, request: web.Request) -> web.StreamResponse:
         try:
             payload = await request.json()
@@ -175,6 +191,7 @@ class Server:
         app.add_routes([
             web.get("/health", self.h_health),
             web.post("/generate", self.h_generate),
+            web.post("/reload", self.h_reload),
         ])
         app.on_startup.append(lambda _: self._start())
         return app

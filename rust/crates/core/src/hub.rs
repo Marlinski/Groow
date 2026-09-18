@@ -774,10 +774,17 @@ impl Hub {
         if goal.trim().is_empty() {
             return Err(WireError::BadArg("a thought needs a goal".into()));
         }
-        let live = self.thoughts.live().map_err(io)?.len();
-        if live >= self.cfg.max_thoughts {
+        // Only thoughts actually being worked on count. A paused one is set aside and should
+        // not stop the mind starting something it wants to do now; it is told about them so it
+        // can resume one instead of starting another.
+        let running = self.thoughts.running().map_err(io)?;
+        if running.len() >= self.cfg.max_thoughts {
+            let names: Vec<String> = running.iter().map(|t| format!("{} ({})", t.id, t.goal)).collect();
             return Err(WireError::Busy(format!(
-                "you already have {live} thoughts going; finish or kill one first")));
+                "you already have {} thoughts running: {}. Finish or kill one first.",
+                running.len(),
+                names.join("; ")
+            )));
         }
         let system = format!(
             "You are one of Groow's inner thoughts, working alone on a single goal.\n\nGoal: {goal}\n\n\

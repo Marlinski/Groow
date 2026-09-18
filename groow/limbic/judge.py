@@ -16,14 +16,23 @@ from __future__ import annotations
 
 import threading
 
-REACTION_Q = {"reaction": {"type": "choice", "instructions": "How did the person react to what Groow said?",
-                           "criteria": {"pleased": "satisfied, thanks, praise, accepts the answer",
-                                        "neutral": "moves on, asks something else, no judgement",
-                                        "displeased": "corrects, complains, repeats the question, says it is wrong"}}}
-ANSWERS_Q = {"answers": {"type": "choice", "instructions": "Does the reply answer the question that was asked?",
-                         "criteria": {"answers": "it gives the information or the decision that was asked for",
-                                      "unrelated": "it is about something else",
-                                      "refuses": "it declines, defers, or says it does not know"}}}
+# The wording of these questions is the judge's whole behaviour, and it never learns, so a
+# badly phrased one is a permanent mistake. Both were chosen by measurement against labelled
+# exchanges; `python -m groow.limbic.calibrate --explore` reproduces the comparison.
+#
+# The earlier wording of ANSWERS_Q asked whether a reply "gives the information that was asked
+# for", and scored a perfectly good answer at -0.76 because it judged the answer's quality
+# instead of whether it was an answer at all. Asking only whether the reply responds to the
+# question agrees with a person on every case in the fixture.
+REACTION_Q = {"reaction": {"type": "choice",
+                           "instructions": "Was the person happy with the answer, unhappy with it, or neither?",
+                           "criteria": {"happy": "they thank, praise, agree, or accept it",
+                                        "neither": "they simply carry on or ask something else",
+                                        "unhappy": "they correct it, contradict it, or complain"}}}
+ANSWERS_Q = {"answers": {"type": "choice",
+                         "instructions": "Is the reply a response to that question, or is it about something else?",
+                         "criteria": {"responds": "it replies to that question, even briefly or partially",
+                                      "elsewhere": "it raises a different subject or asks something new"}}}
 OUTCOME_Q = {"outcome": {"type": "choice", "instructions": "How did this command turn out?",
                          "criteria": {"useful": "it produced the information or effect that was wanted",
                                       "nothing": "it ran but produced nothing useful",
@@ -89,8 +98,8 @@ class LayaJudge:
     def reaction(self, answer: str, reply: str) -> float | None:
         if not (answer or "").strip() or not (reply or "").strip():
             return None
-        return self._choice({"groow_said": answer[:1500], "person_replied": reply[:1500]},
-                            REACTION_Q, "reaction", "pleased", "displeased")
+        return self._choice({"the_answer": answer[:1500], "the_persons_reply": reply[:1500]},
+                            REACTION_Q, "reaction", "happy", "unhappy")
 
     def outcome(self, command: str, result: str) -> float | None:
         if not (command or "").strip():
@@ -102,8 +111,8 @@ class LayaJudge:
         """Did this reply answer that question? Used to close a question in the mentor's inbox."""
         if not (question or "").strip() or not (reply or "").strip():
             return None
-        return self._choice({"question_asked": question[:800], "reply": reply[:1200]},
-                            ANSWERS_Q, "answers", "answers", "unrelated")
+        return self._choice({"the_question": question[:800], "the_reply": reply[:1200]},
+                            ANSWERS_Q, "answers", "responds", "elsewhere")
 
 
 class GLiClassJudge:

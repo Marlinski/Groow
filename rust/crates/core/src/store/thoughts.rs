@@ -70,10 +70,6 @@ pub struct Thought {
     pub extra: serde_json::Map<String, Value>,
 }
 
-/// How long a thought may exist without a live process before it counts as abandoned. New
-/// thoughts need this grace, because the file exists a moment before the process starts.
-const ORPHAN_GRACE: f64 = 90.0;
-
 /// The most steps a single thought may take, whatever it asks for.
 pub const MAX_STEPS_CAP: u32 = 60;
 
@@ -128,6 +124,12 @@ impl Thoughts {
 
     pub fn live(&self) -> std::io::Result<Vec<Thought>> {
         Ok(self.all()?.into_iter().filter(|t| !t.status.is_final()).collect())
+    }
+
+    /// Thoughts actually being worked on. A paused one is set aside, not in flight, and must
+    /// not occupy a slot the mind could use for something it wants to do now.
+    pub fn running(&self) -> std::io::Result<Vec<Thought>> {
+        Ok(self.all()?.into_iter().filter(|t| t.status == ThoughtStatus::Running).collect())
     }
 
     /// The next thought that should be given a process: running, unclaimed, and left alone
@@ -185,9 +187,14 @@ impl Thoughts {
     /// Find thoughts whose process is gone and park them, so a crash leaves nothing that
     /// claims to be running but never moves.
     ///
+    /// A thought with no process is not an orphan: it takes one step per process, so between
+    /// steps it is simply waiting its turn. Only a thought that claims a process which is no
+    /// longer there has actually lost anything.
+    ///
     /// `alive` answers whether a process id is still running; it is a parameter so this can be
     /// tested without spawning anything.
     pub fn reap(&self, alive: impl Fn(u32) -> bool, now: f64) -> std::io::Result<Vec<String>> {
+        let _ = now;
         let mut parked = Vec::new();
         for t in self.all()? {
             if t.status != ThoughtStatus::Running {
@@ -195,7 +202,7 @@ impl Thoughts {
             }
             let orphan = match t.pid {
                 Some(p) => !alive(p),
-                None => now - t.updated > ORPHAN_GRACE,
+                None => false,
             };
             if orphan {
                 self.patch(&t.id, |t| {
@@ -342,13 +349,26 @@ mod tests {
     }
 
     #[test]
-    fn a_brand_new_thought_is_given_time_to_start() {
+    fn a_thought_waiting_for_its_next_step_is_not_treated_as_lost() {
+        // It takes one step per process, so having no process is the normal state between
+        // steps. Parking it for that would stop it after its first step, every time.
         let d = tempfile::tempdir().unwrap();
         let s = store(&d);
-        let t = s.spawn("just born", 5, "p").unwrap();
-        assert!(s.reap(|_| false, t.created).unwrap().is_empty(), "it has not had a chance to start yet");
-        let later = t.created + ORPHAN_GRACE + 1.0;
-        assert_eq!(s.reap(|_| false, later).unwrap().len(), 1, "but it cannot stay unclaimed forever");
+        let t = s.spawn("still going", 5, "p").unwrap();
+        let much_later = t.created + 10_000.0;
+        assert!(s.reap(|_| false, much_later).unwrap().is_empty());
+        assert_eq!(s.get(&t.id).unwrap().unwrap().status, ThoughtStatus::Running);
+    }
+
+    #[test]
+    fn a_paused_thought_does_not_occupy_a_slot() {
+        let d = tempfile::tempdir().unwrap();
+        let s = store(&d);
+        let a = s.spawn("one", 5, "p").unwrap();
+        s.spawn("two", 5, "p").unwrap();
+        s.patch(&a.id, |t| t.status = ThoughtStatus::Paused).unwrap();
+        assert_eq!(s.live().unwrap().len(), 2, "it still exists");
+        assert_eq!(s.running().unwrap().len(), 1, "but it is not being worked on");
     }
 
     #[test]

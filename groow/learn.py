@@ -211,13 +211,19 @@ def harvest(cfg: Config) -> dict:
                 made["conversation"] += 1
 
         # Every turn, good or bad, is a decision that can be reinforced or discouraged.
+        #
+        # They share one group on purpose. A conversation turn happens once, so a group of one
+        # has nothing to compare against and its advantage is exactly zero: the step runs and
+        # changes nothing. Grouped together, each turn is measured against how turns have been
+        # going lately, which is what a baseline is for. Games are different and keep their own
+        # per-round groups, because there the same position really was played several ways.
         prompt = [{"role": m.get("role"), "content": m.get("content", "")}
                   for m in match["messages"][:1]]
         if prompt and match["final"]:
             sets.append("actions", {
                 "kind": "pg", "prompt": prompt, "completion": match["final"],
-                "reward": valence, "group": f"turn:{r['id']}",
-                "tags": flags, "by": "learn.harvest",
+                "reward": valence, "group": "turns",
+                "tags": flags, "turn": r["id"], "by": "learn.harvest",
             })
             made["actions"] += 1
 
@@ -270,7 +276,29 @@ def night(cfg: Config) -> dict:
         brain.save()
     except Exception as e:
         out["consolidate"] = {"error": f"{type(e).__name__}: {e}"}
+    out["reload"] = tell_the_brain_to_reload(cfg)
     return out
+
+
+def tell_the_brain_to_reload(cfg: Config) -> dict:
+    """The weights on disk have changed; the brain still has the old ones in memory.
+
+    Without this a night is invisible: everything it merged sits on disk while the running
+    brain keeps answering from the copy it loaded before.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = f"http://127.0.0.1:{getattr(cfg, 'brain_port', 7374)}/reload"
+    try:
+        req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            return json.loads(r.read())
+    except urllib.error.URLError as e:
+        # Nothing is listening, which is normal when a night runs with the brain down.
+        return {"ok": False, "why": f"the brain is not answering at {url}: {e.reason}"}
+    except Exception as e:
+        return {"ok": False, "why": f"{type(e).__name__}: {e}"}
 
 
 def main() -> None:

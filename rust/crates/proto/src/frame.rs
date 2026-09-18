@@ -134,7 +134,7 @@ pub enum WireError {
     NotFound(&'static str, String),
     #[error("nothing to do")]
     Idle,
-    #[error("busy: {0}")]
+    #[error("{0}")]
     Busy(String),
     #[error("cancelled")]
     Cancelled,

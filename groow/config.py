@@ -86,6 +86,7 @@ class Config:
     mood_halflife_s: float = 1800.0   # how fast pain and pleasure fade
 
     # --- gateway (daemon API) ---------------------------------------------------
+    brain_port: int = 7374          # where the brain listens; the core reaches it here
     api_host: str = "127.0.0.1"       # 0.0.0.0 inside Docker
     api_port: int = 7373
 

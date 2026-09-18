@@ -71,7 +71,19 @@ class Trainer:
             groups[f"{n}:{s.get('group', i)}"].append((n, s))
         for gid, items in groups.items():
             rewards = [float(s["reward"]) for _, s in items]
-            mu, sd = statistics.mean(rewards), (statistics.pstdev(rewards) or 1.0)
+            mu, spread = statistics.mean(rewards), statistics.pstdev(rewards)
+            # Every sample in the group scored the same, so there is nothing to prefer: the
+            # advantages would all be zero and the step would change nothing. Say so and move
+            # on rather than spending a backward pass on it.
+            if spread == 0.0 or len(items) < 2:
+                for n, _ in items:
+                    report["sets"][n] += 1
+                report.setdefault("skipped_groups", []).append(
+                    {"group": gid, "decisions": len(items), "reward": round(mu, 3), "why": "nothing to compare"})
+                if on_progress:
+                    on_progress(f"skipped {gid}: {len(items)} decision(s) all at {mu:+.2f}, nothing to learn from")
+                continue
+            sd = spread
             decisions = []
             for n, s in items:
                 prompt_ids = self.brain.tok(self.brain.prompt_text(s["prompt"], enable_thinking=False), add_special_tokens=False)["input_ids"]

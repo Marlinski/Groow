@@ -21,7 +21,9 @@ pub enum ClientError {
     Unreachable(String, String),
     #[error("the connection ended")]
     Closed,
-    #[error("{code}: {msg}")]
+    // Only the message: the code is available on its own, and repeating it turns a refusal
+    // into "busy: busy: …" by the time it reaches the conversation.
+    #[error("{msg}")]
     Refused { code: String, msg: String },
     #[error("the core sent something unreadable: {0}")]
     Garbled(String),
