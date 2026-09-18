@@ -43,6 +43,17 @@ into things to practise and the bad ones into things to do less of, and take the
 What is learned is decided by how things went, not by the mind deciding it did well.
 
 ```
+python -m groow.learn feel       score the turns that have ended
+python -m groow.learn harvest    turn what was felt into things to practise
+python -m groow.learn nap        the short pass: feel, harvest, a little practice
+python -m groow.learn night      all of it, then merge the overlay into the base
+```
+
+A night changes the weights on disk, so it tells the brain to pick them up; otherwise it would
+keep answering from the copy it loaded hours earlier and the night would appear to have done
+nothing.
+
+```
      you ──────► groow ui ──┐
                             │  one unix socket, peer credentials from the kernel
      alarms ─────────────┐  │
@@ -79,6 +90,12 @@ Its questions cost something too. A handful may be open at once; asking one more
 oldest, and one nobody answers expires. Both outcomes come back as a cost, which is what
 teaches it to ask less and ask better.
 
+Because the judge never learns, a badly worded question to it is a permanent, invisible
+mistake. `python -m groow.limbic.calibrate` checks it against exchanges where we know what a
+person would say, and fails if it is ever confidently backwards. That fixture is how the
+current wording was chosen: an earlier one scored a perfectly good answer at minus zero point
+seven six, because it was judging the answer's quality rather than whether it was an answer.
+
 ## Running it without Docker
 
 ```
@@ -113,4 +130,5 @@ skills/                executables the mind gets on its path
 recipes/               its manual, copied into its home where it can rewrite it
 ```
 
-Run the tests with `cargo test --manifest-path rust/Cargo.toml`.
+Run the tests with `cargo test --manifest-path rust/Cargo.toml`, and check the judge with
+`python -m groow.limbic.calibrate`.

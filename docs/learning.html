@@ -76,4 +76,29 @@ sequenceDiagram
 <h2>Growth</h2>
 <p><code>grow(rank)</code> consolidates and attaches a wider overlay. The new part starts at zero, so the network computes the same function the instant after; it just has more directions to move in. The same zero-init principle extends to widening MLPs (Net2Net), inserting identity-initialised layers, and bolting on a vision encoder through a zero-initialised projector. Those are the next tools.</p>
 <footer>Groow · docs · learning</footer>
+<h2>The cycle, as it runs</h2>
+<p>Four passes, none of which the mind can call. The core starts them between turns and at
+night, which is the point: what is learned is decided by how things went.</p>
+<table>
+<tr><th>Pass</th><th>What it does</th></tr>
+<tr><td><code>feel</code></td><td>Scores the turns that have ended: the free sensors, plus the frozen judge reading how a person reacted. A turn the body failed to finish is scored at nothing, because the brain being down is not the mind's mistake.</td></tr>
+<tr><td><code>harvest</code></td><td>Turns what was felt into samples. Only turns that went well become examples to imitate; every turn becomes a decision to reinforce or discourage.</td></tr>
+<tr><td><code>nap</code></td><td>The short one, between turns: feel, harvest, a little practice, no consolidation.</td></tr>
+<tr><td><code>night</code></td><td>All of it, then the overlay is merged into the base and a blank one opens. The running brain is told to pick the new weights up, or it would go on answering from the copy it loaded hours ago.</td></tr>
+</table>
+
+<h2>Why conversation turns share one group</h2>
+<p>A policy step needs something to compare against. A conversation turn happens once, so a
+group of one has an advantage of exactly zero and the step changes nothing at all: this was
+true of every step until it was measured. Turns are grouped together and each is measured
+against how turns have been going lately, which is what a baseline is for. Games keep their own
+per-round groups, because there the same position really was played several ways.</p>
+
+<h2>Checking the judge</h2>
+<p>The judge never learns, so a badly worded question to it is a permanent mistake that nothing
+downstream can correct. <code>python -m groow.limbic.calibrate</code> runs it against exchanges
+where we know what a person would say and fails if it is ever confidently backwards. The
+current wording was chosen that way: asking whether a reply <em>responds</em> to the question
+agrees with a person on every case, where asking whether it gives the information wanted scored
+a good answer at −0.76.</p>
 </main></body></html>
