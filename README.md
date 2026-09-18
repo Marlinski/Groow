@@ -19,9 +19,9 @@ uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
 uv pip install -e .
 
 groow init          # birth: copy the base model into state/, write birth.json, baseline probes (~2 min)
-groow start         # the daemon: owns the GPU, runs the mind, serves events on state/groow.sock
-groow ui            # in another terminal: the fullscreen UI (Textual)
-groow chat          # or a minimal line client; groow status / groow stop
+groow start         # the daemon: owns the GPU, runs the mind, serves HTTP + SSE + WebSocket on :7373
+groow ui            # in another terminal: the fullscreen UI (Textual, WebSocket)
+groow chat          # or a minimal line client (SSE); groow ask "…" for a single query; groow status / stop
 ```
 
 Or in a sandbox (Docker with the NVIDIA container toolkit's CDI spec; everything Groow learns lands in `./data`):
@@ -32,9 +32,10 @@ docker compose up -d groow            # daemon
 docker compose exec groow groow ui    # UI inside the container
 ```
 
-Groow is a **daemon**. One process owns the GPU and the state; any number of
-clients connect over a Unix socket and speak a small JSON protocol (see
-`docs/gateway.html`). The UI shows the conversation, inner thoughts, the
+Groow is a **daemon**. One process owns the GPU and the state; clients speak
+HTTP: `POST /ask` for a single query, `GET /events` (Server-Sent Events) for
+the run loop, `WS /ws` for interactive UIs (see `docs/gateway.html`, or
+`curl -N localhost:7373/events`). The UI shows the conversation, inner thoughts, the
 identity card with its live age, a status line, and a small creature whose
 animation follows Groow's mood.
 
@@ -50,6 +51,8 @@ Inside the UI or the line client:
 | `/thoughts [all]` `/skills` `/incidents` | inner thoughts; skills; recent incidents |
 | `/learn off` `/reasoning on` | pause passive learning; enable Qwen3 thinking mode |
 | `/tools` `/stats` `/reset` `/restart` `/quit` | list tools, learning report, clear the conversation, rebuild the session, stop the daemon |
+
+Scripts can skip the UI entirely: `groow ask "…"`, or `curl -X POST localhost:7373/ask -d '{"text":"…"}'`.
 
 One-shot commands (no daemon running; they load their own copy of the model):
 
@@ -219,9 +222,9 @@ groow/
     loop.py            Harness (async): generate → parse tool calls → execute → loop; Hooks
   brain/server.py      GenServer: completions-style request queue, batching, main-thought preemption
   gateway/             the daemon and its protocol
-    protocol.py        event and command shapes (newline-delimited JSON over a Unix socket)
-    daemon.py          Daemon: owns App + Mind, broadcasts events, accepts commands, mood
-    client.py          Client: connect / send / iterate events
+    protocol.py        event shapes; HTTP routes, SSE framing, WebSocket messages
+    daemon.py          Daemon (aiohttp): owns App + Mind, /ask /say /command /status /events /ws, mood
+    client.py          Client: hello / status / ask / say, SSE and WebSocket streams
   ui/                  the fullscreen terminal UI (Textual)
     app.py             conversation, inner thoughts, identity card, status bar
     creature.py        the sprout: animation frames per mood
@@ -232,7 +235,7 @@ state/                 runtime, created by init (gitignored)
   plastic/             current overlay + optimizer state
   identity.md          the self-description; mentor_inbox.jsonl: questions for you
   birth.json           id, birth time, lineage, body, mentor: facts Groow cannot change
-  groow.sock groow.pid the daemon's socket and pid while it runs
+  groow.url groow.pid  the daemon's URL and pid while it runs
   thoughts/            inner thought traces (*.json), paused across sessions
   skills/              Groow's own tools (_drafts, _versions, _quarantine, manifest.json)
   incidents.jsonl      crashes and failed loads with tracebacks; patches/: proposed core changes

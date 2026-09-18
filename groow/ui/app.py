@@ -162,9 +162,9 @@ class GroowUI(App):
     """
     BINDINGS = [("ctrl+q", "quit", "quit"), ("ctrl+l", "clear", "clear log")]
 
-    def __init__(self, socket_path: Path):
+    def __init__(self, base_url: str):
         super().__init__()
-        self.socket_path = socket_path
+        self.base_url = base_url
         self.client: Client | None = None
         self.current: Bubble | None = None
         self.current_text = ""
@@ -190,19 +190,17 @@ class GroowUI(App):
     async def pump(self) -> None:
         chat = self.query_one(ChatLog)
         while True:
+            self.client = Client(self.base_url)
             try:
-                self.client = await Client(self.socket_path).connect(timeout=3)
-            except Exception:
-                chat.add("ui", f"no daemon at {self.socket_path}; start one with `groow start` (retrying)", "sys")
-                await asyncio.sleep(3)
-                continue
-            try:
-                async for ev in self.client.events():
+                async for ev in self.client.ws_events(replay=120):
                     self.handle(ev)
+                chat.add("ui", "daemon went away; reconnecting…", "sys")
             except Exception as e:
-                chat.add("ui", f"connection lost: {e}", "sys")
-            chat.add("ui", "daemon went away; reconnecting…", "sys")
-            await asyncio.sleep(2)
+                chat.add("ui", f"no daemon at {self.base_url} ({type(e).__name__}); start one with `groow start` (retrying)", "sys")
+            finally:
+                await self.client.close()
+                self.client = None
+            await asyncio.sleep(3)
 
     def handle(self, ev: dict) -> None:
         k = ev["ev"]
@@ -295,7 +293,7 @@ class GroowUI(App):
             self.query_one(ChatLog).add("ui", "not connected", "sys")
             return
         try:
-            await self.client.say(text)
+            await self.client.ws_send(text)
         except Exception as e:
             self.query_one(ChatLog).add("ui", f"send failed: {e}", "sys")
 
@@ -308,5 +306,5 @@ def _short(x, n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def run_ui(socket_path: Path) -> None:
-    GroowUI(socket_path).run()
+def run_ui(base_url: str) -> None:
+    GroowUI(base_url).run()

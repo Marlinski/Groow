@@ -1,13 +1,15 @@
 # docker compose run --rm groow init      # first time: downloads the base model into ./data
 # docker compose up -d groow              # the daemon
-# docker compose exec groow groow ui      # the UI, inside the container
-# docker compose exec groow groow status
+# groow ui                                # from the host: the daemon answers on localhost:7373
+# curl -s localhost:7373/status
 services:
   groow:
     build: .
     image: groow:latest
     stdin_open: true
     tty: true
+    ports:
+      - "127.0.0.1:7373:7373"     # the API: groow ui / groow chat / curl from the host
     volumes:
       - ./data:/data              # state/ (weights, memory, identity, workspace) + HF download cache
       - ./groow.json:/app/groow.json

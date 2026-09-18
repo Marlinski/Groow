@@ -1,11 +1,11 @@
 """Gateway: the daemon (`groow start`) and the protocol any UI speaks to it.
 
-    protocol  event/command shapes, newline-delimited JSON over a Unix socket
-    daemon    Daemon: owns the App and the Mind, broadcasts events, accepts commands
-    client    Client: connect, send, iterate events (line client and Textual UI use it)
+    protocol  event shapes; HTTP routes, SSE framing, WebSocket messages
+    daemon    Daemon: owns the App and the Mind, serves HTTP/SSE/WS, fans events out
+    client    Client: hello/status/ask/say, SSE and WebSocket streams
 """
-from .protocol import event, encode, decode, MOODS
-from .client import Client, default_socket
+from .protocol import event, encode, decode, sse, MOODS
+from .client import Client, base_url
 from .daemon import Daemon
 
-__all__ = ["event", "encode", "decode", "MOODS", "Client", "default_socket", "Daemon"]
+__all__ = ["event", "encode", "decode", "sse", "MOODS", "Client", "base_url", "Daemon"]

@@ -1,14 +1,15 @@
 <!doctype html><html lang="en"><head><title>Groow · daemon and UI</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
 <nav class="top"><a href="index.html">Overview</a><a href="learning.html">Learning</a><a href="harness.html">Harness</a><a href="mind.html">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html" class="here">Daemon &amp; UI</a></nav>
 <h1>Daemon and UI</h1>
-<p class="lead">Groow runs as one process that owns the GPU and the state. Everything else, the fullscreen UI, the line client, a future web page, is a client speaking a small JSON protocol over a Unix socket. Start it once; talk to it from anywhere on the machine.</p>
+<p class="lead">Groow runs as one process that owns the GPU and the state. Everything else, the fullscreen UI, the line client, a script, a future web page, is an HTTP client. Single queries are plain HTTP, the run loop streams as Server-Sent Events, and interactive UIs use a WebSocket.</p>
 
 <h2>Processes</h2>
 <pre class="mermaid">
 flowchart LR
-  D[groow start<br/>daemon: App + Mind + GPU] <-->|state/groow.sock<br/>JSON lines| U[groow ui<br/>Textual fullscreen]
-  D <--> C[groow chat<br/>line client]
-  D <--> S[groow status / stop]
+  D[groow start<br/>daemon: App + Mind + GPU] <-->|WebSocket /ws| U[groow ui<br/>Textual fullscreen]
+  D -->|SSE /events| C[groow chat<br/>line client]
+  C -->|POST /say| D
+  S[groow ask / status / stop<br/>scripts, curl] -->|HTTP| D
   D --> F[(state/)]
 </pre>
 <table><tr><th>Command</th><th>What it does</th></tr>
@@ -18,7 +19,18 @@ flowchart LR
 <tr><td><code>groow status</code> / <code>groow stop</code></td><td>birth card and live snapshot / graceful shutdown (state saved)</td></tr></table>
 
 <h2>The protocol</h2>
-<p>Newline-delimited JSON. A client sends <code>{"cmd":"say","text":…}</code> for a human message, <code>{"cmd":"command","text":"/sleep"}</code> for a slash command, <code>{"cmd":"status"}</code> for a snapshot. Both kinds of message enter the mind's priority queue at USER priority, like typing in the old chat. The daemon broadcasts events to every connected client:</p>
+<p>Base URL <code>http://127.0.0.1:7373</code> (<code>api_host</code>, <code>api_port</code> in <code>groow.json</code>; the daemon also writes it to <code>state/groow.url</code>). JSON everywhere.</p>
+<table><tr><th>Route</th><th>Use</th></tr>
+<tr><td><code>GET /hello</code></td><td>birth card, identity, model, tools, status, inbox</td></tr>
+<tr><td><code>GET /status</code></td><td>live snapshot</td></tr>
+<tr><td><code>POST /ask {"text"}</code></td><td><b>single query</b>: queues the message at USER priority and waits for that turn; returns <code>final</code>, <code>tools_used</code>, <code>seconds</code> and the turn's events</td></tr>
+<tr><td><code>POST /say {"text"}</code> · <code>POST /command {"text"}</code></td><td>enqueue and return at once (<code>req</code> correlation id in the reply and on the turn's events)</td></tr>
+<tr><td><code>GET /events?replay=N</code></td><td><b>Server-Sent Events</b> stream of the run loop: <code>hello</code>, the last N events flagged <code>replay</code>, then live; keepalive comments every 15 s</td></tr>
+<tr><td><code>WS /ws?replay=N</code></td><td><b>WebSocket</b> for UIs: same events out, one JSON object per message; in: <code>{"cmd":"say"|"command"|"status","text":…}</code></td></tr></table>
+<pre><code>curl -s localhost:7373/status | jq .mood
+curl -s -X POST localhost:7373/ask -d '{"text":"what is 17*23?"}' | jq .final
+curl -N localhost:7373/events            # watch it live</code></pre>
+<p>Both streams carry the same event objects. Events are produced from several threads inside the daemon (the GPU executor emits <code>learned</code>, tools emit progress), so emission hops onto the event loop and fans out through one queue per connection; a client that stops reading is dropped rather than slowing the mind.</p>
 <div class="wide"><table><tr><th>Event</th><th>Payload</th><th>Meaning</th></tr>
 <tr><td><code>hello</code></td><td>birth, identity, model, tools, status, inbox</td><td>first message to a new client, followed by the last 120 events (<code>replay: true</code>)</td></tr>
 <tr><td><code>status</code></td><td>mood, steps, nights, rank, thoughts, queue, server stats, gpu, skills</td><td>every 2 s</td></tr>

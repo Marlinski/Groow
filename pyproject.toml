@@ -12,6 +12,7 @@ dependencies = [
   "rich",
   "numpy",
   "textual>=0.80",
+  "aiohttp>=3.9",
 ]
 
 [project.scripts]

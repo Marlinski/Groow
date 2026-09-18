@@ -17,5 +17,6 @@ RUN uv pip install --python /opt/venv/bin/python -e . sentencepiece protobuf "hu
 # everything Groow learns lives under /data (mounted from ./data on the host)
 RUN mkdir -p /data/state /data/hf-cache && ln -s /data/state /app/state
 VOLUME ["/data"]
+EXPOSE 7373
 ENTRYPOINT ["groow"]
-CMD ["start", "-v"]
+CMD ["start", "-v", "--host", "0.0.0.0"]

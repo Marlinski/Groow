@@ -73,6 +73,10 @@ class Config:
     tool_timeout: int = 120            # seconds an I/O tool may run before the loop gives up on it
     skill_check_timeout: int = 60      # sandbox check budget for a draft
 
+    # --- gateway (daemon API) ---------------------------------------------------
+    api_host: str = "127.0.0.1"       # 0.0.0.0 inside Docker
+    api_port: int = 7373
+
     # --- harness ----------------------------------------------------------
     workspace_dir: str = "state/workspace"   # the only place file tools may read/write
     allow_python: bool = True                # run_python tool (subprocess with timeout)

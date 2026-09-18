@@ -34,10 +34,11 @@ class Mind:
         self.alive = True
         self.last_human = time.time()
         self.handled = 0
+        self._req = None
 
     # ------------------------------------------------------------------ producers
-    def push_user(self, text: str) -> None:
-        self.queue.push(Priority.USER, "user", text)
+    def push_user(self, text: str, req: str | None = None) -> None:
+        self.queue.push(Priority.USER, "user", text, req=req)
 
     # ------------------------------------------------------------------ the loop
     on_error = None      # callable(kind, traceback) -> None, set by the app (records incidents)
@@ -67,15 +68,23 @@ class Mind:
         if sig.kind == "user":
             self.last_human = time.time()
             if sig.text.startswith("/") and self.run_command:
+                req = sig.meta.get("req")
+                self.emit("turn_start", who="user", kind="command", text=sig.text, req=req)
                 r = self.run_command(sig.text)
                 if asyncio.iscoroutine(r):
                     r = await r
+                self.emit("turn_end", who="user", kind="command", final="", tools_used=[], seconds=0, req=req)
                 if r is True:
                     self.alive = False
                 return
-            self.emit("turn_start", who="user", kind="user", text=sig.text)
-            r = await self.harness.turn(sig.text)
-            self.emit("turn_end", who="user", final=r.final_text, tools_used=r.tools_used, seconds=r.seconds)
+            req = sig.meta.get("req")
+            self.emit("turn_start", who="user", kind="user", text=sig.text, req=req)
+            self._req = req
+            try:
+                r = await self.harness.turn(sig.text)
+            finally:
+                self._req = None
+            self.emit("turn_end", who="user", final=r.final_text, tools_used=r.tools_used, seconds=r.seconds, req=req)
         elif sig.kind in ("focus", "thought_done", "reminder", "idle"):
             if sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
                 return                               # something more concrete is right behind it

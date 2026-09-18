@@ -1,9 +1,10 @@
 """groow: a model that learns by rewriting its own weights.
 
   groow init                       give birth: copy the base model into state/, write birth.json
-  groow start [--safe] [-v]        run Groow as a daemon (owns the GPU; speaks JSON events on state/groow.sock)
-  groow ui                         fullscreen terminal UI connected to the daemon
-  groow chat                       minimal line client connected to the daemon
+  groow start [--safe] [-v]        run Groow as a daemon (owns the GPU; HTTP + SSE + WebSocket on :7373)
+  groow ui                         fullscreen terminal UI (WebSocket)
+  groow chat                       minimal line client (SSE + POST /say)
+  groow ask "question"             single query over HTTP, waits for the answer
   groow status | stop              snapshot / shut the daemon down
   groow doctor                     static health check (no model)
   one-shot (no daemon running):    memorize, quiz, play, sense, sleep, rollback, identity, probe, stats,
@@ -99,10 +100,14 @@ class App:
         if safe_mode:
             prompt = SAFE_MODE_PROMPT.format(incident=json.dumps(incident or {}, ensure_ascii=False)[:3000])
         self.harness = Harness(ServedBrain(self.brain, self.server, 0), self.tools, cfg, prompt,
-                               Hooks(on_text=lambda t: self.emit("text", delta=t),
-                                     on_tool_call=lambda n, a: self.emit("tool_call", name=n, args=a, actor="main"),
-                                     on_tool_result=lambda n, a, r: self.emit("tool_result", name=n, result=r[:600], actor="main"),
+                               Hooks(on_text=lambda t: self.emit("text", delta=t, req=self._req()),
+                                     on_tool_call=lambda n, a: self.emit("tool_call", name=n, args=a, actor="main", req=self._req()),
+                                     on_tool_result=lambda n, a, r: self.emit("tool_result", name=n, result=r[:600], actor="main", req=self._req()),
                                      after_turn=self._after_turn), name="main")
+
+    def _req(self):
+        """Correlation id of the /ask or /say request the main thought is currently serving."""
+        return getattr(getattr(self, "mind", None), "_req", None)
 
     def refresh_tools(self) -> None:
         """Rebuild the main tool set in place (the harness holds the registry object).
@@ -149,7 +154,7 @@ class App:
         info = self.learner.passive(turn.context, turn.messages, turn.tools_used)
         self.last_episode = info["episode"]
         self.emit("learned", loss=round(info["loss"], 4), tokens=info["learnable_tokens"], step=self.brain.meta["steps"],
-                  probe=info.get("probe"))
+                  probe=info.get("probe"), req=self._req())
         if self.brain.meta["steps"] % 10 == 0:
             self.brain.save()
 
@@ -278,9 +283,9 @@ def _boot(cfg: Config) -> App:
         return App(cfg)
 
 
-def _sock(cfg: Config) -> Path:
-    from .gateway import default_socket
-    return default_socket(cfg.state)
+def _url(cfg: Config) -> str:
+    from .gateway import base_url
+    return base_url(cfg)
 
 
 def cmd_init(cfg: Config, args) -> None:
@@ -306,13 +311,16 @@ def cmd_start(cfg: Config, args) -> None:
     import traceback
     from .gateway import Daemon
     from .harness import SkillManager
-    if _sock(cfg).exists():
-        try:
-            asyncio.run(_ping(cfg))
-            console.print("[red]a Groow daemon is already running on this state (use `groow stop`)[/red]")
-            return
-        except Exception:
-            _sock(cfg).unlink(missing_ok=True)
+    try:
+        asyncio.run(_ping(cfg))
+        console.print(f"[red]a Groow daemon already answers at {_url(cfg)} (use `groow stop`)[/red]")
+        return
+    except Exception:
+        (cfg.state / "groow.url").unlink(missing_ok=True)
+    if args.host:
+        cfg.api_host = args.host
+    if args.port:
+        cfg.api_port = args.port
     safe_mode, safe_crashes, incident = args.safe, 0, None
     while True:
         try:
@@ -345,25 +353,19 @@ def cmd_start(cfg: Config, args) -> None:
 
 async def _ping(cfg: Config) -> dict:
     from .gateway import Client
-    c = await Client(_sock(cfg)).connect(timeout=3)
-    try:
-        async for ev in c.events():
-            if ev.get("ev") == "hello":
-                return ev
-    finally:
-        await c.close()
-    raise RuntimeError("no hello")
+    async with Client(_url(cfg)) as c:
+        return await c.hello()
 
 
 def cmd_status(cfg: Config, args) -> None:
     try:
         h = asyncio.run(_ping(cfg))
     except Exception as e:
-        console.print(f"[dim]no daemon ({type(e).__name__}); start one with `groow start`[/dim]")
+        console.print(f"[dim]no daemon at {_url(cfg)} ({type(e).__name__}); start one with `groow start`[/dim]")
         return
     b, s = h["birth"], h["status"]
     console.print(Panel.fit(f"[bold]{b['name']}[/bold] · id {b['id']} · born {b['born_text']} · age {b['age']}\n"
-                            f"lineage {b['lineage']} · {b['hardware']}\n"
+                            f"lineage {b['lineage']} · {b['hardware']} · {_url(cfg)}\n"
                             f"mood {s['mood']} · steps {s['steps']} · nights {s['nights']} · rank {s['rank']} · "
                             f"thoughts running {s['thoughts_running']} · skills {s['skills']} · clients {s['clients']}"
                             + ("\n[red]SAFE MODE[/red]" if s['safe_mode'] else "")))
@@ -372,53 +374,71 @@ def cmd_status(cfg: Config, args) -> None:
 def cmd_stop(cfg: Config, args) -> None:
     async def go():
         from .gateway import Client
-        c = await Client(_sock(cfg)).connect(timeout=3)
-        await c.send("command", text="/quit")
-        async for ev in c.events():           # wait for the daemon's goodbye (or the socket closing)
-            if ev.get("ev") == "bye":
-                break
-        await c.close()
+        async with Client(_url(cfg)) as c:
+            await c.hello()                               # is anyone there?
+            await c.say("/quit")
+            try:
+                async for ev in c.events(replay=0):       # wait for the goodbye; the stream ends when it dies
+                    if ev.get("ev") == "bye":
+                        break
+            except Exception:
+                pass                                      # connection dropped = it is gone
     try:
-        asyncio.run(asyncio.wait_for(go(), 60))
-        console.print("[dim]groow is asleep (state saved)[/dim]")
+        asyncio.run(asyncio.wait_for(go(), 600))
+        console.print("[dim]groow is asleep (state saved). It finishes the turn it was in first, so this can take a minute.[/dim]")
     except Exception as e:
-        console.print(f"[dim]no daemon to stop ({type(e).__name__})[/dim]")
+        console.print(f"[dim]no daemon at {_url(cfg)} ({type(e).__name__})[/dim]")
+
+
+def cmd_ask(cfg: Config, args) -> None:
+    """Single query over HTTP: wait for the turn and print the answer."""
+    async def go():
+        from .gateway import Client
+        async with Client(_url(cfg)) as c:
+            return await c.ask(args.text, timeout=args.timeout)
+    try:
+        r = asyncio.run(go())
+    except Exception as e:
+        console.print(f"[red]cannot reach the daemon at {_url(cfg)} ({type(e).__name__})[/red]")
+        return
+    if args.json:
+        console.print_json(json.dumps(r, default=str))
+    else:
+        for e in r.get("events", []):
+            if e["ev"] == "tool_call":
+                console.print(f"   [yellow]⚙ {e['name']}[/yellow]({_short(e['args'])})")
+        console.print(r.get("final") or r.get("error", ""))
 
 
 def cmd_chat(cfg: Config, args) -> None:
-    """Minimal line client: streams the daemon's events to the terminal, sends what you type."""
+    """Minimal line client: SSE stream in, POST /say out."""
     from .gateway import Client
 
     async def go():
+        c = Client(_url(cfg))
         try:
-            c = await Client(_sock(cfg)).connect(timeout=3)
+            hello = await c.hello()
         except Exception as e:
-            console.print(f"[red]cannot connect to the daemon ({type(e).__name__}); run `groow start` first[/red]")
+            console.print(f"[red]cannot connect to the daemon at {_url(cfg)} ({type(e).__name__}); run `groow start` first[/red]")
             return
+        b = hello["birth"]
+        console.print(Panel.fit(f"[bold]{b['name']}[/bold] · age {b['age']} · {hello['model']} · {len(hello['tools'])} tools"
+                                + ("\n[red]SAFE MODE[/red]" if hello['safe_mode'] else "")))
+        if hello.get("inbox"):
+            console.print(f"[yellow]{b['name']} left {len(hello['inbox'])} question(s):[/yellow] "
+                          + " | ".join(q["question"] for q in hello["inbox"][-3:]))
         loop = asyncio.get_running_loop()
 
         async def pump():
-            speaking = False
-            async for ev in c.events():
-                if ev.get("replay"):
-                    continue
+            async for ev in c.events(replay=0):
                 k = ev["ev"]
-                if k == "hello":
-                    b = ev["birth"]
-                    console.print(Panel.fit(f"[bold]{b['name']}[/bold] · age {b['age']} · {ev['model']} · "
-                                            f"{len(ev['tools'])} tools" + ("\n[red]SAFE MODE[/red]" if ev['safe_mode'] else "")))
-                    if ev.get("inbox"):
-                        console.print(f"[yellow]{b['name']} left {len(ev['inbox'])} question(s):[/yellow] "
-                                      + " | ".join(q["question"] for q in ev["inbox"][-3:]))
-                elif k == "turn_start":
+                if k == "turn_start":
                     tag = "groow>" if ev["who"] == "user" else f"· {ev['kind']} →"
                     console.print(f"[bold magenta]{tag}[/bold magenta] ", end="")
-                    speaking = True
                 elif k == "text":
                     console.print(ev["delta"], end="", highlight=False, markup=False)
                 elif k == "turn_end":
                     console.print()
-                    speaking = False
                 elif k in ("tool_call", "tool_result", "learned", "log", "sleep", "thought"):
                     console_emit(k, **{a: v for a, v in ev.items() if a not in ("ev", "t")})
                 elif k == "inbox":
@@ -445,7 +465,7 @@ def cmd_chat(cfg: Config, args) -> None:
 
 def cmd_ui(cfg: Config, args) -> None:
     from .ui import run_ui
-    run_ui(_sock(cfg))
+    run_ui(_url(cfg))
 
 
 def cmd_doctor(cfg: Config, args) -> None:
@@ -468,14 +488,14 @@ def cmd_doctor(cfg: Config, args) -> None:
         present = (cfg.state / must).exists()
         ok &= present
         console.print(f"   state/{must}: {'ok' if present else 'MISSING'}")
-    if _sock(cfg).exists():
-        console.print(f"   daemon socket present: {_sock(cfg)}")
+    if (cfg.state / "groow.url").exists():
+        console.print(f"   daemon url file present: {(cfg.state / 'groow.url').read_text().strip()}")
     console.print("[green]healthy[/green]" if ok else "[red]problems found[/red]")
 
 
 # ---- one-shot commands (no daemon) -------------------------------------------------
 def _oneshot_guard(cfg: Config) -> None:
-    if _sock(cfg).exists():
+    if (cfg.state / "groow.url").exists():
         console.print("[yellow]note: a daemon may be running; one-shot commands load a second copy of the model.[/yellow]")
 
 
@@ -560,7 +580,10 @@ def main(argv=None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("init"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_init)
     s = sub.add_parser("start"); s.add_argument("--safe", action="store_true", help="start in safe mode")
-    s.add_argument("-v", "--verbose", action="store_true", help="print events to stdout"); s.set_defaults(fn=cmd_start)
+    s.add_argument("-v", "--verbose", action="store_true", help="print events to stdout")
+    s.add_argument("--host"); s.add_argument("--port", type=int); s.set_defaults(fn=cmd_start)
+    s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600)
+    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_ask)
     sub.add_parser("stop").set_defaults(fn=cmd_stop)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     sub.add_parser("chat").set_defaults(fn=cmd_chat)
