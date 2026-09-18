@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><head><title>Groow · learning</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html" class="">Overview</a><a href="learning.html" class="here">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a></nav>
+<h1>Learning</h1>
+<p class="lead">Every mechanism on this page ends in the same place: a gradient step on the plastic overlay. What differs is who supplies the signal, and what guards against learning the wrong thing.</p>
+
+<h2>Two speeds of memory</h2>
+<p>The <b>base</b> is a dense fp16 transformer (Qwen3-4B-Instruct-2507). Frozen during the day. The <b>overlay</b> is a LoRA adapter on every linear projection of every layer: rank 32, about 66M parameters, fp32 master weights, AdamW state kept across sessions. All learning writes into the overlay. At night the overlay is <b>consolidated</b>: <code>W ← W + (α/r)·B·A</code> per layer, an exact operation, then a blank overlay opens. Until then, deleting <code>state/plastic/</code> is a full undo.</p>
+<pre class="mermaid">
+flowchart LR
+  E[experience] --> S[gradient step<br/>fp16 compute, fp32 masters, grad scaler, checkpointing]
+  S --> O[overlay<br/>rank 32, 66M params]
+  O -.night: exact merge.-> B[base<br/>4.1B params fp16]
+  B -.kept as base.prev.-> R[rollback]
+</pre>
+<p class="note">Why not train the base directly: 4B parameters with Adam needs ~64 GB of state and fp16 master weights that drift. Why not quantise: bitsandbytes is the only option on Volta, it is slower than fp16, and merging a delta into ternary or int4 weights is lossy. The overlay is the honest compromise on this card.</p>
+
+<h2>Passive learning: every turn</h2>
+<p>After each main-thought turn the whole exchange is rendered with the model's own chat template and trained on once. Tokens are weighted by the role that produced them, so the loss mask follows the conversation exactly as generation saw it.</p>
+<table><tr><th>Role</th><th>Weight</th><th>Effect</th></tr>
+<tr><td>user</td><td>0.5</td><td>absorb what people state (facts land through conversation)</td></tr>
+<tr><td>assistant</td><td>1.0</td><td>reinforce its own answers, tool-call habits, style (self-distillation)</td></tr>
+<tr><td>tool</td><td>0</td><td>tool output is transient</td></tr>
+<tr><td>system</td><td>0</td><td>never memorised</td></tr></table>
+<p>Each step also replays two older episodes drawn from memory, preferring turns rated <code>/good</code> twice as often and never those rated <code>/bad</code>. This rehearsal is the cheapest known defence against catastrophic forgetting. The training sample is capped at <code>train_max_len</code> (4k tokens, tail of the conversation) independently of the 32k prompt budget.</p>
+<p><b>Feedback.</b> <code>/good</code> replays the turn three times at double assistant weight. <code>/bad</code> applies an <em>unlikelihood</em> loss to the assistant tokens, pushing that answer down, and bars the episode from rehearsal.</p>
+
+<h2>Active drills</h2>
+<table><tr><th>Tool</th><th>What happens to the weights</th><th>Measured</th></tr>
+<tr><td><code>memorize(title, text)</code></td><td>three prompt phrasings → the text, trained with rehearsal until the recite loss is under 0.15</td><td>an invented sentence: loss 6.26 → 0.16 in 15 steps</td></tr>
+<tr><td><code>quiz(question, expected)</code></td><td>none. Generates the current answer and measures the loss of the expected one</td><td>under 0.5 means it knows; above 2 means it does not</td></tr>
+<tr><td><code>learn_fact(question, answer, source)</code></td><td>three steps on question → answer in the source's wording with date and origin</td><td>news items: 2.1 → 1.4 typical after 3 steps; nights finish the job</td></tr>
+<tr><td><code>play(game, rounds)</code></td><td>policy gradient on self-play, see below</td><td>tic-tac-toe: 100% illegal → 0% illegal, positive score vs random</td></tr></table>
+
+<h3>Self-play with rules as the teacher</h3>
+<p>A game is anything with rules that can score an action without a human (<code>groow/games/</code>: tic-tac-toe, arithmetic; the model may invent more when allowed). Each round runs 16 episodes in lockstep with batched generation. Every decision gets its reward from the rules once the episode ends; rewards are normalised across the round into advantages (GRPO-style); one REINFORCE step raises the log-probability of good decisions and lowers bad ones.</p>
+<p class="note">A quarter of decisions are replaced by random <em>legal</em> moves. Without this, a small model's policy sits on one move at ~100% probability, sampling produces no diversity, and the gradient is zero. The saturation problem will recur with any new game.</p>
+
+<h2>Sleep</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant M as main thought
+  participant T as inner thoughts
+  participant L as learner
+  participant B as brain
+  M->>T: pause all, wait until idle
+  M->>L: replay: day's episodes + lessons, N steps with rehearsal
+  M->>L: internalise identity: teacher with prompt → student without
+  L->>B: probe drift (8 fixed Q&A)
+  alt drift > sleep_max_drift
+    B-->>M: overlay discarded, night aborted
+  else
+    B->>B: merge overlay into base, keep base.prev
+    B-->>M: fresh overlay, optimizer reset
+  end
+</pre>
+<p>A night is due every <code>sleep_every_steps</code> learning steps (or <code>/sleep</code>). <code>groow rollback</code> restores <code>base.prev</code> and discards the overlay.</p>
+
+<h2>Identity</h2>
+<p>There is no rigid system prompt. <code>state/identity.md</code> starts from a short seed (who Groow is, how it learns, that Marlinski is its owner and mentor to be asked when stuck). Groow may rewrite it with <code>update_identity</code>; every version is logged. At night, <b>context distillation</b> moves it into the weights: for sampled recent prompts the model answers <em>with</em> the identity in the prompt (teacher) and is trained on the same answer <em>without</em> it (student). The internalisation loss, the loss of the self-description when asked "who are you?" with no system prompt, fell from 3.16 to 2.68 after a single 10-step night. When it is low enough, <code>identity_in_prompt: false</code> removes the text and the personality stays.</p>
+
+<h2>Curiosity: sensing the world</h2>
+<p>When nobody has spoken for <code>sense_idle_minutes</code>, the main thought receives an internal impulse (not a human message) and reads the news through its own tools: <code>news_headlines</code> (RSS feeds, dated and sourced), <code>read_article</code>, then <code>learn_fact</code> for what is worth keeping. Only grounded text is trained in: the answer is the source's wording with its date. A fixed pipeline does the same without the model's judgement and is the fallback when the agentic pass learns nothing.</p>
+
+<h2>Guard rails</h2>
+<table><tr><th>Rail</th><th>Mechanism</th></tr>
+<tr><td>Drift probes</td><td>8 fixed Q&amp;A pairs measured at birth, every 25 steps, and around every night. Rising loss = forgetting or style collapse.</td></tr>
+<tr><td>Rehearsal</td><td>2 old episodes per step, good ones favoured, bad ones excluded.</td></tr>
+<tr><td>Bounded overlay</td><td>rank 32, lr 5e-5, grad clip 1.0: one bad day cannot move the base.</td></tr>
+<tr><td>Aborted nights</td><td>a night whose probes worsened by more than <code>sleep_max_drift</code> discards the overlay instead of merging.</td></tr>
+<tr><td>Rollback</td><td>previous base kept on disk; <code>groow rollback</code>.</td></tr>
+<tr><td>Grounded facts</td><td><code>learn_fact</code> trains the source's words, never a paraphrase.</td></tr>
+<tr><td>Measured knowing</td><td><code>quiz</code> and <code>probe</code> report losses; Groow's opinion of what it knows is never the record.</td></tr></table>
+
+<h2>Growth</h2>
+<p><code>grow(rank)</code> consolidates and attaches a wider overlay. The new part starts at zero, so the network computes the same function the instant after; it just has more directions to move in. The same zero-init principle extends to widening MLPs (Net2Net), inserting identity-initialised layers, and bolting on a vision encoder through a zero-initialised projector. Those are the next tools.</p>
+<footer>Groow · docs · learning</footer>
+</main></body></html>

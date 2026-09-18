@@ -1,0 +1,65 @@
+<!doctype html><html lang="en"><head><title>Groow · mind</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html" class="">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="here">Mind</a><a href="extension.html">Self-extension</a></nav>
+<h1>Mind</h1>
+<p class="lead">One conscious thread over a priority queue of signals, and the inner thoughts it can spawn, watch, pause, resume and kill. The thread is linear because consciousness is; the GPU underneath is not.</p>
+
+<h2>The main thought</h2>
+<p>The main thought is a single rolling conversation (one <code>Harness</code>, priority 0). It is the only thing that speaks to the person or to the mentor. It consumes <b>signals</b> in priority order and does nothing between them; inner thoughts run on their own and reach it only through the queue.</p>
+<table><tr><th>Priority</th><th>Signal</th><th>Framed to the model as</th></tr>
+<tr><td>0 USER</td><td>a human typed</td><td>the message itself</td></tr>
+<tr><td>1 FOCUS</td><td>a thought called <code>focus()</code> or finished</td><td><code>[inner thought a1b2 says] …</code> / <code>[inner thought a1b2 finished] …</code></td></tr>
+<tr><td>2 REMINDER</td><td>every N steps of a running thought</td><td><code>[reminder, no reply needed] thought a1b2 is at step 6/12: … You may read_thought it, pause it, or ignore this.</code></td></tr>
+<tr><td>3 IDLE</td><td>nobody spoke for <code>sense_idle_minutes</code></td><td>the curiosity impulse (read the news)</td></tr>
+<tr><td>4 HOUSEKEEPING</td><td>a night is due</td><td>handled by the loop, not the model</td></tr></table>
+<p>Reminders never pile up (a new one replaces a queued one) and are skipped when something more concrete is right behind them. Slash commands are USER signals executed by the loop itself. After any signal, if a night is due and nothing urgent is queued, the mind pauses all thoughts and sleeps.</p>
+
+<h2>Inner thoughts</h2>
+<p>An inner thought is a separate conversation history driven by its own harness in its own asyncio task, with a restricted toolset (it can read, learn, memorise, play, recall; it cannot talk to anyone, ask the mentor or rewrite the identity). A <b>step</b> is one harness turn: the thought is prompted to continue toward its goal, may call tools, and its trace grows. Concurrent thoughts are batched into one forward pass by the generation server and preempted per token when the person speaks.</p>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> running : think(goal, max_steps)
+  running --> paused : pause_thought / sleep / session end
+  paused --> running : resume_thought
+  running --> done : finish(summary) or budget exhausted
+  running --> killed : kill_thought / crash
+  paused --> killed : kill_thought
+  done --> [*]
+  killed --> [*]
+</pre>
+<h3>What a thought can do to the main thought</h3>
+<table><tr><th>From inside</th><th>Effect</th></tr>
+<tr><td><code>focus(message)</code></td><td>a FOCUS signal; main reads it as "[inner thought … says]" and decides whether to tell the person</td></tr>
+<tr><td><code>finish(summary)</code></td><td>status done, a FOCUS signal with the summary</td></tr>
+<tr><td>every <code>thought_reminder_every</code> steps</td><td>a REMINDER signal, so main always knows something is running</td></tr>
+<tr><td>budget exhausted</td><td>status done, summary is its last text</td></tr>
+<tr><td>crash</td><td>status killed, the error reported as a FOCUS signal</td></tr></table>
+<h3>What the main thought can do to a thought</h3>
+<p><code>think</code> spawn · <code>list_thoughts</code> index · <code>read_thought</code> introspect the trace · <code>pause_thought</code> / <code>resume_thought</code> · <code>kill_thought</code>. At most <code>max_thoughts</code> run at once. Thoughts survive restarts: on exit running thoughts are paused, on start the main thought is reminded of them.</p>
+
+<h2>Recall: every trace is readable</h2>
+<p>Every main turn is an episode of kind <code>chat</code>; every thought step is an episode of kind <code>thought:&lt;id&gt;</code>; every lesson (memorised text, learned fact) is filed with its source. <code>recall</code> reads them in full: by query across everything, by episode id verbatim, or the last N. This is the diary the mind can reread; the weights are what it became.</p>
+
+<h2>A minute in the life</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant P as person
+  participant M as main thought
+  participant T as thought a1b2
+  participant G as gen server
+  P->>M: "find out what happened in Nigeria this week"
+  M->>T: think(goal, 4 steps)
+  M-->>P: "started; I'll tell you"
+  T->>G: step 1 (batched, prio 2)
+  P->>M: "quick: 23*19?"
+  G-->>T: preempted, requeued
+  M->>G: prio 0, streaming
+  M-->>P: "437"
+  G-->>T: step 1 resumes
+  T->>T: news_headlines, read_article, learn_fact
+  T->>M: focus("48 dead, methanol; learned, source Guardian 18 Sep")
+  M-->>P: relays the finding
+  T->>M: finish(summary)
+</pre>
+<p class="note">Design choices worth knowing: thoughts do not passive-learn on their own monologue by default (<code>learn_from_thoughts: false</code>), because inner speech is the most self-distilling text there is. They do change weights through the learning tools they call, which is the point.</p>
+<footer>Groow · docs · mind</footer>
+</main></body></html>

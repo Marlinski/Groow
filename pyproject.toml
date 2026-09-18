@@ -1,0 +1,24 @@
+[project]
+name = "groow"
+version = "0.2.0"
+description = "A small language model that learns by rewriting its own weights: passively from every conversation, actively through self-directed drills and self-play."
+requires-python = ">=3.12"
+dependencies = [
+  "torch",
+  "transformers>=5.0",
+  "peft",
+  "accelerate",
+  "safetensors",
+  "rich",
+  "numpy",
+]
+
+[project.scripts]
+groow = "groow.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["groow*"]

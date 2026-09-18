@@ -1,0 +1,15 @@
+# docker compose run --rm groow init      # first time: downloads the base model into ./data
+# docker compose run --rm groow chat      # talk (interactive, tty)
+# docker compose run --rm groow sense     # one curiosity pass
+services:
+  groow:
+    build: .
+    image: groow:latest
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./data:/data              # state/ (weights, memory, identity, workspace) + HF download cache
+      - ./groow.json:/app/groow.json
+    devices:
+      - nvidia.com/gpu=all      # CDI; if this fails after a driver upgrade: sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
+    shm_size: "2gb"

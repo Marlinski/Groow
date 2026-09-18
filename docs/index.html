@@ -1,0 +1,61 @@
+<!doctype html><html lang="en"><head><title>Groow · how it works</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a></nav>
+<h1>Groow</h1>
+<p class="lead">A small language model whose weights are not frozen. It learns from every conversation, drills itself on purpose, reads the news when nobody talks to it, thinks in the background, and sleeps to make what it learned permanent.</p>
+
+<div class="grid">
+<div class="card"><div class="k">Base</div><b>Qwen3-4B-Instruct-2507</b><br>4.1B dense parameters, fp16, 262k context. Tesla V100S 32 GB.</div>
+<div class="card"><div class="k">Plastic</div><b>LoRA overlay, rank 32</b><br>66M fp32 parameters on every linear layer. This is what moves every turn.</div>
+<div class="card"><div class="k">Permanent</div><b>Consolidation</b><br>At night the overlay is merged exactly into the base and a blank one opens.</div>
+<div class="card"><div class="k">Grounded</div><b>Memory files</b><br>Episodes, lessons, thought traces. Rehearsal pool and searchable diary.</div>
+</div>
+
+<h2>One picture</h2>
+<pre class="mermaid">
+flowchart LR
+  U[you] -->|USER signal| Q[priority queue]
+  T[inner thoughts<br/>own histories] -->|focus / done / reminder| Q
+  I[idle clock] -->|impulse| Q
+  Q --> M[main thought<br/>one rolling conversation]
+  M --> H[harness turn<br/>generate → tools → …]
+  T --> H
+  H --> G[generation server<br/>batches requests, main preempts]
+  G --> B[brain: fp16 base + LoRA overlay]
+  H -->|after every turn| L[learner: gradient step + rehearsal]
+  L --> B
+  B -.night: merge overlay.-> B
+</pre>
+
+<h2>The four mechanics</h2>
+<table><tr><th>Page</th><th>What it covers</th></tr>
+<tr><td><a href="learning.html">Learning</a></td><td>Passive learning from every turn, active drills (memorize, quiz, self-play), sleep with replay and rollback, identity internalisation, drift probes, growth.</td></tr>
+<tr><td><a href="harness.html">Harness</a></td><td>The tool registry, the turn loop, the generation server that batches concurrent requests, built-in / self / sense tools, the sandbox.</td></tr>
+<tr><td><a href="extension.html">Self-extension</a></td><td>Skills Groow writes for itself: sandbox check, install, rollback, quarantine; the supervisor, safe mode and <code>groow doctor</code>; why the core is only patched through review.</td></tr>
+<tr><td><a href="mind.html">Mind</a></td><td>The single conscious thread and its signal queue, inner thoughts as concurrent coroutines with their own traces, the lifecycle, recall of any past conversation.</td></tr>
+</table>
+
+<h2>Running it</h2>
+<pre><code>uv venv --python 3.12 .venv &amp;&amp; . .venv/bin/activate
+uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
+uv pip install -e .
+groow init      # copies the base model into state/, measures baseline probes
+groow chat      # the conscious thread; it learns after every turn
+
+# or sandboxed, state persisted in ./data
+docker compose run --rm groow init
+docker compose run --rm groow chat</code></pre>
+<p>Inside the chat: <code>/good</code> <code>/bad</code> rate the last answer, <code>/sleep</code>, <code>/sense</code>, <code>/thoughts</code>, <code>/identity</code>, <code>/inbox</code>, <code>/stats</code>, <code>/quit</code>. One-shot commands: <code>groow memorize</code>, <code>quiz</code>, <code>play</code>, <code>sense</code>, <code>sleep</code>, <code>rollback</code>, <code>identity</code>, <code>probe</code>, <code>stats</code>.</p>
+
+<h2>Repository map</h2>
+<pre><code>groow/
+  brain/      model.py (Brain), chatfmt.py (loss masks), server.py (GenServer)
+  memory/     episodic.py (episodes, lessons, log, probes, transcripts)
+  learning/   learner.py, sleep.py, curiosity.py, identity.py
+  senses/     news.py (RSS/Atom)
+  games/      base.py, tictactoe.py, arithmetic.py
+  harness/    registry.py, loop.py, builtins.py, selftools.py, sensetools.py, mindtools.py
+  mind/       signals.py, thoughts.py, mind.py
+  cli.py      App wiring + commands
+state/        base/ base.prev/ plastic/ identity.md thoughts/ senses/ workspace/ *.jsonl</code></pre>
+<footer>Groow · docs generated 2026-09-18 · everything here describes the code in this repository, not a plan.</footer>
+</main></body></html>

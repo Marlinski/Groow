@@ -1,0 +1,1 @@
+document.addEventListener("DOMContentLoaded",()=>{const dark=matchMedia("(prefers-color-scheme: dark)").matches;mermaid.initialize({startOnLoad:true,theme:dark?"dark":"neutral",flowchart:{curve:"basis"}});});

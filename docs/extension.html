@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head><title>Groow · self-extension</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html">Overview</a><a href="learning.html">Learning</a><a href="harness.html">Harness</a><a href="mind.html">Mind</a><a href="extension.html" class="here">Self-extension</a></nav>
+<h1>Self-extension</h1>
+<p class="lead">Groow can write new commands for itself, test them, install them, and repair or remove them when they fail. The design question is not how to let it change itself, which is easy, but how to make sure the part that repairs is never the part that broke.</p>
+
+<h2>Two tiers</h2>
+<div class="grid">
+<div class="card"><div class="k">Tier 1 · skills</div><b>Groow's own commands.</b> Python files in <code>state/skills/</code>, each registering tools. Groow drafts, tests, installs, disables and rolls them back <em>by itself</em>. Data, not code, from the core's point of view.</div>
+<div class="card"><div class="k">Tier 2 · core</div><b>The harness itself</b> (<code>groow/</code>). Groow cannot edit it. It writes a <code>propose_patch</code> that lands in <code>state/patches/</code> and tells the mentor with <code>ask_mentor</code>. A human applies it.</div>
+</div>
+<p class="note">Why the split: the supervisor, the safe mode and the sandbox checker are what put a broken Groow back on its feet. If Groow could rewrite them, a single bad edit could remove its own ability to recover. Skills sit above that floor; the floor is static.</p>
+
+<h2>A skill</h2>
+<pre><code>"""Text tools: reverse text."""
+
+def reverse_text(text: str) -> dict:
+    """Reverse the characters of a text.
+
+    Args:
+        text: the text to reverse
+    """
+    return {"reversed": text[::-1]}
+
+TESTS = [("reverse_text", {"text": "abc"}, {"reversed": "cba"})]</code></pre>
+<p>A docstring, plain functions with type hints and an <code>Args:</code> section (each public function with a docstring becomes a tool, same registry as core tools), and a mandatory <code>TESTS</code> list. A skill may instead define <code>register(reg)</code> for full control. Rejections come back with the errors <em>and</em> a complete valid example, because a 4B model learns the format from the example, not from the rules.</p>
+
+<h2>Birth of a skill</h2>
+<pre class="mermaid">
+flowchart LR
+  E[run_python<br/>experiment] --> D[draft_skill<br/>state/skills/_drafts]
+  D --> C{sandbox check<br/>fresh subprocess, timeout}
+  C -->|fails| D
+  C -->|passes| I[install_skill<br/>hot-load, keep previous version]
+  I --> U[tools available to main<br/>and to new inner thoughts]
+  U --> R[rollback_skill / disable_skill]
+</pre>
+<p>The check runs in a <b>fresh interpreter</b> that never imports the live process's modules or touches the GPU. It verifies: the file imports; it defines <code>register(reg)</code>; every tool has a real docstring; no tool name collides with a core tool; every entry in <code>TESTS</code> passes. An infinite loop at import is caught by the timeout. Only a passing draft can be installed, and the install itself loads the file into the live registry; if <em>that</em> fails, the previous version is restored.</p>
+<p>Installed skills are shared by the main thought and by inner thoughts spawned afterwards. Inner thoughts may draft and read skills but not install them: installing a new capability is a conscious act.</p>
+
+<h2>When it breaks</h2>
+<pre class="mermaid">
+flowchart TD
+  S[groow chat] --> A[App + Mind]
+  A -->|tool error| T[returned to the model as JSON]
+  A -->|exception while handling a signal| N[incident logged, loop continues]
+  A -->|process crash| X{traceback points<br/>into a skill?}
+  X -->|yes| Q[quarantine skill,<br/>restart normally]
+  X -->|no| M[SAFE MODE: skills off, learning off,<br/>curiosity off, repair tools on]
+  M -->|REPAIRED, /restart| S
+  M -->|crashes again| G[exit with report<br/>state/incidents.jsonl]
+</pre>
+<table><tr><th>Layer</th><th>What catches it</th><th>What Groow sees</th></tr>
+<tr><td>a tool raises</td><td><code>ToolRegistry.call</code></td><td><code>{"error": "ZeroDivisionError: …"}</code> in the tool response; it can react in the same turn</td></tr>
+<tr><td>a tool hangs</td><td>per-call timeout (<code>tool_timeout</code>, I/O tools)</td><td>an error saying the call did not finish; told not to repeat it</td></tr>
+<tr><td>a repeated identical call</td><td>the harness's repeat guard</td><td>the cached result with a nudge to do something different</td></tr>
+<tr><td>an exception while handling a signal</td><td><code>Mind.run</code></td><td>an incident in <code>read_incidents</code>; the conversation continues</td></tr>
+<tr><td>a skill fails to load at startup</td><td><code>SkillManager.load_all</code></td><td>quarantined, incident logged, session starts without it</td></tr>
+<tr><td>the process dies with a skill in the traceback</td><td>the supervisor in <code>cmd_chat</code></td><td>the skill is quarantined, its crash count incremented, Groow restarts</td></tr>
+<tr><td>the process dies elsewhere</td><td>the supervisor</td><td>safe mode with the incident in the system prompt</td></tr>
+<tr><td>safe mode itself crashes twice</td><td>the supervisor</td><td>nothing; the session ends and the mentor reads <code>groow doctor</code></td></tr></table>
+
+<h2>Safe mode: the static debugger harness</h2>
+<p>Safe mode is the same harness with a different loadout, chosen so that nothing Groow wrote is running: skills unloaded, passive learning and curiosity off, no inner thoughts carried in. The system prompt is not the identity but a repair brief that includes the incident. The toolset is core tools plus <code>read_incidents</code>, <code>read_skill</code>, <code>list_skills</code>, <code>draft_skill</code>, <code>install_skill</code>, <code>disable_skill</code>, <code>rollback_skill</code>, <code>propose_patch</code>, <code>ask_mentor</code>. When it says <code>REPAIRED</code> (or you type <code>/restart</code>), the supervisor rebuilds the normal session.</p>
+<p><code>groow doctor</code> is the fully static fallback for when the model cannot even start: it re-checks every installed skill in a sandbox, lists drafts and quarantined skills, prints recent incidents and verifies the state directory, without loading weights.</p>
+
+<h2>What this does not protect against</h2>
+<ul>
+<li>A skill that is <em>wrong</em> but passes its own tests. Tests are written by the same model. The mitigation is social: <code>list_skills</code> shows the mentor what was installed, and <code>/bad</code> plus <code>disable_skill</code> are one line each.</li>
+<li>A skill that consumes resources slowly (memory, disk in the workspace). There is no quota yet.</li>
+<li>Learning-side damage: a skill cannot break the weights, but a bad <code>learn_fact</code> can teach a falsehood. That is the learning system's problem, handled by probes, rehearsal and nights, not by this page.</li>
+</ul>
+
+<h2>Roadmap</h2>
+<ol>
+<li>Resource quotas per skill (CPU seconds, workspace bytes) and a per-skill kill switch on repeated tool errors.</li>
+<li>Skill review by an inner thought: a second, adversarial reading of a draft before install, with its own tests.</li>
+<li>Core patches applied automatically to a <em>copy</em> of the package in a container, run through <code>groow doctor</code> and a scripted conversation, and promoted only if green. That would move tier 2 from "human applies" to "human approves".</li>
+</ol>
+<footer>Groow · docs · self-extension</footer>
+</main></body></html>
