@@ -1,19 +1,19 @@
-//! Where the mind keeps its own things, and how they get on its path.
+//! The mind's home.
 //!
-//! This file is deliberately small. Skills are not a construct of the core: they are files in
-//! the mind's home, which it owns and may write, rename or delete at will. The core does two
-//! things for them and nothing else.
+//! Everything in here belongs to the mind: its skills, its commands, its manual, and somewhere
+//! to work. It may write, rename or delete any of it. That is the whole distinction from the
+//! state directory, which the core maintains and the mind can only read.
 //!
-//! It puts a copy of the shipped ones in place on a first start, the way a system gives a new
-//! account a skeleton home, and never touches them again. And it puts the mind's `bin`
-//! directory first on the path of every process it starts, so a command the mind wrote is
-//! reachable by name and shadows anything shipped.
+//! The core does two things here and nothing else. On a first start it puts the shipped skills
+//! and the shipped manual in place, the way a system gives a new account a skeleton home, and
+//! never touches them again. And it puts `bin` first on the path of every process it starts,
+//! so a command the mind wrote is reachable by name and shadows anything shipped.
 //!
-//! What a skill looks like inside is a convention, not a rule the core enforces. The shipped
-//! ones follow the Agent Skills format, a `SKILL.md` with a name and a description beside a
-//! `scripts` directory, because that is a good shape and other tools understand it. Nothing
-//! here parses it. The mind reads its own files with `cat`, lists them with `ls`, and if it
-//! decides a plain note in a different shape serves it better, nothing stops it.
+//! What any of these files look like inside is a convention, not a rule the core enforces. The
+//! shipped skills follow the Agent Skills format, a `SKILL.md` beside a `scripts` directory,
+//! because that is a good shape and other tools understand it. Nothing here parses one. The
+//! mind reads its own files with `cat` and lists them with `ls`, and if a plain note in some
+//! other shape serves it better, nothing stops it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,62 @@ pub fn shelf(home: &Path) -> PathBuf {
 /// Where its commands live, first on its path.
 pub fn bin_dir(home: &Path) -> PathBuf {
     home.join("bin")
+}
+
+/// Somewhere to work. Nothing in the core reads it.
+pub fn workspace(home: &Path) -> PathBuf {
+    home.join("workspace")
+}
+
+/// Its manual, which it may rewrite.
+pub fn recipes(home: &Path) -> PathBuf {
+    home.join("recipes")
+}
+
+/// Make the home, and put the shipped things in it on a first start.
+///
+/// Everything here is created once and then left alone. What the mind does with it afterwards
+/// is its business.
+pub fn prepare(home: &Path, skills_from: &Path, recipes_from: &Path) -> std::io::Result<Prepared> {
+    for d in [shelf(home), bin_dir(home), workspace(home), recipes(home)] {
+        fs::create_dir_all(d)?;
+    }
+    Ok(Prepared {
+        skills: seed(home, skills_from)?,
+        recipes: seed_recipes(home, recipes_from)?,
+    })
+}
+
+#[derive(Debug, Default)]
+pub struct Prepared {
+    pub skills: Vec<String>,
+    pub recipes: Vec<String>,
+}
+
+/// Copy the shipped manual into the home, never over a page the mind has rewritten.
+pub fn seed_recipes(home: &Path, from: &Path) -> std::io::Result<Vec<String>> {
+    let to = recipes(home);
+    fs::create_dir_all(&to)?;
+    let mut put = Vec::new();
+    let rd = match fs::read_dir(from) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(put),
+        Err(e) => return Err(e),
+    };
+    for e in rd.filter_map(|e| e.ok()) {
+        let src = e.path();
+        if !src.is_file() {
+            continue;
+        }
+        let Some(name) = src.file_name().and_then(|n| n.to_str()) else { continue };
+        let dst = to.join(name);
+        if dst.exists() {
+            continue;
+        }
+        fs::copy(&src, &dst)?;
+        put.push(name.to_string());
+    }
+    Ok(put)
 }
 
 /// Put the shipped skills in place on a first start, without ever touching one it has changed.
@@ -216,9 +272,41 @@ mod tests {
     }
 
     #[test]
+    fn a_first_start_makes_the_whole_home() {
+        let d = tempfile::tempdir().unwrap();
+        let from = shipped(d.path());
+        let manual = d.path().join("manual");
+        fs::create_dir_all(&manual).unwrap();
+        fs::write(manual.join("shell.md"), "how the shell works").unwrap();
+
+        let home = d.path().join("home");
+        let made = prepare(&home, &from, &manual).unwrap();
+        assert_eq!(made.recipes, vec!["shell.md".to_string()]);
+        assert_eq!(made.skills.len(), 2);
+        for d in [shelf(&home), bin_dir(&home), workspace(&home), recipes(&home)] {
+            assert!(d.is_dir(), "{} was not made", d.display());
+        }
+    }
+
+    #[test]
+    fn a_page_of_the_manual_it_has_rewritten_is_left_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let manual = d.path().join("manual");
+        fs::create_dir_all(&manual).unwrap();
+        fs::write(manual.join("shell.md"), "the shipped page").unwrap();
+        let home = d.path().join("home");
+        seed_recipes(&home, &manual).unwrap();
+        fs::write(recipes(&home).join("shell.md"), "what I have learned since").unwrap();
+
+        assert!(seed_recipes(&home, &manual).unwrap().is_empty());
+        assert_eq!(fs::read_to_string(recipes(&home).join("shell.md")).unwrap(), "what I have learned since");
+    }
+
+    #[test]
     fn nothing_breaks_when_there_is_nothing_there() {
         let d = tempfile::tempdir().unwrap();
         assert!(seed(d.path(), &d.path().join("nowhere")).unwrap().is_empty());
+        assert!(seed_recipes(d.path(), &d.path().join("nowhere")).unwrap().is_empty());
         assert!(commands(d.path()).is_empty());
     }
 }

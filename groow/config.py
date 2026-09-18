@@ -68,7 +68,6 @@ class Config:
     gen_max_batch: int = 8            # generation server: max concurrent sequences per forward pass
 
     # --- self-extension (skills) ---------------------------------------------
-    skills_enabled: bool = True        # load state/skills/*.py and expose draft/install tools
     tool_timeout: int = 120            # seconds an I/O tool may run before the loop gives up on it
     skill_check_timeout: int = 60      # sandbox check budget for a draft
 
@@ -91,7 +90,6 @@ class Config:
     api_port: int = 7373
 
     # --- harness ----------------------------------------------------------
-    workspace_dir: str = "state/workspace"   # where the file tools read/write
     allow_python: bool = True                # run_python tool (subprocess with timeout)
     allow_shell: bool = True                 # run_shell tool: bash in Groow's home (sandboxed by the container)
     home_dir: str = ""                       # Groow's home for run_shell; empty = $HOME

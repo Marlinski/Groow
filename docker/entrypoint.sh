@@ -5,10 +5,12 @@ set -e
 export HOME=/home/groow
 cd "$HOME"
 
+# The state is the core's and it makes it itself; everything else here is the mind's, and the
+# core fills it in on a first start: skills, commands, the manual, somewhere to work.
 STATE="$HOME/state"
-mkdir -p "$STATE" "$HOME/workspace" "$HOME/.cache/tmp" "$HOME/.local/bin" "$HOME/.config/nix"
+mkdir -p "$STATE" "$HOME/.cache/tmp" "$HOME/.config/nix"
 export TMPDIR="$HOME/.cache/tmp"     # /tmp may be mounted without exec; installers need somewhere to run
-chown -R groow:groow "$HOME/workspace" "$HOME/.local" "$HOME/.cache" "$HOME/.config" 2>/dev/null || true
+chown -R groow:groow "$HOME/.cache" "$HOME/.config" 2>/dev/null || true
 [ -f "$HOME/groow.json" ] || cp /opt/groow/groow.json "$HOME/groow.json"
 
 # Nix, installed into the home as the mind, so it can add tools for itself without root.
@@ -22,16 +24,9 @@ fi
 grep -q "groow home" "$HOME/.bashrc" 2>/dev/null || cat >> "$HOME/.bashrc" <<'RC'
 # groow home
 [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ] && . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-export PATH="$HOME/.local/bin:$HOME/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$HOME/bin:$HOME/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin"
 export TMPDIR="$HOME/.cache/tmp"
 RC
-
-# The manual, in the home where it can read and rewrite it.
-mkdir -p "$STATE/recipes"
-for f in /usr/share/groow/recipes/*.md; do
-  [ -f "$f" ] && [ ! -f "$STATE/recipes/$(basename "$f")" ] && cp "$f" "$STATE/recipes/"
-done
-chown -R groow:groow "$STATE/recipes" 2>/dev/null || true
 
 # The brain: it holds the card and the weights, so it starts first and keeps running.
 echo "body: starting the brain"

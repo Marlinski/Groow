@@ -56,7 +56,6 @@ fn d_judge() -> String { "laya".into() }
 fn d_halflife() -> f64 { 1800.0 }
 fn d_host() -> String { "127.0.0.1".into() }
 fn d_port() -> u16 { 7373 }
-fn d_workspace() -> String { "state/workspace".into() }
 fn d_python_timeout() -> u64 { 30 }
 fn d_temperature() -> f64 { 0.7 }
 fn d_top_p() -> f64 { 0.8 }
@@ -124,7 +123,6 @@ pub struct Config {
     pub gen_max_batch: usize,
 
     // self-extension
-    pub skills_enabled: bool,
     pub tool_timeout: u64,
     pub skill_check_timeout: u64,
 
@@ -146,7 +144,6 @@ pub struct Config {
     pub api_port: u16,
 
     // harness
-    pub workspace_dir: String,
     pub allow_python: bool,
     pub allow_shell: bool,
     pub home_dir: String,
@@ -185,13 +182,12 @@ impl Default for Config {
             sense_passes: d_sense_passes(), feeds: Vec::new(),
             max_thoughts: d_max_thoughts(), thought_reminder_every: d_thought_reminder(),
             learn_from_thoughts: false, gen_max_batch: d_gen_batch(),
-            skills_enabled: d_true(), tool_timeout: d_tool_timeout(),
+            tool_timeout: d_tool_timeout(),
             skill_check_timeout: d_skill_check_timeout(), turn_timeout: d_turn_timeout(),
             thought_timeout: d_thought_timeout(), inbox_max_open: d_inbox_max(),
             inbox_expiry_hours: d_inbox_expiry(), hold_seconds: d_hold(),
             judge: d_judge(), mood_halflife_s: d_halflife(),
-            api_host: d_host(), api_port: d_port(), workspace_dir: d_workspace(),
-            allow_python: d_true(), allow_shell: d_true(), home_dir: String::new(),
+            api_host: d_host(), api_port: d_port(), allow_python: d_true(), allow_shell: d_true(), home_dir: String::new(),
             python_timeout: d_python_timeout(), enable_thinking: false,
             temperature: d_temperature(), top_p: d_top_p(), top_k: d_top_k(),
             max_new_tokens: d_max_new(), max_tool_rounds: d_max_rounds(),

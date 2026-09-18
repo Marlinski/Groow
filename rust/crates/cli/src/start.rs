@@ -48,17 +48,24 @@ pub async fn start(state: PathBuf, config: PathBuf, as_user: Option<String>) -> 
         socket: paths.socket(),
         state: state.clone(),
     };
-    // Put the shipped commands in its bin directory, without touching any it has changed.
+    // Make the mind's home and put the shipped things in it, without touching any it has
+    // changed. Everything in there is its own; the state directory below is the core's.
     let home = home_for(&cfg);
     match groow_harness::greeting::seed(&home) {
-        Ok(true) => eprintln!("  prompt   wrote {}, which is yours to change", groow_harness::greeting::RC),
+        Ok(true) => eprintln!("  prompt   wrote {}, which is its own to change", groow_harness::greeting::RC),
         Ok(false) => {}
         Err(e) => tracing::warn!("could not write the prompt script: {e}"),
     }
-    match groow_core::skills::seed(&home, &shipped_skills()) {
-        Ok(put) if !put.is_empty() => eprintln!("  skills   installed {}", put.join(", ")),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("could not install the shipped skills: {e}"),
+    match groow_core::home::prepare(&home, &shipped("skills", "GROOW_SKILLS"), &shipped("recipes", "GROOW_RECIPES")) {
+        Ok(made) => {
+            if !made.skills.is_empty() {
+                eprintln!("  skills   installed {}", made.skills.join(", "));
+            }
+            if !made.recipes.is_empty() {
+                eprintln!("  manual   installed {} pages", made.recipes.len());
+            }
+        }
+        Err(e) => tracing::warn!("could not prepare the home: {e}"),
     }
 
     match groow_core::spawn::lock_state(&state, agent_uid) {
@@ -160,18 +167,19 @@ fn python_for() -> String {
     "python3".to_string()
 }
 
-/// Where the skills that ship with the project live, next to the binary or in the checkout.
-fn shipped_skills() -> PathBuf {
-    if let Ok(p) = std::env::var("GROOW_SKILLS") {
+/// Where something that ships with the project lives: said explicitly, or in the checkout, or
+/// installed beside the binary.
+fn shipped(what: &str, env: &str) -> PathBuf {
+    if let Ok(p) = std::env::var(env) {
         return PathBuf::from(p);
     }
-    for c in ["skills", "../skills", "../../skills"] {
-        let p = PathBuf::from(c);
+    for prefix in ["", "../", "../../"] {
+        let p = PathBuf::from(format!("{prefix}{what}"));
         if p.is_dir() {
             return p;
         }
     }
-    PathBuf::from("/usr/share/groow/skills")
+    PathBuf::from(format!("/usr/share/groow/{what}"))
 }
 
 fn home_for(cfg: &Config) -> PathBuf {

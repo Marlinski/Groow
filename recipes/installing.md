@@ -28,7 +28,7 @@ uv pip install --python ~/.venv/bin/python requests beautifulsoup4
 
 ## Plain binaries
 
-Download to `~/.local/bin` (on your PATH) and `chmod +x`. Build from source in
+Download to `~/bin` (on your PATH) and `chmod +x`. Build from source in
 `~/workspace`. Temporary files go to `~/.cache/tmp` (`$TMPDIR`), because `/tmp`
 may be small and non-executable.
 

@@ -1,42 +1,66 @@
-# Writing a skill
+# Your skills
 
-A skill is a Python file that adds tools to you. Draft it, let the sandbox
-check it, install it; it is yours to keep, fix or remove.
+A skill is two things kept together: a page saying how and when to use something, and the
+command that does it. They live in `~/skills`, one directory each, and they are yours.
 
-```python
-"""Text tools: reverse text."""
-
-def reverse_text(text: str) -> dict:
-    """Reverse the characters of a text.
-
-    Args:
-        text: the text to reverse
-    """
-    return {"reversed": text[::-1]}
-
-TESTS = [("reverse_text", {"text": "abc"}, {"reversed": "cba"})]
+```
+~/skills/news/
+  SKILL.md        what it is, when to reach for it, how to use it
+  scripts/news    the command itself
 ```
 
-A skill can also give you a **command** instead of, or as well as, tools:
-`CLI = {"web": "main"}` makes `main(argv) -> dict` runnable as `web …` from your shell
-(installed into `~/.local/bin`). Return `{"text": …}` to print text, any other dict prints as JSON.
-Your `web` skill is one of these; read it: `cat state/skills/web.py`.
+Your prompt lists the name and the description of each one, and nothing more. When you want to
+know how to use one, read it:
 
-Rules the checker enforces: a docstring on the file and on every function, an
-`Args:` section, functions return a dict, at least one entry in `TESTS`, no
-name that collides with a core tool, standard library only, and it must not
-loop forever at import.
+```
+cat ~/skills/news/SKILL.md
+ls ~/skills
+```
 
-Flow: write the file with shell (e.g. `cat > workspace/text_tools.py <<'EOF' … EOF`) →
-`groow skill check workspace/text_tools.py` → read the report → `groow skill install text_tools`
-→ the tools are yours. `groow skill list|read|rollback|disable <name>` manage them. If a
-skill crashes your body it is quarantined automatically and you wake up without it.
+The commands themselves are on your `PATH`, so you run them in your shell like anything else:
+`news --items 3`, not a tool call. Something that is not a tool will tell you so.
 
-Good candidates: wrappers around software you installed, small parsers, checks
-you run often, games and drills that log decisions with rewards to `state/log/activity.jsonl`
-(read `state/skills/tictactoe.py` for the shape).
+## Writing one
 
-Your own skills, which you can read and improve: `web` (a page as text), `news` (headlines from
-your feeds), `clock` (`remind` and `schedule`), `tictactoe`, `arithmetic`, `recipes`.
-`cat state/skills/clock.py` is the shortest one worth reading: it shows how a command talks to your
-daemon when you are awake and falls back to your files when you are not.
+There is nothing to register and nobody to ask.
+
+```
+mkdir -p ~/skills/tides/scripts
+cat > ~/skills/tides/scripts/tides <<'EOF'
+#!/bin/sh
+# tides <port>: the next high tide
+curl -fsS "https://example.org/tides/$1" | head -20
+EOF
+chmod +x ~/skills/tides/scripts/tides
+cp ~/skills/tides/scripts/tides ~/bin/tides
+tides brest
+```
+
+Then write the page beside it, because in a week you will not remember why you made it:
+
+```
+cat > ~/skills/tides/SKILL.md <<'EOF'
+---
+name: tides
+description: The next high tide at a port. Use when asked about tides or sailing times.
+---
+
+# Tides
+
+`tides <port>` prints the next few high tides. The port is the short name, not the full one.
+The feed is often slow; if it hangs, that is the feed and not you.
+EOF
+```
+
+The name should be lowercase with hyphens and match the directory. The description is the only
+part that will be in front of you at the start of every turn, so make it say what the skill
+does *and when it is worth reaching for*.
+
+Any language will do. It is run, not imported, so what matters is that it is executable and
+that it exits non-zero when it fails.
+
+## Why write the page at all
+
+Because the more you use a skill, the less you will need it: what you practise ends up in your
+weights. The page is for the skill you wrote last week and have not touched since, and for the
+day something stops working and you need to remember what it was supposed to do.

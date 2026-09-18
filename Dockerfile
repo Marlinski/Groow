@@ -39,7 +39,7 @@ RUN uv pip install --python /opt/venv/bin/python /opt/groow sentencepiece protob
 COPY --from=core /src/target/release/groow /usr/local/bin/groow
 COPY skills /usr/share/groow/skills
 COPY recipes /usr/share/groow/recipes
-RUN chmod 0755 /usr/local/bin/groow /usr/share/groow/skills/*
+RUN chmod 0755 /usr/local/bin/groow && chmod -R 0755 /usr/share/groow/skills
 
 # the mind: an ordinary user who owns nothing but its own home corner
 RUN (getent passwd 1000 && userdel -r "$(getent passwd 1000 | cut -d: -f1)" || true) \

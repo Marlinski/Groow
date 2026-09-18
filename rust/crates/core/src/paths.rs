@@ -11,6 +11,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The state directory and everything under it.
+///
+/// Only what the core maintains. The mind's own things, its skills, its commands, its manual
+/// and somewhere to work, are in its home and not here; see `crate::home`.
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub state: PathBuf,
@@ -39,9 +42,6 @@ impl Paths {
     pub fn thoughts(&self) -> PathBuf { self.state.join("thoughts") }
     pub fn training(&self) -> PathBuf { self.state.join("training") }
     pub fn limbic(&self) -> PathBuf { self.state.join("limbic") }
-    pub fn skills(&self) -> PathBuf { self.state.join("skills") }
-    pub fn recipes(&self) -> PathBuf { self.state.join("recipes") }
-    pub fn workspace(&self) -> PathBuf { self.state.join("workspace") }
     pub fn logs(&self) -> PathBuf { self.state.join("log") }
 
     pub fn birth(&self) -> PathBuf { self.state.join("birth.json") }
@@ -67,9 +67,6 @@ impl Paths {
             self.thoughts(),
             self.training(),
             self.limbic(),
-            self.skills(),
-            self.recipes(),
-            self.workspace(),
             self.logs(),
         ] {
             fs::create_dir_all(&d)?;

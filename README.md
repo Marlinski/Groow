@@ -118,6 +118,7 @@ overlay.
 ## Layout
 
 ```
+nervous_system/proto   every message, defined once, generated into both languages
 rust/crates/proto      the wire: frames, ops, who may call what
 rust/crates/core       state, scheduler, connections, the only writer
 rust/crates/harness    the agent loop
@@ -126,7 +127,7 @@ rust/crates/cli        the groow command
 groow/serve.py         the brain
 groow/learn.py         feel, harvest, train, night
 groow/brain, learning  the model and the gradient steps
-skills/                executables the mind gets on its path
+skills/                the skills it starts with, copied into its home
 recipes/               its manual, copied into its home where it can rewrite it
 ```
 

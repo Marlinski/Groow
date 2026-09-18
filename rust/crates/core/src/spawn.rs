@@ -56,7 +56,7 @@ impl Spawner {
                 "PATH",
                 format!(
                     "{}:/usr/local/bin:/usr/bin:/bin",
-                    crate::skills::bin_dir(&self.home).display()
+                    crate::home::bin_dir(&self.home).display()
                 ),
             )
             .env("GROOW_SOCKET", &self.socket)
@@ -122,7 +122,9 @@ impl Spawner {
 /// 755 still lets it write everything: the owner bit is the one that applies. So ownership is
 /// moved to root first, and only then do the modes mean what they say.
 ///
-/// Its own corners stay its own: the commands it writes, its manual, and somewhere to work.
+/// There are no exceptions carved out of it. Everything the mind owns lives in its home, so
+/// the whole of the state can simply become root's; an exception list here would be a sign the
+/// boundary was drawn in the wrong place.
 ///
 /// Returns whether the state is really protected. When it is not, the caller says so plainly
 /// rather than implying a guarantee that is not there.
@@ -132,26 +134,8 @@ pub fn lock_state(state: &Path, agent_uid: Option<u32>) -> std::io::Result<bool>
     }
     let Some(uid) = agent_uid.filter(|u| *u != 0) else { return Ok(false) };
 
-    // The mind's own places, which it must keep.
-    let mine = ["skills", "recipes", "workspace"];
-
-    own(state, 0, 0o755)?;
-    for entry in std::fs::read_dir(state)?.filter_map(|e| e.ok()) {
-        let p = entry.path();
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        if mine.contains(&name.as_str()) {
-            own_tree(&p, uid)?;
-        } else {
-            own_tree(&p, 0)?;
-        }
-    }
-    for name in mine {
-        let p = state.join(name);
-        if !p.exists() {
-            std::fs::create_dir_all(&p)?;
-            own_tree(&p, uid)?;
-        }
-    }
+    let _ = uid;
+    own_tree(state, 0)?;
     // How it is being scored is not its business, and that includes the write-ahead files,
     // which hold everything recent.
     crate::db::Db::keep_private(&state.join("groow.db"));
@@ -266,7 +250,6 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let state = d.path().join("state");
         std::fs::create_dir_all(state.join("main")).unwrap();
-        std::fs::create_dir_all(state.join("workspace")).unwrap();
         std::fs::write(state.join("main/a.jsonl"), "{}").unwrap();
         if !crate::peer::is_root() {
             assert!(!lock_state(&state, Some(1000)).unwrap());
@@ -275,8 +258,7 @@ mod tests {
         assert!(lock_state(&state, Some(1000)).unwrap());
         use std::os::unix::fs::MetadataExt;
         assert_eq!(std::fs::metadata(state.join("main")).unwrap().uid(), 0, "the conversation is root's");
-        assert_eq!(std::fs::metadata(state.join("main/a.jsonl")).unwrap().uid(), 0);
-        assert_eq!(std::fs::metadata(state.join("workspace")).unwrap().uid(), 1000, "its own place stays its own");
+        assert_eq!(std::fs::metadata(state.join("main/a.jsonl")).unwrap().uid(), 0, "and so is every file in it");
     }
 
     #[test]
