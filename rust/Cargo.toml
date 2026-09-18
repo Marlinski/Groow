@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/proto",
+    "crates/core",
+    "crates/harness",
+    "crates/ui",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+groow-proto   = { path = "crates/proto" }
+groow-core    = { path = "crates/core" }
+groow-harness = { path = "crates/harness" }
+groow-ui      = { path = "crates/ui" }
+
+anyhow      = "1"
+thiserror   = "2"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = { version = "1", features = ["preserve_order"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "sync", "process", "signal"] }
+tokio-util  = { version = "0.7", features = ["codec"] }
+futures     = "0.3"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap        = { version = "4", features = ["derive", "env"] }
+axum        = { version = "0.8", features = ["ws"] }
+rusqlite    = { version = "0.37", features = ["bundled"] }
+ratatui     = "0.29"
+crossterm   = { version = "0.28", features = ["event-stream"] }
+libc        = "0.2"
+rand        = "0.9"
+time        = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
+reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
