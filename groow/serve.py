@@ -1,13 +1,20 @@
 """The brain, as a service.
 
-The core is in Rust and owns the state; this owns the GPU. It answers two things:
-whether it is up, and one generation at a time, streamed token by token.
+The core is in Rust and owns the state; this owns the GPU, and everything that
+touches the weights happens here: generating, training, and merging what was
+learned into the base.
 
-Generations are serialised because there is one model on one card, and they are
-ordered by priority: the conscious turn goes before an inner thought, which goes
-before anything running in the background. Trimming happens here rather than in
-the core because this is the side that has the tokenizer and therefore the only
-side that knows how much actually fits.
+That is not an arrangement of convenience. A separate training process would
+mean a second copy of the weights on the same GPU, and on a 32 GB card the
+activation spike of a backward pass on top of two copies does not fit; it was
+tried, and it failed with an out-of-memory error while the first copy went on
+answering. One process, one copy, and training is simply another kind of work
+in the same queue.
+
+So a nap here is a real nap. Requests that arrive while it is training wait
+their turn rather than being refused, exactly as they wait behind another
+generation, and the new weights are live the moment the step ends because
+nothing was copied anywhere.
 
     python -m groow.serve --port 7374
 """
@@ -24,17 +31,19 @@ from aiohttp import web
 
 from .config import Config
 
-# Lower goes first.
-MAIN, THOUGHT, BACKGROUND = 0, 2, 4
+# Lower goes first. Training sits at the back: anything already waiting to be
+# answered goes first, and only then does the brain sit down to learn.
+MAIN, THOUGHT, BACKGROUND, LEARNING = 0, 2, 4, 8
 
 
 @dataclass(order=True)
 class Job:
     priority: int
     seq: int
-    payload: dict = field(compare=False)
-    out: asyncio.Queue = field(compare=False)
-    loop: asyncio.AbstractEventLoop = field(compare=False)
+    kind: str = field(compare=False, default="generate")
+    payload: dict = field(compare=False, default_factory=dict)
+    out: asyncio.Queue = field(compare=False, default=None)
+    loop: asyncio.AbstractEventLoop = field(compare=False, default=None)
 
 
 class Server:
@@ -44,7 +53,10 @@ class Server:
         self.queue: asyncio.PriorityQueue[Job] = asyncio.PriorityQueue()
         self.seq = 0
         self.busy = False
+        self.doing = ""          # what it is busy with, so a person can be told
         self.generated = 0
+        self.trained = 0
+        self._parts = None       # trainer and friends, built on first use
 
     # ---------------------------------------------------------------- model
     def load(self) -> None:
@@ -81,15 +93,26 @@ class Server:
 
     # ---------------------------------------------------------------- worker
     async def work(self) -> None:
+        """One job at a time, forever.
+
+        This loop is the whole concurrency story: the GPU does one thing, and
+        everything else waits in the queue. A training step is a job like any
+        other, which is why a nap needs no locking of its own.
+        """
+        handlers = {"generate": self.run, "train": self.run_train, "consolidate": self.run_consolidate}
         while True:
             job = await self.queue.get()
-            self.busy = True
+            self.busy, self.doing = True, job.kind
             try:
-                await asyncio.get_running_loop().run_in_executor(None, self.run, job)
-            except Exception as e:  # a failed generation must not take the server down
+                fn = handlers.get(job.kind)
+                if fn is None:
+                    self.send(job, {"error": f"no such work: {job.kind}"})
+                else:
+                    await asyncio.get_running_loop().run_in_executor(None, fn, job)
+            except Exception as e:  # a failed job must not take the brain down
                 self.send(job, {"error": f"{type(e).__name__}: {e}"})
             finally:
-                self.busy = False
+                self.busy, self.doing = False, ""
                 self.send(job, None)
                 self.queue.task_done()
 
@@ -127,15 +150,89 @@ class Server:
             "seconds": round(time.time() - started, 3),
         })
 
+    # ---------------------------------------------------------------- learning
+    def parts(self):
+        """The trainer and what it needs, built once and kept.
+
+        They share this process's model, so there is never a second copy of the
+        weights and a step takes effect the moment it ends.
+        """
+        if self._parts is None:
+            from .learning.learner import Learner
+            from .learning.trainer import Trainer
+            from .learning.trainingset import TrainingSets
+            from .memory import Memory
+
+            memory = Memory(Path(self.cfg.state))
+            learner = Learner(self.brain, memory, self.cfg)
+            sets = TrainingSets(Path(self.cfg.state) / "training")
+            self._parts = Trainer(self.brain, memory, learner, sets, self.cfg)
+        return self._parts
+
+    def run_train(self, job: Job) -> None:
+        """Take pending samples and turn them into weight changes."""
+        p = job.payload
+        report = self.parts().consume(
+            urgent_only=bool(p.get("urgent_only")),
+            max_samples=int(p.get("max_samples") or self.cfg.nap_max_samples),
+            on_progress=lambda m: self.send(job, {"progress": m}),
+        )
+        if report.get("consumed"):
+            self.brain.save()
+        self.trained += int(report.get("consumed") or 0)
+        self.send(job, {"done": True, "report": report})
+
+    def run_consolidate(self, job: Job) -> None:
+        """Merge the overlay into the base and open a blank one.
+
+        Nothing reloads afterwards: this is the process that serves, so the
+        merged weights are already the ones it will answer from.
+        """
+        report = self.brain.consolidate(keep_previous=self.cfg.keep_previous_base)
+        self.brain.save()
+        self.send(job, {"done": True, "report": report})
+
+    async def submit(self, request: web.Request, kind: str, priority: int) -> web.StreamResponse:
+        """Queue one piece of work and stream back what it says as it says it."""
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        resp = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
+        await resp.prepare(request)
+        self.seq += 1
+        job = Job(priority=priority, seq=self.seq, kind=kind, payload=payload,
+                  out=asyncio.Queue(), loop=asyncio.get_running_loop())
+        await self.queue.put(job)
+        while True:
+            item = await job.out.get()
+            if item is None:
+                break
+            try:
+                await resp.write((json.dumps(item, ensure_ascii=False, default=str) + "\n").encode())
+            except (ConnectionResetError, asyncio.CancelledError):
+                break
+        await resp.write_eof()
+        return resp
+
     # ---------------------------------------------------------------- routes
     async def h_health(self, request: web.Request) -> web.Response:
         return web.json_response({
             "ok": self.brain is not None,
             "model": self.cfg.model_id,
             "busy": self.busy,
+            "doing": self.doing,
             "waiting": self.queue.qsize(),
             "generated": self.generated,
+            "trained": self.trained,
+            "steps": (self.brain.meta.get("steps") if self.brain else None),
         })
+
+    async def h_train(self, request: web.Request) -> web.StreamResponse:
+        return await self.submit(request, "train", LEARNING)
+
+    async def h_consolidate(self, request: web.Request) -> web.StreamResponse:
+        return await self.submit(request, "consolidate", LEARNING)
 
     async def h_reload(self, request: web.Request) -> web.Response:
         """Pick up weights that changed underneath us.
@@ -168,6 +265,7 @@ class Server:
         job = Job(
             priority=int(payload.get("priority", MAIN)),
             seq=self.seq,
+            kind="generate",
             payload=payload,
             out=asyncio.Queue(),
             loop=asyncio.get_running_loop(),
@@ -191,6 +289,8 @@ class Server:
         app.add_routes([
             web.get("/health", self.h_health),
             web.post("/generate", self.h_generate),
+            web.post("/train", self.h_train),
+            web.post("/consolidate", self.h_consolidate),
             web.post("/reload", self.h_reload),
         ])
         app.on_startup.append(lambda _: self._start())

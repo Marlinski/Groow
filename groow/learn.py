@@ -6,8 +6,14 @@ mind deciding it did well.
 
     python -m groow.learn feel     score recent turns and write what they felt like
     python -m groow.learn harvest  turn the day into training samples
-    python -m groow.learn train    take pending samples and make gradients from them
-    python -m groow.learn night    all three, then consolidate into the base weights
+    python -m groow.learn train    ask the brain to make gradients from them
+    python -m groow.learn nap      the short pass, between turns
+    python -m groow.learn night    all of it, then merge into the base weights
+
+Scoring and harvesting happen here, on the processor, because they only need the
+journal, the statistics and the judge. Anything that touches the weights is sent
+to the brain instead: it holds them, and a second copy of them would not fit
+beside the first.
 
 It reads the conversation from the journal and the turn records from the core's
 database, which is readable only by root, so the mind can neither see nor edit
@@ -234,21 +240,58 @@ def harvest(cfg: Config) -> dict:
 
 
 # -------------------------------------------------------------------- train
-def train(cfg: Config, max_samples: int = 32) -> dict:
-    """Take pending samples and turn them into weight changes."""
-    from .brain.model import Brain
-    from .learning.learner import Learner
-    from .learning.trainer import Trainer
+def brain_url(cfg: Config) -> str:
+    return f"http://127.0.0.1:{getattr(cfg, 'brain_port', 7374)}"
 
-    state = Path(cfg.state)
-    memory = Memory(state)
-    brain = Brain(cfg).load()
-    learner = Learner(brain, memory, cfg)
-    trainer = Trainer(brain, memory, learner, TrainingSets(state / "training"), cfg)
-    report = trainer.consume(max_samples=max_samples, on_progress=lambda m: print(m, flush=True))
+
+def ask_the_brain(cfg: Config, what: str, payload: dict, quiet: bool = False) -> dict:
+    """Ask the brain to do something with the weights, and follow along while it does.
+
+    Everything that touches the weights happens in the process that serves, because a second
+    copy of them will not fit on the GPU beside the first. So this sends the work there and
+    reads back what it says; requests arriving meanwhile wait in that process's queue.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = f"{brain_url(cfg)}/{what}"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    out: dict = {}
+    try:
+        with urllib.request.urlopen(req, timeout=3600) as r:
+            for line in r:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                if "progress" in d and not quiet:
+                    print(d["progress"], flush=True)
+                elif d.get("done"):
+                    out = d.get("report") or {}
+                elif "error" in d:
+                    return {"error": d["error"]}
+    except urllib.error.URLError as e:
+        return {"error": f"the brain is not answering at {url}: {e.reason}"}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    return out
+
+
+def train(cfg: Config, max_samples: int = 32) -> dict:
+    """Turn pending samples into weight changes, in the process that holds the weights."""
+    report = ask_the_brain(cfg, "train", {"max_samples": max_samples})
     if report.get("consumed"):
-        brain.save()
-        Db(state / "groow.db").learned("train", report["consumed"], report.get("last_loss"), "")
+        Db(Path(cfg.state) / "groow.db").learned(
+            "train", report["consumed"], report.get("last_loss"), "")
+    return report
+
+
+def consolidate(cfg: Config) -> dict:
+    """Merge what was practised into the base weights."""
+    report = ask_the_brain(cfg, "consolidate", {})
+    if not report.get("error"):
+        Db(Path(cfg.state) / "groow.db").learned("consolidate", 0, None, json.dumps(report))
     return report
 
 
@@ -257,7 +300,7 @@ def nap(cfg: Config) -> dict:
     """The short pass, between turns: score what has happened, harvest it, practise a little.
 
     No consolidation and no long drills, because a person may speak at any moment and the
-    card is needed to answer them.
+    brain is needed to answer them.
     """
     out = {"feel": feel(cfg), "harvest": harvest(cfg)}
     out["train"] = train(cfg, max_samples=cfg.nap_max_samples)
@@ -266,44 +309,20 @@ def nap(cfg: Config) -> dict:
 
 # -------------------------------------------------------------------- night
 def night(cfg: Config) -> dict:
-    """The whole cycle: score the day, harvest it, practise it, then consolidate."""
+    """The whole cycle: score the day, harvest it, practise it, then consolidate.
+
+    Nothing has to be reloaded afterwards. The process that merged the weights is the one that
+    serves, so what it learned is what it answers from, from the next request onward.
+    """
     out = {"feel": feel(cfg), "harvest": harvest(cfg)}
     out["train"] = train(cfg, max_samples=cfg.idle_nap_max_samples)
-    try:
-        from .brain.model import Brain
-        brain = Brain(cfg).load()
-        out["consolidate"] = brain.consolidate(keep_previous=cfg.keep_previous_base)
-        brain.save()
-    except Exception as e:
-        out["consolidate"] = {"error": f"{type(e).__name__}: {e}"}
-    out["reload"] = tell_the_brain_to_reload(cfg)
+    out["consolidate"] = consolidate(cfg)
     return out
-
-
-def tell_the_brain_to_reload(cfg: Config) -> dict:
-    """The weights on disk have changed; the brain still has the old ones in memory.
-
-    Without this a night is invisible: everything it merged sits on disk while the running
-    brain keeps answering from the copy it loaded before.
-    """
-    import urllib.error
-    import urllib.request
-
-    url = f"http://127.0.0.1:{getattr(cfg, 'brain_port', 7374)}/reload"
-    try:
-        req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as r:
-            return json.loads(r.read())
-    except urllib.error.URLError as e:
-        # Nothing is listening, which is normal when a night runs with the brain down.
-        return {"ok": False, "why": f"the brain is not answering at {url}: {e.reason}"}
-    except Exception as e:
-        return {"ok": False, "why": f"{type(e).__name__}: {e}"}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="what happens to a day after it has been lived")
-    ap.add_argument("what", choices=["feel", "harvest", "train", "nap", "night"])
+    ap.add_argument("what", choices=["feel", "harvest", "train", "consolidate", "nap", "night"])
     ap.add_argument("--config", default="groow.json")
     ap.add_argument("--state", default=None)
     ap.add_argument("--max", type=int, default=32)
@@ -312,9 +331,11 @@ def main() -> None:
     cfg = Config.load(Path(args.config))
     if args.state:
         cfg.state_dir = args.state
-    fn = {"feel": feel, "harvest": harvest, "nap": nap, "night": night}.get(args.what)
-    out = train(cfg, args.max) if args.what == "train" else fn(cfg)
+    fn = {"feel": feel, "harvest": harvest, "consolidate": consolidate, "nap": nap, "night": night}
+    out = train(cfg, args.max) if args.what == "train" else fn[args.what](cfg)
     print(json.dumps(out, indent=1, default=str))
+    if isinstance(out, dict) and out.get("error"):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

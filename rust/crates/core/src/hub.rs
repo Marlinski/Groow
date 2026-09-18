@@ -89,6 +89,8 @@ pub enum Cmd {
     Abandon { turn: String, why: String },
     /// A thought's process ended without taking a step.
     ThoughtFailed { id: String, why: String },
+    /// The brain is learning rather than answering. Nothing else runs meanwhile.
+    Napping { what: Option<String> },
 
     Say { text: String, kind: SignalKind, meta: Value, reply: Answer<Value> },
     Ask { question: String, context: String, reply: Answer<Value> },
@@ -160,6 +162,9 @@ impl Handle {
     pub async fn thought_failed(&self, id: &str, why: &str) {
         self.tell(Cmd::ThoughtFailed { id: id.to_string(), why: why.to_string() }).await
     }
+    pub async fn napping(&self, what: Option<&str>) {
+        self.tell(Cmd::Napping { what: what.map(|s| s.to_string()) }).await
+    }
     pub async fn say(&self, text: &str, kind: SignalKind, meta: Value) -> Result<Value, WireError> {
         let text = text.to_string();
         self.ask(|reply| Cmd::Say { text, kind, meta, reply }).await
@@ -228,6 +233,9 @@ pub struct Hub {
     epoch: Epoch,
     /// Consecutive idle nudges, so the mind is left alone for longer the less is happening.
     idle_streak: u32,
+    /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
+    /// turn is started, because the brain it would need is busy changing itself.
+    napping: Option<String>,
     /// Consecutive turns that ended badly, and when the last one did. A brain that is down
     /// must not turn into a spawn loop.
     fail_streak: u32,
@@ -290,6 +298,7 @@ impl Hub {
             active: None,
             epoch: Epoch(0),
             idle_streak: 0,
+            napping: None,
             fail_streak: 0,
             last_failure: 0.0,
             since_learned: 0,
@@ -348,6 +357,10 @@ impl Hub {
             }
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
             Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
+            Cmd::Napping { what } => {
+                self.napping = what.clone();
+                self.fanout(Event::new(EventName::Status, self.status()));
+            }
             Cmd::Say { text, kind, meta, reply } => {
                 let r = self.say(&text, kind, meta);
                 send(reply, r);
@@ -439,6 +452,8 @@ impl Hub {
         let (pain, pleasure) = self.db.mood(now, self.cfg.mood_halflife_s).unwrap_or((0.0, 0.0));
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
+            "napping": self.napping,
+            "mood": self.mood(),
             "age": self.birth.age_text(now),
             "born": self.birth.born,
             "queue": self.mailbox.len().unwrap_or(0),
@@ -451,6 +466,18 @@ impl Hub {
             "feeling": {"pain": pain, "pleasure": pleasure, "tone": tone},
             "idle_streak": self.idle_streak,
         })
+    }
+
+    /// What it looks like it is doing, for the creature and the status line.
+    fn mood(&self) -> &'static str {
+        if self.napping.is_some() {
+            return "napping";
+        }
+        match &self.active {
+            Some(_) => "thinking",
+            None if self.idle_streak > 0 => "idle",
+            None => "listening",
+        }
     }
 
     fn recall(&self, n: usize) -> Result<Value, WireError> {
@@ -484,6 +511,11 @@ impl Hub {
             // A turn is already running. Say so with a short wait rather than queueing a
             // second one; two conscious turns at once is the thing this design forbids.
             return Ok(Duty::Idle(0.5));
+        }
+        // Asleep. A turn would need the brain, and the brain is busy becoming different.
+        // Whatever arrives meanwhile waits in the queue, which is what sleeping means here.
+        if self.napping.is_some() {
+            return Ok(Duty::Idle(1.0));
         }
         // After a failure, wait before trying again, longer each time. Without this, a brain
         // that is down becomes a loop that spawns a process as fast as the machine allows.
@@ -1425,6 +1457,28 @@ mod tests {
             turn, epoch, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
         assert_eq!(h.fail_streak, 0, "one good turn should clear the backoff");
+    }
+
+    #[test]
+    fn nothing_is_started_while_it_is_asleep() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        h.handle(Cmd::Napping { what: Some("night".into()) });
+        clock.advance(10.0);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)),
+            "a turn was started while the brain was busy changing itself");
+        let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
+        assert_eq!(s["napping"], "night");
+        assert_eq!(s["mood"], "napping");
+        assert_eq!(s["queue"], 1, "and what arrived meanwhile is still waiting");
+
+        // When it wakes, the message is still there.
+        h.handle(Cmd::Napping { what: None });
+        clock.advance(1.0);
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+            Duty::Turn(s, _) => assert_eq!(s.text, "hello"),
+            other => panic!("it did not pick up where it left off: {other:?}"),
+        }
     }
 
     #[test]

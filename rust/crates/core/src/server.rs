@@ -123,10 +123,14 @@ impl Core {
                     // a turn that arrives simply runs next.
                     match self.spawner.learn(what, &self.python, &self.config, &self.spawner.state) {
                         Ok(child) => {
+                            // Asleep from here until the pass is done: the brain is busy
+                            // changing itself, so nothing that would need it is started.
+                            self.hub.napping(Some(what)).await;
                             self.hub.emit(Event::new(EventName::Learned, json!({
                                 "kind": what, "state": "started",
                             }))).await;
                             self.watch(child, "learning pass", None).await;
+                            self.hub.napping(None).await;
                             self.hub.emit(Event::new(EventName::Learned, json!({
                                 "kind": what, "state": "finished",
                             }))).await;
