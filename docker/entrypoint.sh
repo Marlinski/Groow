@@ -31,6 +31,6 @@ RC
 if [ "${1:-}" = "start" ] && [ ! -f "$HOME/state/birth.json" ]; then
   echo "groow-body: no birth certificate in the home. This is a birth: fetching the base model into the home…"
   groow init
-  rm -rf "$HF_HOME/hub/models--"* 2>/dev/null || true     # the working copy is state/base; the download cache would double the home
+  chmod -R u+w "$HF_HOME/hub" 2>/dev/null; rm -rf "$HF_HOME/hub"   # the working copy is state/base; the download cache would double the home
 fi
 exec "$@"
