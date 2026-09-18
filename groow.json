@@ -39,7 +39,7 @@
   "top_p": 0.8,
   "top_k": 20,
   "max_new_tokens": 768,
-  "max_tool_rounds": 6,
+  "max_tool_rounds": 10,
   "train_max_len": 4096,
   "sleep_internalize_steps": 20,
   "sleep_replay_steps": 30,

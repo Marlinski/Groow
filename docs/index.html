@@ -1,5 +1,5 @@
 <!doctype html><html lang="en"><head><title>Groow · how it works</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
-<nav class="top"><a href="index.html" class="here">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="anatomy.html">Anatomy</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
 <h1>Groow</h1>
 <p class="lead">A small language model whose weights are not frozen. It learns from every conversation, drills itself on purpose, reads the news when nobody talks to it, thinks in the background, and sleeps to make what it learned permanent.</p>
 
@@ -7,32 +7,30 @@
 <div class="card"><div class="k">Base</div><b>Qwen3-4B-Instruct-2507</b><br>4.1B dense parameters, fp16, 262k context. Tesla V100S 32 GB.</div>
 <div class="card"><div class="k">Plastic</div><b>LoRA overlay, rank 32</b><br>66M fp32 parameters on every linear layer. This is what moves every turn.</div>
 <div class="card"><div class="k">Permanent</div><b>Consolidation</b><br>At night the overlay is merged exactly into the base and a blank one opens.</div>
-<div class="card"><div class="k">Grounded</div><b>Memory files</b><br>Episodes, lessons, thought traces. Rehearsal pool and searchable diary.</div>
+<div class="card"><div class="k">Felt</div><b>Limbic system</b><br>Free sensors plus a frozen 421M judge decide how a turn went. Nothing rates itself.</div>
 </div>
 
 <h2>One picture</h2>
 <pre class="mermaid">
 flowchart LR
-  U[you] -->|USER signal| Q[priority queue]
-  T[inner thoughts<br/>own histories] -->|focus / done / reminder| Q
-  I[idle clock] -->|impulse| Q
-  Q --> M[main thought<br/>one rolling conversation]
-  M --> H[harness turn<br/>generate → tools → …]
-  T --> H
-  H --> G[generation server<br/>batches requests, main preempts]
-  G --> B[brain: fp16 base + LoRA overlay]
-  H -->|after every turn| L[learner: gradient step + rehearsal]
-  L --> B
-  B -.->|night: merge overlay| B
+  P["person"] <--> SH["senses<br/>shell · think · ask"]
+  SH --> LOG[("logs<br/>journal · activity")]
+  B["brain<br/>fp16 base + LoRA overlay"] --> SH
+  LOG --> L["limbic<br/>sensors + frozen judge"]
+  L -->|valence| H["hippocampus<br/>logs → training sets"]
+  LOG --> H
+  H --> T["trainer"]
+  T -->|nap · night| B
 </pre>
 
-<h2>The four mechanics</h2>
+<h2>The five organs</h2>
 <table><tr><th>Page</th><th>What it covers</th></tr>
-<tr><td><a href="learning.html">Learning</a></td><td>Passive learning from every turn, active drills (memorize, quiz, self-play), sleep with replay and rollback, identity internalisation, drift probes, growth.</td></tr>
-<tr><td><a href="harness.html">Harness</a></td><td>The tool registry, the turn loop, the generation server that batches concurrent requests, built-in / self / sense tools, the sandbox.</td></tr>
-<tr><td><a href="extension.html">Self-extension</a></td><td>Skills Groow writes for itself: sandbox check, install, rollback, quarantine; the supervisor, safe mode and <code>groow doctor</code>; why the core is only patched through review.</td></tr>
-<tr><td><a href="gateway.html">Daemon &amp; UI</a></td><td><code>groow start</code> runs the mind as a daemon; <code>groow ui</code> and <code>groow chat</code> connect over a JSON socket protocol. The creature, the identity card, the palette.</td></tr>
-<tr><td><a href="mind.html">Mind</a></td><td>The single conscious thread and its signal queue, inner thoughts as concurrent coroutines with their own traces, the lifecycle, recall of any past conversation.</td></tr>
+<tr><td><a href="anatomy.html">Anatomy</a></td><td>The organism end to end: the body it lives in, the three senses, the limbic system that decides how things felt, the brain, and the hippocampus that turns a day into changes in that brain. Start here.</td></tr>
+<tr><td><a href="learning.html">Learning</a></td><td>Two speeds of memory, naps and nights, training sets and the trainer, the hippocampus in detail, drift probes, growth.</td></tr>
+<tr><td><a href="harness.html">Harness</a></td><td>The tool registry, the turn loop, the generation server that batches concurrent requests, the journal and the mailbox, the sandbox.</td></tr>
+<tr><td><a href="mind.html">Mind</a></td><td>The single conscious thread and its signal queue, inner thoughts as concurrent coroutines with their own traces, the lifecycle.</td></tr>
+<tr><td><a href="extension.html">Self-extension</a></td><td>Skills Groow writes for itself, the body and the home, the supervisor, safe mode and <code>groow doctor</code>.</td></tr>
+<tr><td><a href="gateway.html">Daemon &amp; UI</a></td><td><code>groow start</code> runs the mind as a daemon; the UI and clients speak HTTP, SSE and WebSocket.</td></tr>
 </table>
 
 <h2>Running it</h2>

@@ -13,6 +13,7 @@ dependencies = [
   "numpy",
   "textual>=0.80",
   "aiohttp>=3.9",
+  "laya>=0.1.6",
 ]
 
 [project.scripts]

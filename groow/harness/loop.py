@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -35,6 +37,7 @@ class Hooks:
     on_tool_call: Callable[[str, dict], None] | None = None            # before a tool runs
     on_tool_result: Callable[[str, dict, str], None] | None = None     # after it ran
     after_turn: Callable[["TurnResult"], None] | None = None           # the finished turn (learning lives here)
+    on_error: Callable[[str, Exception], None] | None = None           # a hook failed (the turn itself is fine)
 
 
 @dataclass
@@ -120,6 +123,13 @@ class Harness:
             if dropped == 0:
                 return
 
+    def _is_command(self, name: str) -> bool:
+        if not re.match(r"^[a-z][a-z0-9_-]{0,30}$", name):
+            return False
+        home = os.path.expanduser(getattr(self.cfg, "home_dir", "") or "~")
+        paths = os.pathsep.join([os.path.join(home, ".local", "bin"), os.path.join(home, ".nix-profile", "bin"), os.environ.get("PATH", "")])
+        return name == "groow" or shutil.which(name, path=paths) is not None
+
     def _journal(self, msg: dict) -> None:
         if self.hooks.on_message:
             try:
@@ -170,6 +180,11 @@ class Harness:
                 break
             for c in calls:
                 name, args = c["function"]["name"], c["function"]["arguments"]
+                if name not in self.tools.tools and "shell" in self.tools.tools and self._is_command(name):
+                    # the model named a command as if it were a tool: run it in the shell instead of failing
+                    argv = " ".join(str(v) for v in (args.values() if isinstance(args, dict) else [args]))
+                    name, args = "shell", {"command": f"{name} {argv}".strip()}
+                    c["function"]["name"], c["function"]["arguments"] = name, args
                 if self.hooks.on_tool_call:
                     self.hooks.on_tool_call(name, args)
                 key = name + json.dumps(args, sort_keys=True, ensure_ascii=False)
@@ -205,7 +220,12 @@ class Harness:
                             tools_used=tools_used, rounds=rounds, seconds=round(time.time() - t0, 2), flags=flags)
         self.turns.append(result)
         if self.hooks.after_turn:
-            await loop.run_in_executor(self.brain.server.gpu, self.hooks.after_turn, result)
+            try:
+                await loop.run_in_executor(self.brain.server.gpu, self.hooks.after_turn, result)
+            except Exception as e:
+                result.extra["after_turn_error"] = f"{type(e).__name__}: {e}"
+                if self.hooks.on_error:
+                    self.hooks.on_error("after_turn", e)
         return result
 
     def turn_sync(self, user_text: str) -> TurnResult:

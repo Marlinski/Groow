@@ -68,7 +68,7 @@ class SleepPolicy:
         prepared = None
         if self.hippocampus is not None:
             try:
-                prepared = self.hippocampus.run(on_progress=on_progress)
+                prepared = self.hippocampus.night(on_progress=on_progress)
             except Exception as e:
                 prepared = {"error": f"{type(e).__name__}: {e}"}
         consumed = None

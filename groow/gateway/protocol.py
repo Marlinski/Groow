@@ -26,7 +26,8 @@ Event types (both SSE and WS carry the same JSON objects):
   turn_end     {final, tools_used, seconds, req?}
   tool_call    {name, args, actor: "main"|"thought:<id>"}
   tool_result  {name, result, actor}
-  learned      {loss, tokens, step, probe?}
+  learned      {loss, tokens, step, probe?}                 a training step happened
+  felt         {valence, pending, mood, consumed, sets}      how the turn felt and what was learned from it
   thought      {id, status, goal, steps, event: spawn|step|focus|done|paused|resumed|killed, text?}
   sleep        {phase: start|progress|done, ...}
   weights      {busy: bool, op}                          the weights are being changed: no inference until done (a nap)

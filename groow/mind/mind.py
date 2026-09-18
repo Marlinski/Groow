@@ -57,9 +57,10 @@ class Mind:
 
     async def run(self) -> None:
         while self.alive:
-            wait = None
+            # wake every few seconds for housekeeping (idle naps), and at the idle deadline for curiosity
+            wait = 5.0
             if self.idle_seconds:
-                wait = max(1.0, self.idle_seconds - (time.time() - self.last_human))
+                wait = max(1.0, min(5.0, self.idle_seconds - (time.time() - self.last_human)))
             sig = await self.queue.pop(timeout=wait)
             if sig is None:
                 if self.idle_nap is not None:
@@ -99,19 +100,25 @@ class Mind:
             self.emit("turn_start", who="user", kind="user", text=sig.text, req=req)
             self._req = req
             self.harness.turn_kind = "user"
+            r = None
             try:
                 r = await self.harness.turn(sig.text, should_stop=self._should_stop)
             finally:
                 self._req = None
-            self.emit("turn_end", who="user", final=r.final_text, tools_used=r.tools_used, seconds=r.seconds, req=req)
+                self.emit("turn_end", who="user", final=r.final_text if r else "", tools_used=r.tools_used if r else [],
+                          seconds=r.seconds if r else 0, req=req, error=None if r else "turn failed")
         elif sig.kind in ("focus", "thought_done", "reminder", "idle", "note"):
             if sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
                 return                               # something more concrete is right behind it
             framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))
             self.emit("turn_start", who="signal", kind=sig.kind, text=sig.text, thought=sig.meta.get("thought"))
             self.harness.turn_kind = sig.kind
-            r = await self.harness.turn(framed, should_stop=self._should_stop)
-            self.emit("turn_end", who="signal", kind=sig.kind, final=r.final_text, tools_used=r.tools_used, seconds=r.seconds)
+            r = None
+            try:
+                r = await self.harness.turn(framed, should_stop=self._should_stop)
+            finally:
+                self.emit("turn_end", who="signal", kind=sig.kind, final=r.final_text if r else "", tools_used=r.tools_used if r else [],
+                          seconds=r.seconds if r else 0)
         elif sig.kind in ("housekeeping", "noop"):
             pass
         if self.alive and not self.queue.has_urgent():

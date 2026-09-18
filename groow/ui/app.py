@@ -50,6 +50,7 @@ class Creature(Static):
     mood = "idle"
     tick = 0
     born: float | None = None        # set from hello; age picks the life stage
+    feeling: dict | None = None      # pain / pleasure / tone from the limbic system
 
     def on_mount(self) -> None:
         self.set_interval(0.5, self.animate)
@@ -57,7 +58,13 @@ class Creature(Static):
     def animate(self) -> None:
         self.tick += 1
         age = (time.time() - self.born) if self.born else 0.0
-        self.update(render_creature(age, self.mood, self.tick))
+        t = render_creature(age, self.mood, self.tick)
+        f = self.feeling or {}
+        if f:
+            tone = f.get("tone", "even")
+            colour = {"content": MINT, "sore": ROSE}.get(tone, DIM)
+            t.append(f"\n  {tone} · pain {f.get('pain', 0):.1f} · pleasure {f.get('pleasure', 0):.1f}", style=colour)
+        self.update(t)
 
 
 class IdCard(Static):
@@ -130,6 +137,9 @@ class StatusBar(Static):
     def show(self, s: dict) -> None:
         t = Text()
         t.append(f" {s.get('mood', '')} ", style=f"bold {MINT}")
+        f = s.get("feeling") or {}
+        if f:
+            t.append(f"· {f.get('tone','')} ", style=MINT if f.get("tone") == "content" else ROSE if f.get("tone") == "sore" else DIM)
         if s.get("weights_busy"):
             t.append(f"· weights: {s['weights_busy']} (no inference) ", style=f"bold {VIOLET}")
         t.append(f"· queue {s.get('queue', 0)} · thoughts {s.get('thoughts_running', 0)} · "
@@ -224,6 +234,7 @@ class GroowUI(App):
             return
         if k == "status":
             card.status = ev
+            creature.feeling = ev.get("feeling")
             card.identity_version = ev.get("identity_version", card.identity_version)
             creature.mood = ev.get("mood", creature.mood)
             self.query_one(StatusBar).show(ev)
@@ -265,6 +276,13 @@ class GroowUI(App):
         elif k == "tool_result":
             if ev.get("actor") == "main":
                 chat.add("", f"  ↳ {_short(ev['result'], 220)}", "sys")
+        elif k == "felt":
+            v = ev.get("valence")
+            if ev.get("pending"):
+                chat.add("", "· felt: waiting for a reaction before learning from this", "sys")
+            elif v is not None:
+                sign = "▲" if v > 0.15 else "▼" if v < -0.15 else "·"
+                chat.add("", f"{sign} felt {v:+.2f} · learned from {ev.get('consumed', 0)} samples {ev.get('sets') or ''}", "sys")
         elif k == "learned":
             chat.add("", f"↺ learned · loss {ev['loss']:.3f} · {ev['tokens']} tokens · step {ev['step']}", "sys")
         elif k == "thought":

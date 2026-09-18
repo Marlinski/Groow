@@ -33,7 +33,7 @@ class Trainer:
         pending = self.sets.pending(limit=max_samples, urgent_only=urgent_only)
         if not pending:
             return {"consumed": 0, "seconds": 0.0}
-        report = {"consumed": 0, "sft_steps": 0, "pg_steps": 0, "drilled": [], "sets": defaultdict(int)}
+        report = {"consumed": 0, "sft_steps": 0, "pg_steps": 0, "drilled": [], "sets": defaultdict(int), "last_loss": None}
         # --- supervised: batches of up to 3 samples + 1 rehearsal each; urgent ones drilled to their target
         sft = [(n, i, s) for n, i, s in pending if s.get("kind", "sft") == "sft"]
         batch = []
@@ -57,12 +57,12 @@ class Trainer:
             else:
                 batch.append(sample)
                 if len(batch) == 3:
-                    self.brain.sft_step(batch + self.learner._rehearsal(1))
+                    report["last_loss"] = self.brain.sft_step(batch + self.learner._rehearsal(1))
                     report["sft_steps"] += 1
                     batch = []
             report["sets"][n] += 1
         if batch:
-            self.brain.sft_step(batch + self.learner._rehearsal(1))
+            report["last_loss"] = self.brain.sft_step(batch + self.learner._rehearsal(1))
             report["sft_steps"] += 1
         # --- reinforcement: group -> normalised advantages -> one policy-gradient step per group
         pg = [(n, i, s) for n, i, s in pending if s.get("kind") == "pg"]

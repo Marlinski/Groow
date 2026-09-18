@@ -86,7 +86,7 @@ class Daemon:
                 self.mood = "sleeping" if self._night else "napping"
             elif self.mood in ("napping",):
                 self.mood = "listening"
-        elif ev == "learned":
+        elif ev in ("learned", "felt"):
             self.mood = "learning" if self.mood != "napping" else self.mood
         elif ev == "turn_end":
             self.mood = "listening"
@@ -103,7 +103,8 @@ class Daemon:
         b = a.brain.meta
         if self.mood == "listening" and self.mind and time.time() - self.mind.last_human > 60 and not a.thoughts.running():
             self.mood = "idle"
-        return {"mood": self.mood, "weights_busy": a.brain.busy, "body": os.environ.get("GROOW_BODY", "host"),
+        feeling = a.limbic.mood() if getattr(a, "limbic", None) else {}
+        return {"mood": self.mood, "feeling": feeling, "weights_busy": a.brain.busy, "body": os.environ.get("GROOW_BODY", "host"),
                 "home": str(Path(self.cfg.home_dir).expanduser() if self.cfg.home_dir else Path.home()),
                 "state": str(Path(self.cfg.state).resolve()),
                 "steps": b["steps"], "nights": b["consolidations"], "rank": b["rank"],

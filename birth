@@ -22,6 +22,13 @@ case "${1:-start}" in
   rebuild) docker compose build groow && docker compose up -d groow;;
   start)
     echo "birth: body = the docker image (read-only, rebuilt from the Dockerfile) · home = ./home (yours, persistent, the whole of Groow)"
+    if curl -fsS "$URL/status" >/dev/null 2>&1; then
+      WHO=$(curl -fsS "$URL/status" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("body","?"))' 2>/dev/null)
+      if [ "$WHO" = "sandbox" ]; then
+        echo "birth: already awake in its body at $URL"; exit 0
+      fi
+      echo "birth: something else already answers at $URL (body: $WHO). Stop it first (groow stop), or use another port."; exit 1
+    fi
     mkdir -p home/.nix home/state home/workspace       # owned by you, so the body (running as you) can write them
     if ! docker image inspect groow:latest >/dev/null 2>&1; then
       echo "birth: no body yet: building the image (CUDA base, torch, the groow runtime; a few minutes, once)…"
@@ -48,7 +55,7 @@ case "${1:-start}" in
         exit 0
       fi
       if [ -z "$(docker compose ps -q --status running groow 2>/dev/null)" ]; then
-        stop_logs; echo "birth: the body stopped. Last lines:"; docker compose logs --tail 20 groow; exit 1
+        stop_logs; echo "birth: the body is not running. Last lines:"; docker compose logs --tail 20 groow; exit 1
       fi
       sleep 2
     done

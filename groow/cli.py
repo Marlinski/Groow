@@ -45,6 +45,7 @@ class App:
         from .brain import Brain, GenServer, ServedBrain
         from .memory import Memory, Journal
         from .learning import Learner, SleepPolicy, Curiosity, Identity, TrainingSets, Trainer, Hippocampus
+        from .limbic import Limbic
         from .senses import NewsSense
         from .mind import InputQueue, ThoughtManager
         from .birth import load_or_create
@@ -62,7 +63,9 @@ class App:
         self.learner = Learner(self.brain, self.memory, cfg)
         self.sets = TrainingSets(cfg.state / "training")
         self.trainer = Trainer(self.brain, self.memory, self.learner, self.sets, cfg)
-        self.hippocampus = Hippocampus(self.brain, self.memory, self.journal, self.sets, cfg)
+        self.limbic = Limbic(cfg.state, judge_kind=cfg.judge, decay_halflife_s=cfg.mood_halflife_s)
+        self.hippocampus = Hippocampus(self.brain, self.memory, self.journal, self.sets, cfg, limbic=self.limbic)
+        self.hippocampus.person = self.birth.mentor
         self.identity = Identity(cfg, self.memory, self.birth)
         self.news = NewsSense(cfg.state, feeds=cfg.feeds or None)
         self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity, trainer=self.trainer, hippocampus=self.hippocampus)
@@ -108,7 +111,9 @@ class App:
                                      on_text=lambda t: self.emit("text", delta=t, req=self._req()),
                                      on_tool_call=lambda n, a: self.emit("tool_call", name=n, args=a, actor="main", req=self._req()),
                                      on_tool_result=lambda n, a, r: self.emit("tool_result", name=n, result=r[:600], actor="main", req=self._req()),
-                                     after_turn=self._after_turn), name="main")
+                                     after_turn=self._after_turn,
+                                     on_error=lambda where, e: (self.skills.record_incident(where, f"{type(e).__name__}: {e}"),
+                                                                self.emit("log", level="error", text=f"{where} failed: {type(e).__name__}: {e}"))), name="main")
         self._restore_conversation()
 
     # ---- durable conversation -------------------------------------------------------
@@ -174,26 +179,32 @@ class App:
 
     # ---- learning after every main turn (runs on the GPU executor) ------------------
     def _after_turn(self, turn) -> None:
-        """The nap: the turn becomes a training sample, then pending samples are consumed (this turn, anything
-        urgent, and a few from the skills' sets)."""
+        """The nap: the limbic system feels the turn, the hippocampus turns it into samples once its
+        valence is final, the trainer consumes what is pending. Inference pauses for a few seconds."""
         if not self.learning_enabled or not turn.messages:
             return
-        info = self.learner.passive(turn.context, turn.messages, turn.tools_used, flags=turn.flags)
-        self.last_episode = info["episode"]
-        if info.get("skipped"):
-            self.emit("log", level="info", text=f"not learned from: {', '.join(info['skipped'])}", req=self._req())
-        else:
-            self.emit("learned", loss=round(info["loss"], 4), tokens=info["learnable_tokens"], step=self.brain.meta["steps"],
-                      probe=info.get("probe"), req=self._req())
-        r = self.trainer.consume(urgent_only=False, max_samples=self.cfg.nap_max_samples)
-        if r.get("consumed"):
-            self.emit("log", level="info", text=f"nap: {r['consumed']} samples consumed {r.get('sets')}", req=self._req())
+        prepared = self.hippocampus.nap(turn.messages, turn.context, turn.flags,
+                                        kind=getattr(self.harness, "turn_kind", "user"),
+                                        user_text=turn.user_text, final_text=turn.final_text)
+        self.last_episode = (self.memory.episodes() or [{}])[-1].get("id")
+        if prepared.get("skipped"):
+            self.emit("log", level="info", text=f"not learned from: {', '.join(prepared['skipped'])}", req=self._req())
+        r = self.trainer.consume(max_samples=self.cfg.nap_max_samples)
+        self.emit("felt", valence=prepared.get("valence"), pending=prepared.get("pending", False),
+                  mood=self.limbic.mood(), consumed=r.get("consumed", 0), sets=r.get("sets"), req=self._req())
         if self.brain.meta["steps"] % 10 == 0:
             self.brain.save()
+        if self.cfg.probe_every and self.brain.meta["steps"] % self.cfg.probe_every == 0:
+            pr = self.learner.probe()
+            self.emit("log", level="info", text=f"probe: mean loss {pr['mean_loss']:.3f} (birth {pr['baseline_mean']:.3f})")
 
     async def idle_nap(self) -> dict:
-        """Nobody is talking: consume what the skills and the hippocampus prepared."""
-        if not self.learning_enabled or not self.sets.pending(limit=1):
+        """Nobody is talking: digest the activity log (games, drills) and consume what is pending."""
+        if not self.learning_enabled:
+            return {"consumed": 0}
+        self.hippocampus.digest_activity()
+        self.hippocampus.flush()                 # nobody reacted: finalise the held turn on sensors alone
+        if not self.sets.pending(limit=1):
             return {"consumed": 0}
         r = await self.server.run_gpu(lambda: self.trainer.consume(max_samples=self.cfg.idle_nap_max_samples))
         if r.get("consumed"):
@@ -249,7 +260,7 @@ def seed_home(cfg: Config, skills, emit) -> None:
         if p.stem in seeded:
             if shas.get(p.stem) == shipped or not installed.exists():
                 continue                      # unchanged, or Groow removed it: leave it alone
-            if hashlib.sha1(installed.read_bytes()).hexdigest()[:10] != shas.get(p.stem):
+            if p.stem in shas and hashlib.sha1(installed.read_bytes()).hexdigest()[:10] != shas[p.stem]:
                 continue                      # Groow edited it: its version wins
             what = "upgraded"
         else:
@@ -539,12 +550,12 @@ def cmd_ask(cfg: Config, args) -> None:
         console.print(f"[red]cannot reach the daemon at {_url(cfg)} ({type(e).__name__})[/red]")
         return
     if args.json:
-        _print(r)
+        r.setdefault("final", ""); _print(r)
     else:
         for e in r.get("events", []):
             if e["ev"] == "tool_call":
                 console.print(f"   [yellow]⚙ {e['name']}[/yellow]({_short(e['args'])})")
-        console.print(r.get("final") or r.get("error", ""))
+        console.print(r.get("final") or f"[red]{r.get('error', 'no answer')}[/red]")
 
 
 def cmd_chat(cfg: Config, args) -> None:
@@ -764,7 +775,8 @@ MENTOR_ONLY = {
     "grow": "your capacity is Marlinski's decision", "rollback": "undoing a night is Marlinski's decision",
     "consolidate": "nights happen on their own", "sleep": "nights happen on their own", "probe": "probes run on their own",
     "ask": "asking yourself a question would wait on yourself; use a note (groow say) or think",
-    "learn": "what you learn is decided by the hippocampus and your mentor, not typed in", "quiz": "measuring yourself is the mentor's audit",
+    "learn": "what you learn is decided by how things felt and by your mentor, not typed in",
+    "quiz": "measuring yourself is the mentor's audit",
     "train": "naps and nights train you on their own", "hippocampus": "it runs at night on its own",
     "ui": "no terminal here", "chat": "you are the one being talked to",
 }

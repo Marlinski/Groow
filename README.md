@@ -92,135 +92,54 @@ its own games.
 
 ## Mental model
 
+Groow is an organism with five organs, each a directory in this repository. The
+full tour with diagrams is `docs/anatomy.html`.
+
 ```
-   you ──▶ ┌────────────── harness ──────────────┐ ──▶ answer
-           │ generate → <tool_call> → run tool →  │
-           │ <tool_response> → generate → …       │
-           └──────────────┬───────────────────────┘
-                          │ after every turn
-                          ▼
-              ┌──────────────────────┐   rehearsal   ┌───────────────┐
-              │ learner.passive()    │◀──────────────│ episodic      │
-              │ 1 SFT step, weights  │── store turn ─▶│ memory (jsonl)│
-              │ by role + 2 replays  │               └───────────────┘
-              └──────────┬───────────┘
-                         ▼
-   ┌─────────────────────────────────────────────────────────┐
-   │ brain = frozen fp16 base  +  plastic LoRA overlay (fp32) │
-   │ sft_step · pg_step · consolidate (merge) · grow_rank     │
-   └─────────────────────────────────────────────────────────┘
+   person ──▶ senses: shell · think · ask ──▶ logs (journal, activity log)
+                  ▲                                  │
+                  │                                  ▼
+            brain: fp16 base              limbic: free sensors + frozen judge
+            + plastic LoRA overlay                   │ valence
+                  ▲                                  ▼
+                  └──── trainer ◀──── hippocampus: logs → training sets
+                     (nap, night)
 ```
 
-**Two speeds of memory.** The *overlay* (LoRA rank 32 on every linear layer,
-about 66M parameters for the 4B) is trained continuously and cheaply. The
-*base* (4B parameters, fp16) changes only at consolidation, when the overlay
-is merged into it exactly (a LoRA delta folds into the dense weight with no
-change in function) and a blank overlay is opened. Until then, deleting
-`state/plastic/` is a complete undo.
+**The body.** A read-only container; a home (`./home`) that is the whole of
+Groow and survives everything. Unprivileged: no `apt`, no `sudo`, no way to
+touch its own runtime. It installs what it needs locally with Nix or `uv`.
 
-**Passive learning.** After each turn the exchange is rendered with the model's
-own chat template and trained on with per-role weights: user 0.5 (absorb what
-people say), assistant 1.0 (reinforce its own habits and tool use), tool output
-0. Two older episodes are replayed in the same step, preferring turns rated
-good and never those rated bad.
+**The senses.** Three tools and nothing else: `shell` (its home, its files, the
+commands its skills install, the `groow …` commands that reach its own daemon),
+`think` (an inner thought, concurrent, with its own history), `ask` (the
+mentor's inbox). Everything a sense does is journalled to `state/main/` as it
+happens.
 
-**Active learning.** Skills produce samples: `tictactoe play` runs self-play
-through the daemon's `/complete` endpoint, scores every decision by the rules
-(a quarter of moves are random legal ones so a collapsed policy still
-explores) and appends rewarded samples; the trainer normalises rewards within
-each round into advantages and takes policy-gradient steps at the next nap.
-`arithmetic drill` does the same with checked answers. `groow quiz` measures
-the loss of an expected answer, so knowing is a number; `probe` watches drift.
+**The limbic system.** Nothing in the thinking part writes its own reward, so
+there is no tool to rate a turn and a skill cannot state its own score. Free
+sensors read the transcript: a command that failed, a call that timed out, the
+same call twice, a turn with no answer, a fix after a failure, the person
+having to say it again. A small **frozen judge** covers the ambiguous part:
+[Laya](https://huggingface.co/convaiinnovations/laya) (421M, Apache-2.0, ~35 ms
+on CPU), a System One model in the [Jev](https://typesafe.ai/) mould, answers
+"how did the person react?" and "did this command do anything?" as calibrated
+probabilities. Valence is the signed gap. Approval arrives with the *next*
+message, so a turn is held and learned from one turn late. Pain and pleasure
+accumulate with a half-life, and that mood is what the creature in the UI shows.
 
-**Sleep.** A night has phases: *replay* the day's episodes and lessons for a
-bounded number of steps (strengthen and interleave before anything becomes
-permanent), *internalise* the identity (below), *probe* for drift and abort
-the night if the probes got much worse, then *merge* the overlay into the base
-exactly, keeping the previous base for `groow rollback`. Nights come
-automatically every `sleep_every_steps` learning steps.
+**The brain.** A frozen fp16 base (Qwen3-4B-Instruct-2507) plus a plastic LoRA
+overlay, the only thing that moves. A generation server batches the main
+thought and its inner thoughts and preempts background work when you speak. At
+night the overlay merges into the base exactly.
 
-**Curiosity.** When nobody has talked for `sense_idle_minutes`, Groow gets an
-internal impulse, not a human message, and reads the news through its own
-tools: `news_headlines` (RSS feeds, dated and sourced), `read_article`, then
-`learn_fact` for each item worth keeping. `learn_fact` drills a question to an
-answer in the *source's* wording with its date, so what gets trained in is
-grounded text, never Groow's paraphrase. Everything is filed as a lesson that
-`recall` can find. A fixed pipeline (`--pipeline`) does the same without the
-model's judgement and is the fallback when the agentic pass learns nothing.
-
-**Identity.** There is no rigid system prompt. `state/identity.md` starts from
-a short seed (including that Marlinski is its owner and mentor, to be asked when
-stuck) and Groow may rewrite it with `update_identity`; every version is kept.
-Each night, *context distillation* moves the identity from text into weights:
-answers generated with the identity in the prompt are trained on without it.
-`groow identity` reports the loss of the self-description when asked "who are
-you?" with no system prompt at all. When that is low enough, set
-`identity_in_prompt: false` and the prompt is gone; the personality stays.
-Questions Groow cannot resolve go to `ask`; you see the inbox when you
-next open the chat.
-
-**Mind.** Groow has one conscious thread: a single rolling conversation fed
-by a priority queue of signals. Your messages come first, then messages from
-inner thoughts (`focus`, finished), then reminders that a thought is running,
-then the idle impulse. It is the only thing that speaks to you or to the mentor.
-With `think(goal, max_steps)` it spawns **inner thoughts**: separate
-conversations that run concurrently as coroutines with a restricted toolset
-(they can read, learn facts, memorise, play, recall; they cannot talk to anyone
-or rewrite the identity). Main indexes them with `list_thoughts`,
-`read_thought`, `pause_thought`, `resume_thought`, `kill_thought`. All
-generation goes through one in-process server that batches concurrent requests
-into a single forward pass; a pending user message preempts a thought batch per
-token, so you never wait for background thinking. Every main turn and every
-thought step is an episode that `recall` can read back in full.
-
-**Body and home.** In Docker, Groow runs as a non-root user with a read-only
-image (the body: CUDA, Python, the `groow` package, rebuilt from the
-Dockerfile) and a persistent home volume (everything it is and everything it
-grows: weights, memory, identity, skills, workspace, Nix profile, venvs).
-`run_shell` gives it a real shell in that home. It cannot escape it, cannot
-alter its own runtime under `/opt/venv`, cannot become root; it can download
-binaries, build things, and install anything nixpkgs or PyPI has. On a bare
-host the same tools run as you, so keep the shell tool for the container.
-
-**Recipes.** The body ships short notes written for Groow, not for you:
-its home layout, installing software with Nix or `uv`, using the shell,
-writing a skill, how it learns, its mind, its mentor. On first start they are
-copied into `state/recipes/` and a default skill (`list_recipes`,
-`read_recipe`, `write_recipe`) is installed, so Groow can read them when
-unsure and rewrite them when it learns better. They are its notes, not the
-body's: upgrades add new recipes but never overwrite edited ones.
-
-**Tools: three, and a shell.** The main thought has `shell` (bash in its
-home), `think` (spawn an inner thought) and `ask` (a question for the mentor).
-Inner thoughts have `shell`, `focus`, `finish`. Everything else is a file in
-its home or a command in its shell. Skills install commands: `web <url>`,
-`news`, `tictactoe`, `arithmetic` are default skills, its own files. The
-`groow …` commands talk to its daemon: `groow thoughts`, `groow thought
-pause|resume|kill`, `groow skill check|install`, `groow training`, `groow stats`,
-`groow identity`, `groow inbox`, `groow say` (a note to self).
-
-**Learning is a meta-process, not a tool.** Anyone appends samples to
-training sets in `state/training/` (supervised or rewarded); only the trainer
-consumes them. After every turn a *nap* learns the exchange and a few pending
-samples; idle naps consume what skills produced (self-play, drills); at night
-the **hippocampus** extracts from the journal the facts people stated and the
-things Groow read, keeping only quotes that exist in the journal and only what
-is still surprising, and everything pending is learned before replay,
-identity distillation, probe and merge. The mentor can still teach directly
-(`groow learn`), measure (`groow quiz`) and trigger (`groow train`,
-`groow hippocampus`).
-
-**The journal.** Every message of the main conversation, your inputs, its
-answers, each tool call and each result, is appended to `state/main/` the
-moment it exists (one file per day, rotated at 1000 lines, flushed and
-fsynced). On start the main thought rebuilds its rolling window from the
-journal tail, and a reconnecting UI replays from it. It is the single durable
-trace; the daemon keeps no conversation history in memory.
-
-**Self-extension.** Groow writes its own commands.**Growth.** `grow` consolidates and attaches a wider overlay. The new part
-starts at zero, so the function is unchanged at t=0. The same zero-init
-principle extends to widening MLPs, inserting identity layers and bolting on a
-vision encoder (see Roadmap).
+**The hippocampus.** Reads the logs and the valence, writes training sets; the
+trainer is the only thing that produces gradients. A nap after every turn (the
+exchange weighted by how it felt, every tool call credited), idle naps for what
+skills logged, and a night for the facts stated during the day, then replay,
+identity distillation, drift probe, merge. Because credit lands on tool calls,
+getting better at the shell or at an API discovered this morning is the same
+mechanism as learning a fact.
 
 ## Repository map
 
@@ -231,6 +150,10 @@ groow/
     model.py           Brain: load, generate, generate_batch, sft_step, pg_step,
                        consolidate, grow_rank, save/load; fp16 base + fp32 LoRA
     chatfmt.py         render conversations with the chat template; per-role loss masks
+  limbic/              how it felt
+    sensors.py         free signals from the transcript (errors, timeouts, repeats, recovery, restatement)
+    judge.py           the frozen judge: Laya (default), a GLiClass scorer, or none
+    limbic.py          Limbic: valence per turn, credit per tool call, pain/pleasure, drives
   memory/
     episodic.py        Memory: episodes, lessons, learning log, drift probes, recall
     journal.py         Journal: append-only rotating trace (state/main/, one file per day, 1000 lines)
@@ -238,7 +161,7 @@ groow/
     learner.py         Learner: passive, feedback, quiz, probe, report; learn for the mentor
     trainingset.py     TrainingSets: state/training/<set>.jsonl, cursor of what was consumed
     trainer.py         Trainer: the one place gradients come from (SFT and grouped policy-gradient steps)
-    hippocampus.py     Hippocampus: facts from the journal into the training set, grounded and surprise-gated
+    hippocampus.py     Hippocampus: logs -> training sets (turns, tool-call credit, activity log, night facts)
     sleep.py           SleepPolicy: replay, internalise, drift check, merge, rollback, when to sleep
     curiosity.py       Curiosity: idle behaviour (agentic news reading, pipeline fallback)
     identity.py        Identity: seed, self-edit, context distillation into weights
@@ -285,7 +208,9 @@ state/                 runtime, created by init (gitignored); inside the contain
   senses/              news items seen and learned
   main/                the conversation journal: every message, one JSONL file per day, rotated
   mailbox/             the input queue on disk (new/, cur/)
-  training/            training sets waiting to be learned (<set>.jsonl, cursor.json)
+  log/activity.jsonl   what skills log when they play in bulk; read by the hippocampus
+  limbic/              valence.jsonl (how each turn felt), state.json (mood), held.json (turns awaiting a reaction)
+  training/            training sets prepared by the hippocampus, waiting for the trainer (<set>.jsonl, cursor.json)
   episodes.jsonl lessons.jsonl learning_log.jsonl probes.json
   workspace/           the only directory file tools may touch
   games/               invented games (*.py)

@@ -1,5 +1,5 @@
-"""Self tools: the one channel to the mentor. Learning is not a tool: it is a meta-process
-(the trainer consumes training sets prepared by the hippocampus, by skills and by the mentor)."""
+"""Self tools: the one channel to the mentor. Nothing here touches learning: the limbic system
+decides how things felt and the hippocampus decides what is learned from them."""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,5 @@
-"""Tic-tac-toe: `tictactoe play [--rounds N]` self-play whose outcomes become training samples; `tictactoe eval` measures you."""
+"""Tic-tac-toe: play it yourself (`tictactoe new`, `tictactoe move 5`), or `tictactoe play` self-play in bulk; `tictactoe eval` measures you.
+How a game goes is read from what the commands print; you never annotate it yourself."""
 import json
 import os
 import random
@@ -91,10 +92,10 @@ class Game:
 
 
 def _play(rounds=3, episodes=16, explore=0.25, rng=None):
-    """Self-play; every decision with its reward is appended to the tictactoe training set."""
+    """Self-play; every decision with its reward is logged to the activity log."""
     rng = rng or random.Random()
-    tdir = Path(os.environ.get("GROOW_STATE", "state")) / "training"
-    tdir.mkdir(parents=True, exist_ok=True)
+    logp = Path(os.environ.get("GROOW_STATE", "state")) / "log" / "activity.jsonl"
+    logp.parent.mkdir(parents=True, exist_ok=True)
     summary = []
     for r in range(rounds):
         games = [Game(rng=rng) for _ in range(episodes)]
@@ -108,17 +109,18 @@ def _play(rounds=3, episodes=16, explore=0.25, rng=None):
                 else:
                     g.act(o)
         group, n, total = uuid.uuid4().hex[:8], 0, 0.0
-        with (tdir / "tictactoe.jsonl").open("a") as f:
+        with logp.open("a") as f:
             for g in games:
                 for (who, prompt, text, _), reward in zip(g.moves, g.credits()):
-                    f.write(json.dumps({"ts": time.time(), "kind": "pg", "prompt": prompt, "completion": (re.search(r"[1-9]", text or "") or [text[:3]])[0]
-                                        if re.search(r"[1-9]", text or "") else (text or "?")[:3], "reward": reward, "group": group,
-                                        "source": "tictactoe self-play"}, ensure_ascii=False) + "\n")
+                    m = re.search(r"[1-9]", text or "")
+                    f.write(json.dumps({"ts": time.time(), "kind": "decision", "skill": "tictactoe", "prompt": prompt,
+                                        "completion": m.group() if m else (text or "?")[:3], "reward": reward, "group": group,
+                                        "tags": ["game", "tictactoe", g.result or ""]}, ensure_ascii=False) + "\n")
                     n += 1; total += reward
         illegal = sum(1 for g in games if str(g.result).startswith("illegal"))
         summary.append({"round": r + 1, "decisions": n, "mean_reward": round(total / max(1, n), 3), "illegal_games": illegal})
-    return {"rounds": summary, "training_set": str(tdir / "tictactoe.jsonl"),
-            "note": "samples are pending until the next nap or night (groow training shows them)"}
+    return {"rounds": summary, "logged_to": str(logp),
+            "note": "your moves and their rewards are in your activity log; you learn from them at your next nap"}
 
 
 def _evaluate(n=24, rng=None):
@@ -135,11 +137,65 @@ def _evaluate(n=24, rng=None):
     return res
 
 
+def _game_path():
+    d = Path(os.environ.get("GROOW_STATE", "state")) / "games"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "tictactoe.json"
+
+
+def _board_text(b, player):
+    free = ", ".join(str(i + 1) for i, c in enumerate(b) if c == ".")
+    return f"{_render(b)}\nfree cells: {free}\nyou are {player}"
+
+
+def _interactive(argv):
+    """You play X against a random O, one move per command. The outcome is stated as a reward line."""
+    p = _game_path()
+    if argv[0] == "new":
+        b = ["."] * 9
+        p.write_text(json.dumps({"b": b}))
+        return {"text": "new game. " + _board_text(b, "X") + "\nplay with: tictactoe move <cell>"}
+    if not p.exists():
+        return {"text": "no game in progress: tictactoe new", "error": "no game"}
+    b = json.loads(p.read_text())["b"]
+    if argv[0] == "show":
+        return {"text": _board_text(b, "X")}
+    if argv[0] == "move":
+        cell = _move(argv[1] if len(argv) > 1 else "")
+        if cell is None or b[cell] != ".":
+            p.unlink(missing_ok=True)
+            return {"text": f"illegal move {argv[1:2]}: that cell is not free. Game over.", "error": "illegal move"}
+        b[cell] = "X"
+        w = _winner(b)
+        if w == "X":
+            p.unlink(missing_ok=True)
+            return {"text": _render(b) + "\nyou win!"}
+        if "." not in b:
+            p.unlink(missing_ok=True)
+            return {"text": _render(b) + "\ndraw."}
+        rng = random.Random()
+        b[rng.choice([i for i, c in enumerate(b) if c == "."])] = "O"
+        if _winner(b) == "O":
+            p.unlink(missing_ok=True)
+            return {"text": _render(b) + "\nO wins. Game over."}
+        if "." not in b:
+            p.unlink(missing_ok=True)
+            return {"text": _render(b) + "\ndraw."}
+        p.write_text(json.dumps({"b": b}))
+        return {"text": "O played.\n" + _board_text(b, "X") + ""}
+    return {"error": f"unknown action {argv[0]}"}
+
+
 def main(argv: list) -> dict:
-    """tictactoe play [--rounds N] [--episodes N] | tictactoe eval [--games N]"""
+    """tictactoe new | move <cell> | show | play [--rounds N] [--episodes N] | eval [--games N]"""
     if not argv or argv[0] in ("-h", "--help"):
-        return {"text": "usage: tictactoe play [--rounds 3] [--episodes 16]   self-play -> training samples\n"
-                        "       tictactoe eval [--games 24]                  your skill against a random player"}
+        return {"text": "usage: tictactoe new                                   start a game you play yourself (you are X)\n"
+                        "       tictactoe move <1-9>                            your move; O answers; rewards are stated\n"
+                        "       tictactoe show                                  the board\n"
+                        "       tictactoe play [--rounds 3] [--episodes 16]     self-play in bulk, logged with rewards\n"
+                        "       tictactoe eval [--games 24]                     your skill against a random player"}
+    if argv[0] in ("new", "move", "show"):
+        return _interactive(argv)
     if argv[0] == "--selftest":
         g = Game(rng=random.Random(0)); g.act("5"); g.act("1"); return {"ok": True, "board": _render(g.b)}
     opts = {argv[i].lstrip("-"): int(argv[i + 1]) for i in range(1, len(argv) - 1, 2) if argv[i].startswith("--")}

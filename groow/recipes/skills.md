@@ -33,4 +33,5 @@ Flow: write the file with shell (e.g. `cat > workspace/text_tools.py <<'EOF' …
 skill crashes your body it is quarantined automatically and you wake up without it.
 
 Good candidates: wrappers around software you installed, small parsers, checks
-you run often, drills that produce training samples (read `state/skills/tictactoe.py`).
+you run often, games and drills that log decisions with rewards to `state/log/activity.jsonl`
+(read `state/skills/tictactoe.py` for the shape).

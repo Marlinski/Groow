@@ -37,6 +37,7 @@ class Config:
     context_messages_kept: int = 8  # how much conversation context is stored with each episode
 
     # --- active learning --------------------------------------------------
+    probe_every: int = 25             # auto-measure drift on the fixed probes every N learning steps
     nap_max_samples: int = 8          # training samples consumed in the nap after each turn (the rest at night)
     idle_nap_max_samples: int = 32     # consumed when nobody is talking
 
@@ -69,6 +70,10 @@ class Config:
     tool_timeout: int = 120            # seconds an I/O tool may run before the loop gives up on it
     skill_check_timeout: int = 60      # sandbox check budget for a draft
 
+    # --- limbic (how things felt) ------------------------------------------------
+    judge: str = "laya"               # laya | gliclass | none: the frozen model that judges reactions and outcomes
+    mood_halflife_s: float = 1800.0   # how fast pain and pleasure fade
+
     # --- gateway (daemon API) ---------------------------------------------------
     api_host: str = "127.0.0.1"       # 0.0.0.0 inside Docker
     api_port: int = 7373
@@ -86,7 +91,7 @@ class Config:
     top_p: float = 0.8
     top_k: int = 20
     max_new_tokens: int = 768
-    max_tool_rounds: int = 6
+    max_tool_rounds: int = 10        # a full game of tic-tac-toe is 6 calls; leave room
 
     @property
     def state(self) -> Path:
