@@ -311,6 +311,7 @@ class Daemon:
                                 run_command=lambda line: run_command(line, app))
         mind.on_error = lambda kind, tb: app.skills.record_incident(kind, tb)
         mind.idle_nap = app.idle_nap
+        mind.schedule = app.schedule
         app.mind = mind
         if app.thoughts.listing(False) and not self.safe_mode:
             app.queue.push(3, "reminder", "you carried paused thoughts over from your last session: "

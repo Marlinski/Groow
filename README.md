@@ -168,7 +168,8 @@ groow/
   senses/
     news.py            NewsSense: RSS/Atom -> dated, sourced items; remembers what it has seen
   mind/                the conscious thread and its inner thoughts
-    signals.py         Priority, Signal, InputQueue (thread-safe, asyncio)
+    clock.py           Schedule: alarms and periodic tasks (state/schedule.json)
+    signals.py         Priority, Signal, Mailbox (the input queue on disk)
     thoughts.py        Thought, ThoughtManager: concurrent coroutine run-loops with own traces
     mind.py            Mind: the scheduler loop; frames signals into the main conversation
   harness/             everything between a user message and a finished turn
@@ -190,7 +191,7 @@ groow/
     creature.py        the sprout: animation frames per mood
   birth.py             the birth certificate (state/birth.json, written once, read-only)
   recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
-  default_skills/      installed on first start: recipes (tools), web, news (feeds in state/senses/feeds.txt), tictactoe, arithmetic
+  default_skills/      installed on first start: recipes, web, news, clock (remind/schedule), tictactoe, arithmetic
   ops.py               the operations table (play, sleep, probe, news, thoughts, skill, …) used by /op, slash commands and the CLI
   cli.py               App wiring + commands (init, start, ui, chat, ask, status, stop, doctor, operations)
 birth                  host script: create the home, build the body, wake Groow (idempotent)
@@ -208,6 +209,7 @@ state/                 runtime, created by init (gitignored); inside the contain
   senses/              news items seen and learned
   main/                the conversation journal: every message, one JSONL file per day, rotated
   mailbox/             the input queue on disk (new/, cur/)
+  schedule.json        alarms Groow (or you) set: when, what, how often
   log/activity.jsonl   what skills log when they play in bulk; read by the hippocampus
   limbic/              valence.jsonl (how each turn felt), state.json (mood), held.json (turns awaiting a reaction)
   training/            training sets prepared by the hippocampus, waiting for the trainer (<set>.jsonl, cursor.json)

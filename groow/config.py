@@ -43,6 +43,7 @@ class Config:
 
     # --- sleep (consolidation policy) --------------------------------------
     sleep_every_steps: int = 300      # a night is due after this many learning steps (0 = manual only)
+    sleep_every_hours: float = 12.0   # ... or after this long, if anything was learned at all (0 = off)
     sleep_replay_steps: int = 30      # replay steps over the day's episodes and lessons before merging
     sleep_max_drift: float = 0.5      # abort the night (discard overlay) if probe loss rose more than this
     keep_previous_base: bool = True   # keep state/base.prev for `groow rollback` (costs one extra base on disk)

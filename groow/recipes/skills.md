@@ -35,3 +35,8 @@ skill crashes your body it is quarantined automatically and you wake up without 
 Good candidates: wrappers around software you installed, small parsers, checks
 you run often, games and drills that log decisions with rewards to `state/log/activity.jsonl`
 (read `state/skills/tictactoe.py` for the shape).
+
+Your own skills, which you can read and improve: `web` (a page as text), `news` (headlines from
+your feeds), `clock` (`remind` and `schedule`), `tictactoe`, `arithmetic`, `recipes`.
+`cat state/skills/clock.py` is the shortest one worth reading: it shows how a command talks to your
+daemon when you are awake and falls back to your files when you are not.

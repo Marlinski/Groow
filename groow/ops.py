@@ -136,6 +136,16 @@ def op_quiz(app, question: str = "", expected: str = "", **_) -> dict:
     return app.learner.quiz(question, expected or None)
 
 
+def op_remind(app, text: str = "", when: str = "", every: str = "", by: str = "groow", **_) -> dict:
+    return app.schedule.add(text, when=when, every=every, by=by)
+
+
+def op_schedule(app, action: str = "list", id: str = "", **_) -> dict:
+    if action == "cancel":
+        return app.schedule.cancel(id)
+    return app.schedule.listing()
+
+
 def op_feedback(app, value: int = 1, **_) -> dict:
     if not app.last_episode:
         return {"error": "nothing to rate yet"}
@@ -146,6 +156,7 @@ OPS = {
     "train": op_train, "training": op_training, "hippocampus": op_hippocampus, "sleep": op_sleep, "probe": op_probe, "stats": op_stats,
     "thoughts": op_thoughts, "thought": op_thought, "skill": op_skill, "identity": op_identity, "inbox": op_inbox,
     "incidents": op_incidents, "patch": op_patch, "feedback": op_feedback, "learn": op_learn, "quiz": op_quiz,
+    "remind": op_remind, "schedule": op_schedule,
 }
 
 

@@ -22,6 +22,8 @@ groow skill list|read|disable|rollback <name>
 groow training                         what is waiting to be learned, per training set
 groow stats | identity | inbox | incidents
 groow say "…"                          a note to yourself, delivered after this turn
+remind "…" --in 2h                     an alarm: it comes back to you then (also --at 18:30, --every 3h,
+                                       --every "daily 06:30"); schedule lists them, schedule cancel <id>
 groow patch <path> <description> <file>   propose a change to your core (Marlinski reviews)
 ```
 

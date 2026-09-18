@@ -20,6 +20,7 @@ FRAMES = {
     "focus": "[inner thought {thought} says] {text}",
     "thought_done": "[inner thought {thought} finished] {text}",
     "reminder": "[reminder, no reply needed] {text}. You may `groow thought read <id>` it, pause it, or ignore this.",
+    "alarm": "[an alarm you set earlier] {text}",
     "note": "[a note you left yourself earlier] {text}",
     "idle": "{text}",
 }
@@ -54,6 +55,7 @@ class Mind:
     # ------------------------------------------------------------------ the loop
     on_error = None      # callable(kind, traceback) -> None, set by the app (records incidents)
     idle_nap = None      # async callable() -> dict, set by the app: consume pending training samples when idle
+    schedule = None      # mind.Schedule, set by the app: alarms Groow set for itself
 
     async def run(self) -> None:
         while self.alive:
@@ -62,6 +64,9 @@ class Mind:
             if self.idle_seconds:
                 wait = max(1.0, min(5.0, self.idle_seconds - (time.time() - self.last_human)))
             sig = await self.queue.pop(timeout=wait)
+            if self.schedule is not None:
+                for alarm in self.schedule.due():
+                    self.queue.push(Priority.REMINDER, "alarm", alarm["text"], alarm=alarm["id"])
             if sig is None:
                 if self.idle_nap is not None:
                     r = self.idle_nap()
@@ -107,7 +112,7 @@ class Mind:
                 self._req = None
                 self.emit("turn_end", who="user", final=r.final_text if r else "", tools_used=r.tools_used if r else [],
                           seconds=r.seconds if r else 0, req=req, error=None if r else "turn failed")
-        elif sig.kind in ("focus", "thought_done", "reminder", "idle", "note"):
+        elif sig.kind in ("focus", "thought_done", "reminder", "idle", "note", "alarm"):
             if sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
                 return                               # something more concrete is right behind it
             framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))

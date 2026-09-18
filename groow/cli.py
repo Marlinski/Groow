@@ -7,7 +7,7 @@
 
   operations on the running Groow (also what Groow runs in its own shell):
   groow thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name> | training | stats
-  groow identity | inbox [--clear] | incidents | patch …   (games and drills are skills: tictactoe, arithmetic, news, web)
+  groow identity | inbox [--clear] | incidents | patch … | remind "..." --in 2h | schedule [cancel <id>]
   mentor only: groow learn "q" "a" | quiz "q" [--expected A] | train | hippocampus | sleep | probe | grow --rank N | rollback | consolidate
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ from rich.panel import Panel
 from .config import Config
 
 console = Console()
+note = Console(stderr=True)      # progress and fallback notes: never mixed into the JSON on stdout
 
 SAFE_MODE_PROMPT = """You are Groow, running in SAFE MODE because the normal session crashed. Skills are unloaded, passive learning and curiosity are off. Your job now is repair, not conversation. With shell: `groow incidents` shows the traceback; skills are files in state/skills (installed) and state/skills/_quarantine; fix one and `groow skill check <file>` then `groow skill install <name>`, or leave it quarantined. If the fault is in the core rather than a skill, `groow patch …` and ask. When you are done, say exactly: REPAIRED. Marlinski, your mentor, is watching.
 
@@ -47,7 +48,7 @@ class App:
         from .learning import Learner, SleepPolicy, Curiosity, Identity, TrainingSets, Trainer, Hippocampus
         from .limbic import Limbic
         from .senses import NewsSense
-        from .mind import InputQueue, ThoughtManager
+        from .mind import InputQueue, ThoughtManager, Schedule
         from .birth import load_or_create
         from .harness import (Harness, Hooks, ToolRegistry, make_substrate_tools, make_self_tools,
                               make_main_mind_tools, make_thought_tools, SkillManager)
@@ -71,6 +72,7 @@ class App:
         self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity, trainer=self.trainer, hippocampus=self.hippocampus)
         self.curiosity = Curiosity(self.learner, self.memory, cfg, self.news)
         self.queue = InputQueue(cfg.state / "mailbox")
+        self.schedule = Schedule(cfg.state)
         self.learning_enabled = cfg.passive_learning and not safe_mode
         self.last_episode: str | None = None
         self.restart = False
@@ -662,8 +664,9 @@ def cmd_doctor(cfg: Config, args) -> None:
 
 
 # ====================================================================== operations (daemon first, then local)
-def _op_command(op: str, build_args, local=None):
-    """A CLI command that runs an op on the daemon if it answers, else `local(cfg, args)` if given."""
+def _op_command(op: str, build_args, local=None, needs_model: bool = True):
+    """A CLI command that runs an op on the daemon if it answers, else `local(cfg, args)` if given.
+    `needs_model` is False for operations that are only files (alarms, the inbox, listings)."""
     def cmd(cfg: Config, args) -> None:
         _resolve_state(cfg, args)
         kw = build_args(args)
@@ -672,9 +675,10 @@ def _op_command(op: str, build_args, local=None):
             _print(r)
             return
         if local is None:
-            console.print(f"[dim]no daemon at {_url(cfg)}; this needs a running Groow (`groow start`)[/dim]")
+            note.print(f"[dim]no daemon at {_url(cfg)}; this needs a running Groow (`groow start`)[/dim]")
             return
-        console.print(f"[dim]no daemon; running locally (loads its own copy of the model)[/dim]")
+        note.print("[dim]groow is asleep; working on its files[/dim]" if not needs_model
+                   else "[dim]no daemon; running locally (loads its own copy of the model)[/dim]")
         _print(local(cfg, args))
     return cmd
 
@@ -739,7 +743,7 @@ def _files_incidents(cfg, args):
 
 
 cmd_train = _op_command("train", lambda a: {"urgent_only": a.urgent, "max_samples": a.max}, lambda cfg, a: _boot(cfg).trainer.consume(max_samples=a.max))
-cmd_training = _op_command("training", lambda a: {}, lambda cfg, a: {"sets": __import__("groow.learning", fromlist=["TrainingSets"]).TrainingSets(cfg.state / "training").counts()})
+cmd_training = _op_command("training", lambda a: {}, lambda cfg, a: {"sets": __import__("groow.learning", fromlist=["TrainingSets"]).TrainingSets(cfg.state / "training").counts()}, needs_model=False)
 cmd_hippocampus = _op_command("hippocampus", lambda a: {}, lambda cfg, a: _boot(cfg).hippocampus.run())
 cmd_probe = _op_command("probe", lambda a: {}, _local_probe)
 cmd_stats = _op_command("stats", lambda a: {}, _local_stats)
@@ -747,11 +751,22 @@ cmd_sleep = _op_command("sleep", lambda a: {"force": True}, _local_sleep)
 cmd_identity = _op_command("identity", lambda a: {}, _local_identity)
 cmd_learn = _op_command("learn", lambda a: {"question": a.question, "answer": a.answer, "source": a.source or "", "target_loss": a.target or 0.0}, _local_learn)
 cmd_quiz = _op_command("quiz", lambda a: {"question": a.question, "expected": a.expected or ""}, _local_quiz)
-cmd_thoughts = _op_command("thoughts", lambda a: {"all": a.all}, _files_thoughts)
+cmd_thoughts = _op_command("thoughts", lambda a: {"all": a.all}, _files_thoughts, needs_model=False)
 cmd_thought = _op_command("thought", lambda a: {"action": a.action, "id": a.id, "last": a.last})
-cmd_skill = _op_command("skill", lambda a: {"action": a.action, "name": a.name or "", "path": a.path or ""}, _files_skill)
-cmd_inbox = _op_command("inbox", lambda a: {"clear": a.clear}, _files_inbox)
-cmd_incidents = _op_command("incidents", lambda a: {"last": a.last}, _files_incidents)
+cmd_skill = _op_command("skill", lambda a: {"action": a.action, "name": a.name or "", "path": a.path or ""}, _files_skill, needs_model=False)
+cmd_inbox = _op_command("inbox", lambda a: {"clear": a.clear}, _files_inbox, needs_model=False)
+cmd_remind = _op_command("remind", lambda a: {"text": a.text, "when": a.when or "", "every": a.every or "",
+                                              "by": "groow" if os.environ.get("GROOW_SELF") else "mentor"},
+                         lambda cfg, a: __import__("groow.mind", fromlist=["Schedule"]).Schedule(cfg.state).add(
+                             a.text, when=a.when or "", every=a.every or "",
+                             by="groow" if os.environ.get("GROOW_SELF") else "mentor"),
+                         needs_model=False)
+cmd_schedule = _op_command("schedule", lambda a: {"action": a.action, "id": a.id or ""},
+                           lambda cfg, a: (__import__("groow.mind", fromlist=["Schedule"]).Schedule(cfg.state).cancel(a.id)
+                                           if a.action == "cancel" else
+                                           __import__("groow.mind", fromlist=["Schedule"]).Schedule(cfg.state).listing()),
+                           needs_model=False)
+cmd_incidents = _op_command("incidents", lambda a: {"last": a.last}, _files_incidents, needs_model=False)
 cmd_patch = _op_command("patch", lambda a: {"path": a.path, "description": a.description, "patch": Path(a.file).read_text()})
 
 
@@ -812,6 +827,11 @@ def main(argv=None) -> None:
     sub.add_parser("stats").set_defaults(fn=cmd_stats)
     sub.add_parser("identity").set_defaults(fn=cmd_identity)
     s = sub.add_parser("inbox"); s.add_argument("--clear", action="store_true"); s.set_defaults(fn=cmd_inbox)
+    s = sub.add_parser("remind", help="set an alarm for yourself: --in 30m | --at 18:30 | --every 2h | --every 'daily 06:30'")
+    s.add_argument("text"); s.add_argument("--in", dest="when"); s.add_argument("--at", dest="at")
+    s.add_argument("--every"); s.set_defaults(fn=lambda cfg, a: (setattr(a, "when", a.when or (f"at {a.at}" if a.at else "")), cmd_remind(cfg, a))[1])
+    s = sub.add_parser("schedule"); s.add_argument("action", nargs="?", default="list", choices=["list", "cancel"])
+    s.add_argument("id", nargs="?"); s.set_defaults(fn=cmd_schedule)
     s = sub.add_parser("incidents"); s.add_argument("--last", type=int, default=3); s.set_defaults(fn=cmd_incidents)
     s = sub.add_parser("patch"); s.add_argument("path"); s.add_argument("description"); s.add_argument("file"); s.set_defaults(fn=cmd_patch)
     # mentor only

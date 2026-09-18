@@ -44,6 +44,11 @@ class SleepPolicy:
     def should_sleep(self) -> str | None:
         if self.cfg.sleep_every_steps and self.steps_awake() >= self.cfg.sleep_every_steps:
             return f"{self.steps_awake()} learning steps since the last night"
+        hours = getattr(self.cfg, "sleep_every_hours", 0)
+        if hours:
+            since = time.time() - (self.brain.meta.get("last_sleep_ts") or self.brain.meta.get("born", time.time()))
+            if since >= hours * 3600 and self.steps_awake() > 0:
+                return f"{since / 3600:.1f} hours since the last night"
         return None
 
     # ------------------------------------------------------------------ what to replay

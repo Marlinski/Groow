@@ -36,6 +36,15 @@ stateDiagram-v2
 <h3>What the main thought can do to a thought</h3>
 <p><code>think</code> spawns. Everything else is in the shell: <code>groow thoughts</code> lists, <code>groow thought read|pause|resume|kill &lt;id&gt;</code> manages, and each trace is a file in <code>state/thoughts/</code>. At most <code>max_thoughts</code> run at once. Thoughts survive restarts: on exit running thoughts are paused, on start the main thought is reminded of them.</p>
 
+<h2>The clock</h2>
+<p>Three things wake the mind on their own: a housekeeping tick every few seconds (idle naps, due alarms), a curiosity impulse after <code>sense_idle_minutes</code> of silence, and a night when enough learning steps or enough hours have passed. Everything else is an <b>alarm</b> Groow sets for itself, through its <code>clock</code> skill (a file in <code>state/skills/</code> it can read and improve):</p>
+<pre><code>remind "check the deploy"   --in 30m
+remind "read the news"      --every 3h
+remind "sum up the day"     --every "daily 22:00"
+schedule                    # what is set, and when each fires next
+schedule cancel a1b2c3</code></pre>
+<p>Alarms are a file in the home (<code>state/schedule.json</code>), so they survive a reboot and Groow can read them like anything else. When one fires it arrives in the mailbox at reminder priority and is framed as <em>"[an alarm you set earlier] …"</em>: a message to the conscious thread, never code that runs by itself. A repeat reschedules itself as it fires; a one-shot is removed.</p>
+
 <h2>Recall: every trace is readable</h2>
 <p>Every message of the main conversation is in <code>state/main/*.jsonl</code>; every thought step is an episode of kind <code>thought:&lt;id&gt;</code> in <code>state/episodes.jsonl</code> and a trace in <code>state/thoughts/</code>; every lesson is filed with its source in <code>state/lessons.jsonl</code>. Groow rereads them with <code>grep</code> in its shell. This is the diary the mind can reread; the weights are what it became.</p>
 
