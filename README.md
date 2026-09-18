@@ -18,33 +18,40 @@ uv venv --python 3.12 .venv && . .venv/bin/activate
 uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
 uv pip install -e .
 
-groow init          # copy Qwen3-4B-Instruct-2507 into state/base, measure baseline probes (~2 min)
-groow chat          # talk. it learns after every turn.
+groow init          # birth: copy the base model into state/, write birth.json, baseline probes (~2 min)
+groow start         # the daemon: owns the GPU, runs the mind, serves events on state/groow.sock
+groow ui            # in another terminal: the fullscreen UI (Textual)
+groow chat          # or a minimal line client; groow status / groow stop
 ```
 
 Or in a sandbox (Docker with the NVIDIA container toolkit's CDI spec; everything Groow learns lands in `./data`):
 
 ```bash
 docker compose run --rm groow init
-docker compose run --rm groow chat
+docker compose up -d groow            # daemon
+docker compose exec groow groow ui    # UI inside the container
 ```
 
-Inside the chat:
+Groow is a **daemon**. One process owns the GPU and the state; any number of
+clients connect over a Unix socket and speak a small JSON protocol (see
+`docs/gateway.html`). The UI shows the conversation, inner thoughts, the
+identity card with its live age, a status line, and a small creature whose
+animation follows Groow's mood.
+
+Inside the UI or the line client:
 
 | you type | what happens |
 | --- | --- |
 | any message | Groow answers, calling tools when useful, then takes one gradient step on the exchange |
 | `/good` `/bad` | rate the last answer: replay it with extra weight, or push it down (unlikelihood) |
-| `/sleep` | a night: replay the day, internalise the identity, probe for drift, merge the overlay into the base (also happens automatically every `sleep_every_steps`) |
-| `/sense` | a curiosity pass now: Groow reads the news through its tools and learns sourced facts (also happens automatically after `sense_idle_minutes` of silence) |
-| `/identity` `/inbox` | its current self-description and how internalised it is; questions it left for its mentor |
-| `/thoughts [all]` | inner thoughts with ids, status and step budget, plus generation-server stats |
-| `/skills` `/incidents` `/restart` | installed / drafted / quarantined skills; recent incidents; rebuild the session (leaves safe mode) |
-| `/learn off` | pause passive learning (tools still learn) |
-| `/think on` | enable Qwen3 thinking mode (slower, better tool decisions) |
-| `/tools` `/stats` `/reset` `/quit` | list tools, learning report, clear the conversation, save and exit |
+| `/sleep` | a night: replay the day, internalise the identity, probe for drift, merge the overlay into the base (also automatic every `sleep_every_steps`) |
+| `/sense` | a curiosity pass now: Groow reads the news through its tools and learns sourced facts (also automatic after `sense_idle_minutes` of silence) |
+| `/identity` `/inbox [clear]` | its self-description and how internalised it is; questions it left for its mentor |
+| `/thoughts [all]` `/skills` `/incidents` | inner thoughts; skills; recent incidents |
+| `/learn off` `/reasoning on` | pause passive learning; enable Qwen3 thinking mode |
+| `/tools` `/stats` `/reset` `/restart` `/quit` | list tools, learning report, clear the conversation, rebuild the session, stop the daemon |
 
-Without the chat:
+One-shot commands (no daemon running; they load their own copy of the model):
 
 ```bash
 groow memorize --title "Loire" --text "The Loire is the longest river in France."
@@ -211,11 +218,21 @@ groow/
     skilltools.py      draft_skill, install_skill, list/read/disable/rollback_skill, read_incidents, propose_patch
     loop.py            Harness (async): generate → parse tool calls → execute → loop; Hooks
   brain/server.py      GenServer: completions-style request queue, batching, main-thought preemption
-  cli.py               App wiring + commands (init, chat, memorize, play, ...)
+  gateway/             the daemon and its protocol
+    protocol.py        event and command shapes (newline-delimited JSON over a Unix socket)
+    daemon.py          Daemon: owns App + Mind, broadcasts events, accepts commands, mood
+    client.py          Client: connect / send / iterate events
+  ui/                  the fullscreen terminal UI (Textual)
+    app.py             conversation, inner thoughts, identity card, status bar
+    creature.py        the sprout: animation frames per mood
+  birth.py             the birth certificate (state/birth.json, written once, read-only)
+  cli.py               App wiring + commands (init, start, ui, chat, status, stop, doctor, one-shots)
 state/                 runtime, created by init (gitignored)
   base/  base.prev/    consolidated weights (HF format), and last night's for rollback
   plastic/             current overlay + optimizer state
   identity.md          the self-description; mentor_inbox.jsonl: questions for you
+  birth.json           id, birth time, lineage, body, mentor: facts Groow cannot change
+  groow.sock groow.pid the daemon's socket and pid while it runs
   thoughts/            inner thought traces (*.json), paused across sessions
   skills/              Groow's own tools (_drafts, _versions, _quarantine, manifest.json)
   incidents.jsonl      crashes and failed loads with tracebacks; patches/: proposed core changes

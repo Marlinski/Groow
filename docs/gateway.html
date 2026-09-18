@@ -1,0 +1,51 @@
+<!doctype html><html lang="en"><head><title>Groow · daemon and UI</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html">Overview</a><a href="learning.html">Learning</a><a href="harness.html">Harness</a><a href="mind.html">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html" class="here">Daemon &amp; UI</a></nav>
+<h1>Daemon and UI</h1>
+<p class="lead">Groow runs as one process that owns the GPU and the state. Everything else, the fullscreen UI, the line client, a future web page, is a client speaking a small JSON protocol over a Unix socket. Start it once; talk to it from anywhere on the machine.</p>
+
+<h2>Processes</h2>
+<pre class="mermaid">
+flowchart LR
+  D[groow start<br/>daemon: App + Mind + GPU] <-->|state/groow.sock<br/>JSON lines| U[groow ui<br/>Textual fullscreen]
+  D <--> C[groow chat<br/>line client]
+  D <--> S[groow status / stop]
+  D --> F[(state/)]
+</pre>
+<table><tr><th>Command</th><th>What it does</th></tr>
+<tr><td><code>groow start [-v] [--safe]</code></td><td>runs the mind as a daemon; <code>-v</code> prints every event to stdout; the supervisor (quarantine, safe mode) wraps it</td></tr>
+<tr><td><code>groow ui</code></td><td>the fullscreen terminal UI; reconnects automatically if the daemon restarts</td></tr>
+<tr><td><code>groow chat</code></td><td>minimal line client, good for scripts and pipes</td></tr>
+<tr><td><code>groow status</code> / <code>groow stop</code></td><td>birth card and live snapshot / graceful shutdown (state saved)</td></tr></table>
+
+<h2>The protocol</h2>
+<p>Newline-delimited JSON. A client sends <code>{"cmd":"say","text":…}</code> for a human message, <code>{"cmd":"command","text":"/sleep"}</code> for a slash command, <code>{"cmd":"status"}</code> for a snapshot. Both kinds of message enter the mind's priority queue at USER priority, like typing in the old chat. The daemon broadcasts events to every connected client:</p>
+<div class="wide"><table><tr><th>Event</th><th>Payload</th><th>Meaning</th></tr>
+<tr><td><code>hello</code></td><td>birth, identity, model, tools, status, inbox</td><td>first message to a new client, followed by the last 120 events (<code>replay: true</code>)</td></tr>
+<tr><td><code>status</code></td><td>mood, steps, nights, rank, thoughts, queue, server stats, gpu, skills</td><td>every 2 s</td></tr>
+<tr><td><code>turn_start</code> / <code>text</code> / <code>turn_end</code></td><td>who (user or signal), kind, text; streamed deltas; final text, tools used</td><td>the main thought handling one signal</td></tr>
+<tr><td><code>tool_call</code> / <code>tool_result</code></td><td>name, args, result, actor (main or thought:id)</td><td>from the main thought and from inner thoughts</td></tr>
+<tr><td><code>learned</code></td><td>loss, tokens, step, probe</td><td>the passive gradient step after a turn</td></tr>
+<tr><td><code>thought</code></td><td>event (spawn, step, focus, done, paused, resumed, killed), id, status, goal, steps, text</td><td>inner-thought lifecycle</td></tr>
+<tr><td><code>sleep</code></td><td>phase (start, progress, done), outcome, probes, identity losses</td><td>a night</td></tr>
+<tr><td><code>inbox</code>, <code>log</code>, <code>bye</code></td><td>questions for the mentor; anything else; shutdown</td><td></td></tr></table></div>
+<p class="note">Mood is derived by the daemon from the event stream (thinking, speaking, tooling, learning, reading, dreaming, sleeping, repair, idle) and carried in <code>status</code>. It is what the creature animates.</p>
+
+<h2>The UI</h2>
+<p>Left, the conversation: your messages in amber, Groow's in phosphor mint streamed as they arrive, signals from inner thoughts and the idle impulse in violet, tool calls in sky blue, learning steps dimmed. Right, the creature (a sprout, because Groow grows), the identity card, and the inner thoughts with their live status. Bottom, one status line: mood, queue, running thoughts, generation batches and preemptions, GPU memory, learning on or off.</p>
+<pre><code>      .-.   . . .        thinking
+     ( - )
+   \  \|/  /
+    \__|__/
+     ~~~~~</code></pre>
+<p>The identity card is the <b>birth certificate</b>: id, birth time, age counted live to the second, lineage (base model), body (GPU), mentor, plus what has changed since: identity version, nights, steps, skills. It comes from <code>state/birth.json</code>, written once at <code>groow init</code>, read-only on disk, and Groow has no tool that writes it. The self-description in <code>identity.md</code> is what Groow thinks it is; the certificate is what it is.</p>
+
+<h2>Palette</h2>
+<table><tr><th>Role</th><th>Colour</th></tr>
+<tr><td>ground</td><td><code>#0b1016</code> night</td></tr>
+<tr><td>Groow, creature</td><td><code>#7ee8c8</code> phosphor mint</td></tr>
+<tr><td>you</td><td><code>#f2c97d</code> amber</td></tr>
+<tr><td>inner thoughts, signals</td><td><code>#b89cff</code> violet</td></tr>
+<tr><td>tools</td><td><code>#6fb7ff</code> sky</td></tr>
+<tr><td>alerts, safe mode</td><td><code>#ff7b72</code> rose</td></tr></table>
+<footer>Groow · docs · daemon and UI</footer>
+</main></body></html>

@@ -64,7 +64,15 @@ class ThoughtManager:
         self.thoughts: dict[str, Thought] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.on_event = None          # callable(event: str, thought: Thought, text: str) -> None
         self._load()
+
+    def _ev(self, event: str, t: "Thought", text: str = "") -> None:
+        if self.on_event:
+            try:
+                self.on_event(event, t, text)
+            except Exception:
+                pass
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         """The loop thoughts run on. Index operations are tools, so they arrive
@@ -99,6 +107,7 @@ class ThoughtManager:
         self._start(t)
         self._save(t)
         self.memory.log("thought_spawn", id=t.id, goal=t.goal[:200])
+        self._ev("spawn", t)
         return t.brief()
 
     def get(self, tid: str) -> Thought | None:
@@ -123,6 +132,7 @@ class ThoughtManager:
         t.status = "paused"           # its task notices at once (generation is polled) or after the step
         self._save(t)
         self.memory.log("thought_paused", id=t.id)
+        self._ev("paused", t)
         return t.brief()
 
     def resume(self, tid: str) -> dict:
@@ -137,6 +147,7 @@ class ThoughtManager:
         self._save(t)
         self.memory.log("thought_resumed", id=t.id)
         self._start(t)
+        self._ev("resumed", t)
         return t.brief()
 
     def kill(self, tid: str, reason: str = "") -> dict:
@@ -150,6 +161,7 @@ class ThoughtManager:
         if task and self.loop is not None:
             self.loop.call_soon_threadsafe(task.cancel)
         self.memory.log("thought_killed", id=t.id, reason=reason)
+        self._ev("killed", t, reason)
         return t.brief()
 
     async def pause_all(self) -> int:
@@ -186,6 +198,7 @@ class ThoughtManager:
         if not t:
             return {"error": "unknown thought"}
         self.queue.push(Priority.FOCUS, "focus", message.strip(), thought=t.id)
+        self._ev("focus", t, message.strip())
         return {"ok": True, "delivered_to": "main thought"}
 
     def finish(self, tid: str, summary: str) -> dict:
@@ -197,6 +210,7 @@ class ThoughtManager:
         self._save(t)
         self.queue.push(Priority.FOCUS, "thought_done", summary.strip(), thought=t.id)
         self.memory.log("thought_done", id=t.id, steps=t.steps, summary=summary[:300])
+        self._ev("done", t, summary.strip())
         return {"ok": True, "thought": t.id, "status": "done"}
 
     # ------------------------------------------------------------------ the thought's own loop (its task)
@@ -225,6 +239,7 @@ class ThoughtManager:
                     break
                 t.steps += 1
                 t.tools_used += result.tools_used
+                self._ev("step", t, result.final_text[:300])
                 self.memory.add_episode([], result.messages, result.tools_used, kind=f"thought:{t.id}")
                 if self.learn_from_thoughts and self.learner is not None:
                     await h.brain.server.run_gpu(self.learner.passive, [], result.messages, result.tools_used)
@@ -233,6 +248,7 @@ class ThoughtManager:
                     t.summary = t.summary or (result.final_text[:300] or "step budget exhausted")
                     self.queue.push(Priority.FOCUS, "thought_done", f"(budget exhausted) {t.summary}", thought=t.id)
                     self.memory.log("thought_done", id=t.id, steps=t.steps, summary=t.summary[:300], reason="budget")
+                    self._ev("done", t, t.summary)
                 elif t.status == "running" and self.reminder_every and t.steps % self.reminder_every == 0:
                     self.queue.drop("reminder")
                     self.queue.push(Priority.REMINDER, "reminder",
@@ -245,6 +261,7 @@ class ThoughtManager:
             t.status = "killed"
             t.summary = f"crashed: {type(e).__name__}: {e}"
             self.queue.push(Priority.FOCUS, "thought_done", t.summary, thought=t.id)
+            self._ev("killed", t, t.summary)
         finally:
             self._save(t)
             self._tasks.pop(t.id, None)

@@ -1,6 +1,7 @@
 # docker compose run --rm groow init      # first time: downloads the base model into ./data
-# docker compose run --rm groow chat      # talk (interactive, tty)
-# docker compose run --rm groow sense     # one curiosity pass
+# docker compose up -d groow              # the daemon
+# docker compose exec groow groow ui      # the UI, inside the container
+# docker compose exec groow groow status
 services:
   groow:
     build: .

@@ -1,5 +1,5 @@
 <!doctype html><html lang="en"><head><title>Groow · how it works</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
-<nav class="top"><a href="index.html" class="here">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a></nav>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
 <h1>Groow</h1>
 <p class="lead">A small language model whose weights are not frozen. It learns from every conversation, drills itself on purpose, reads the news when nobody talks to it, thinks in the background, and sleeps to make what it learned permanent.</p>
 
@@ -31,6 +31,7 @@ flowchart LR
 <tr><td><a href="learning.html">Learning</a></td><td>Passive learning from every turn, active drills (memorize, quiz, self-play), sleep with replay and rollback, identity internalisation, drift probes, growth.</td></tr>
 <tr><td><a href="harness.html">Harness</a></td><td>The tool registry, the turn loop, the generation server that batches concurrent requests, built-in / self / sense tools, the sandbox.</td></tr>
 <tr><td><a href="extension.html">Self-extension</a></td><td>Skills Groow writes for itself: sandbox check, install, rollback, quarantine; the supervisor, safe mode and <code>groow doctor</code>; why the core is only patched through review.</td></tr>
+<tr><td><a href="gateway.html">Daemon &amp; UI</a></td><td><code>groow start</code> runs the mind as a daemon; <code>groow ui</code> and <code>groow chat</code> connect over a JSON socket protocol. The creature, the identity card, the palette.</td></tr>
 <tr><td><a href="mind.html">Mind</a></td><td>The single conscious thread and its signal queue, inner thoughts as concurrent coroutines with their own traces, the lifecycle, recall of any past conversation.</td></tr>
 </table>
 
@@ -38,8 +39,10 @@ flowchart LR
 <pre><code>uv venv --python 3.12 .venv &amp;&amp; . .venv/bin/activate
 uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
 uv pip install -e .
-groow init      # copies the base model into state/, measures baseline probes
-groow chat      # the conscious thread; it learns after every turn
+groow init      # birth: copies the base model into state/, writes birth.json
+groow start     # the daemon (owns the GPU); add -v to see events
+groow ui        # fullscreen terminal UI, in another terminal
+groow chat      # or the minimal line client
 
 # or sandboxed, state persisted in ./data
 docker compose run --rm groow init
@@ -55,6 +58,9 @@ docker compose run --rm groow chat</code></pre>
   games/      base.py, tictactoe.py, arithmetic.py
   harness/    registry.py, loop.py, builtins.py, selftools.py, sensetools.py, mindtools.py
   mind/       signals.py, thoughts.py, mind.py
+  gateway/    protocol.py, daemon.py, client.py
+  ui/         app.py (Textual), creature.py
+  birth.py    the birth certificate
   cli.py      App wiring + commands
 state/        base/ base.prev/ plastic/ identity.md thoughts/ senses/ workspace/ *.jsonl</code></pre>
 <footer>Groow · docs generated 2026-09-18 · everything here describes the code in this repository, not a plan.</footer>

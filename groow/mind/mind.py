@@ -26,10 +26,10 @@ FRAMES = {
 
 class Mind:
     def __init__(self, harness, queue: InputQueue, thoughts: ThoughtManager, *, on_idle_text: Callable[[], str],
-                 idle_seconds: float, maybe_sleep: Callable[[], "asyncio.Future | None"], say: Callable[[str], None],
+                 idle_seconds: float, maybe_sleep: Callable[[], "asyncio.Future | None"], emit: Callable[..., None],
                  run_command: Callable[[str], "asyncio.Future | bool"] | None = None):
         self.harness, self.queue, self.thoughts = harness, queue, thoughts
-        self.on_idle_text, self.idle_seconds, self.maybe_sleep, self.say = on_idle_text, idle_seconds, maybe_sleep, say
+        self.on_idle_text, self.idle_seconds, self.maybe_sleep, self.emit = on_idle_text, idle_seconds, maybe_sleep, emit
         self.run_command = run_command
         self.alive = True
         self.last_human = time.time()
@@ -58,7 +58,7 @@ class Mind:
             except Exception:
                 import traceback
                 tb = traceback.format_exc()
-                self.say(f"\n[error while handling {sig.kind}: {tb.strip().splitlines()[-1][:160]}]\n")
+                self.emit("log", level="error", text=f"error while handling {sig.kind}: {tb.strip().splitlines()[-1][:200]}")
                 if self.on_error:
                     self.on_error("handle_" + sig.kind, tb)
 
@@ -73,15 +73,16 @@ class Mind:
                 if r is True:
                     self.alive = False
                 return
-            self.say("groow> ")
-            await self.harness.turn(sig.text)
-            self.say("\n")
+            self.emit("turn_start", who="user", kind="user", text=sig.text)
+            r = await self.harness.turn(sig.text)
+            self.emit("turn_end", who="user", final=r.final_text, tools_used=r.tools_used, seconds=r.seconds)
         elif sig.kind in ("focus", "thought_done", "reminder", "idle"):
             if sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
                 return                               # something more concrete is right behind it
-            self.say(f"· {sig.kind} → ")
-            await self.harness.turn(FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?")))
-            self.say("\n")
+            framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))
+            self.emit("turn_start", who="signal", kind=sig.kind, text=sig.text, thought=sig.meta.get("thought"))
+            r = await self.harness.turn(framed)
+            self.emit("turn_end", who="signal", kind=sig.kind, final=r.final_text, tools_used=r.tools_used, seconds=r.seconds)
         elif sig.kind == "housekeeping":
             pass
         if not self.queue.has_urgent():

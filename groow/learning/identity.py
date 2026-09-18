@@ -30,8 +30,8 @@ BARE_WEIGHTS = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
 
 
 class Identity:
-    def __init__(self, cfg: Config, memory: Memory):
-        self.cfg, self.memory = cfg, memory
+    def __init__(self, cfg: Config, memory: Memory, birth=None):
+        self.cfg, self.memory, self.birth = cfg, memory, birth
         self.path = Path(cfg.state) / "identity.md"
         if not self.path.exists():
             self.path.write_text(SEED)
@@ -42,9 +42,10 @@ class Identity:
     def system_prompt(self) -> str:
         """What goes in the system slot today: the self-description plus a short tool note.
         As internalisation progresses this can shrink to nothing (`identity_in_prompt`)."""
+        card = f"Facts about you that you cannot change: {self.birth.line()}." if self.birth else ""
         if not self.cfg.identity_in_prompt:
-            return TOOL_NOTE
-        return self.text() + "\n\n" + TOOL_NOTE
+            return (card + "\n\n" if card else "") + TOOL_NOTE
+        return self.text() + ("\n\n" + card if card else "") + "\n\n" + TOOL_NOTE
 
     def update(self, new_text: str, reason: str = "") -> dict:
         new_text = new_text.strip()

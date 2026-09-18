@@ -18,4 +18,4 @@ RUN uv pip install --python /opt/venv/bin/python -e . sentencepiece protobuf "hu
 RUN mkdir -p /data/state /data/hf-cache && ln -s /data/state /app/state
 VOLUME ["/data"]
 ENTRYPOINT ["groow"]
-CMD ["chat"]
+CMD ["start", "-v"]
