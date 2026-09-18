@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -84,6 +86,8 @@ class App:
                                    memory=self.memory, check_timeout=cfg.skill_check_timeout)
         self._skilltools = make_skill_tools(self.skills, full=True)
         self._skilltools_ro = make_skill_tools(self.skills, full=False)
+        os.environ["GROOW_STATE"] = str(Path(cfg.state).resolve())
+        seed_home(cfg, self.skills, self.emit)
         if cfg.skills_enabled and not safe_mode:
             r = self.skills.load_all()
             if r["quarantined"]:
@@ -191,6 +195,27 @@ class App:
             q["answered"] = True
         p.write_text("".join(json.dumps(q, ensure_ascii=False) + "\n" for q in qs))
         return n
+
+
+def seed_home(cfg: Config, skills, emit) -> None:
+    """First start (or a body upgrade): copy the default recipes into state/recipes (never overwriting
+    Groow's own edits) and install the default skills once (Groow may later change or remove them)."""
+    src = Path(__file__).parent
+    rec = cfg.state / "recipes"
+    rec.mkdir(parents=True, exist_ok=True)
+    added = [p.name for p in sorted((src / "recipes").glob("*.md")) if not (rec / p.name).exists()
+             and shutil.copy(p, rec / p.name)]
+    seeded = skills.manifest.setdefault("_seeded", [])
+    for p in sorted((src / "default_skills").glob("*.py")):
+        if p.stem in seeded:
+            continue
+        (skills.drafts / p.name).write_text(p.read_text())
+        r = skills.install(p.stem)
+        seeded.append(p.stem)
+        skills._save_manifest()
+        emit("log", level="info", text=f"default skill {p.stem}: {'installed' if r.get('ok') else r}")
+    if added:
+        emit("log", level="info", text=f"recipes added to the home: {added}")
 
 
 def console_emit(ev: str, **d) -> None:

@@ -179,6 +179,14 @@ alter its own runtime under `/opt/venv`, cannot become root; it can download
 binaries, build things, and install anything nixpkgs or PyPI has. On a bare
 host the same tools run as you, so keep the shell tool for the container.
 
+**Recipes.** The body ships short notes written for Groow, not for you:
+its home layout, installing software with Nix or `uv`, using the shell,
+writing a skill, how it learns, its mind, its mentor. On first start they are
+copied into `state/recipes/` and a default skill (`list_recipes`,
+`read_recipe`, `write_recipe`) is installed, so Groow can read them when
+unsure and rewrite them when it learns better. They are its notes, not the
+body's: upgrades add new recipes but never overwrite edited ones.
+
 **Self-extension.** Groow writes its own commands. A *skill* is a Python
 file in `state/skills/` that registers tools and ships its own `TESTS`.
 `draft_skill` checks it in a fresh subprocess (imports, schemas, no collision
@@ -245,6 +253,8 @@ groow/
     app.py             conversation, inner thoughts, identity card, status bar
     creature.py        the sprout: animation frames per mood
   birth.py             the birth certificate (state/birth.json, written once, read-only)
+  recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
+  default_skills/      skills installed on first start (recipes: list_recipes, read_recipe, write_recipe)
   cli.py               App wiring + commands (init, start, ui, chat, status, stop, doctor, one-shots)
 docker/entrypoint.sh   the body waking up: Nix into the home on first start, PATH, then the command
 state/                 runtime, created by init (gitignored); inside the container it is /home/groow/state
@@ -255,6 +265,7 @@ state/                 runtime, created by init (gitignored); inside the contain
   groow.url groow.pid  the daemon's URL and pid while it runs
   thoughts/            inner thought traces (*.json), paused across sessions
   skills/              Groow's own tools (_drafts, _versions, _quarantine, manifest.json)
+  recipes/             its notes, seeded from the body, editable by Groow
   incidents.jsonl      crashes and failed loads with tracebacks; patches/: proposed core changes
   senses/              news items seen and learned
   episodes.jsonl lessons.jsonl learning_log.jsonl probes.json

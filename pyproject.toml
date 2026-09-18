@@ -24,3 +24,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["groow*"]
+
+[tool.setuptools.package-data]
+groow = ["recipes/*.md", "default_skills/*.py"]

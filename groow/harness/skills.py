@@ -167,7 +167,7 @@ class SkillManager:
 
     def listing(self) -> dict:
         return {"installed": {n: {k: v for k, v in self.manifest.get(n, {}).items() if k in ("version", "description", "tools", "crashes")}
-                              for n in self.installed()},
+                              for n in self.installed() if not n.startswith("_")},
                 "drafts": sorted(p.stem for p in self.drafts.glob("*.py")),
                 "quarantined": sorted(p.stem for p in self.quarantine_dir.glob("*.py"))}
 

@@ -71,6 +71,9 @@ flowchart TD
 <tr><td>keep all of it across restarts, rebuilds and moves to another machine (copy <code>./home</code>)</td><td>alter its own runtime or the harness: those live in the body, patched only through <code>propose_patch</code></td></tr></table>
 <p class="note">On first start the entrypoint installs single-user Nix; <code>/nix</code> is a mount backed by <code>./home/.nix</code> on the host (Nix refuses a symlinked store), so even the package manager is part of what persists. On a bare host, without the container, the shell tool runs as you; the container is the sandbox, not the code.</p>
 
+<h2>Recipes: the manual lives in the home</h2>
+<p>How to install software without root, how the shell tool behaves, how to write a skill, how learning works, what the mentor is for: these are written for Groow, in the second person, as markdown files under <code>state/recipes/</code>. A default skill installed on first start exposes them as <code>list_recipes</code>, <code>read_recipe</code> and <code>write_recipe</code>. Because they are in the home and reachable through a skill, Groow can improve them when it learns a better way, and the body's upgrades add new recipes without overwriting edited ones. The identity note tells it to read them when unsure.</p>
+
 <h2>What this does not protect against</h2>
 <ul>
 <li>A skill that is <em>wrong</em> but passes its own tests. Tests are written by the same model. The mitigation is social: <code>list_skills</code> shows the mentor what was installed, and <code>/bad</code> plus <code>disable_skill</code> are one line each.</li>
