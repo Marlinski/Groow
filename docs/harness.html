@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><title>Groow · harness</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<!doctype html><html lang="en"><head><title>Groow · harness</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
 <nav class="top"><a href="index.html" class="">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="here">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a></nav>
 <h1>Harness</h1>
 <p class="lead">Everything between a message and a finished turn: the tool registry, the turn loop, and the generation server that lets many conversations share one GPU. Plain Python, no framework, so Groow can one day edit it.</p>
@@ -26,7 +26,7 @@ flowchart TD
   Q --> W{worker}
   W -->|urgent present| S[serve main alone,<br/>streaming to console]
   W -->|else| B[batch thoughts,<br/>one forward pass]
-  B -.urgent arrives mid-token.-> R[abandon batch, requeue]
+  B -.->|urgent arrives mid-token| R[abandon batch, requeue]
   R --> S
 </pre>
 <p>Preemption is per token: during a thought batch the worker polls for a priority-0 request; if one arrives it raises <code>Interrupted</code>, the batch is re-queued untouched, and the main thought is served. You never wait for a background thought to finish a sentence.</p>

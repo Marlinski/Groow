@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><title>Groow · learning</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<!doctype html><html lang="en"><head><title>Groow · learning</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
 <nav class="top"><a href="index.html" class="">Overview</a><a href="learning.html" class="here">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a></nav>
 <h1>Learning</h1>
 <p class="lead">Every mechanism on this page ends in the same place: a gradient step on the plastic overlay. What differs is who supplies the signal, and what guards against learning the wrong thing.</p>
@@ -9,8 +9,8 @@
 flowchart LR
   E[experience] --> S[gradient step<br/>fp16 compute, fp32 masters, grad scaler, checkpointing]
   S --> O[overlay<br/>rank 32, 66M params]
-  O -.night: exact merge.-> B[base<br/>4.1B params fp16]
-  B -.kept as base.prev.-> R[rollback]
+  O -.->|night: exact merge| B[base<br/>4.1B params fp16]
+  B -.->|kept as base.prev| R[rollback]
 </pre>
 <p class="note">Why not train the base directly: 4B parameters with Adam needs ~64 GB of state and fp16 master weights that drift. Why not quantise: bitsandbytes is the only option on Volta, it is slower than fp16, and merging a delta into ternary or int4 weights is lossy. The overlay is the honest compromise on this card.</p>
 

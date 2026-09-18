@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><title>Groow · mind</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<!doctype html><html lang="en"><head><title>Groow · mind</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
 <nav class="top"><a href="index.html" class="">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="here">Mind</a><a href="extension.html">Self-extension</a></nav>
 <h1>Mind</h1>
 <p class="lead">One conscious thread over a priority queue of signals, and the inner thoughts it can spawn, watch, pause, resume and kill. The thread is linear because consciousness is; the GPU underneath is not.</p>
@@ -48,7 +48,7 @@ sequenceDiagram
   participant G as gen server
   P->>M: "find out what happened in Nigeria this week"
   M->>T: think(goal, 4 steps)
-  M-->>P: "started; I'll tell you"
+  M-->>P: "started, I will tell you"
   T->>G: step 1 (batched, prio 2)
   P->>M: "quick: 23*19?"
   G-->>T: preempted, requeued
@@ -56,7 +56,7 @@ sequenceDiagram
   M-->>P: "437"
   G-->>T: step 1 resumes
   T->>T: news_headlines, read_article, learn_fact
-  T->>M: focus("48 dead, methanol; learned, source Guardian 18 Sep")
+  T->>M: focus("48 dead, methanol. learned, source Guardian 18 Sep")
   M-->>P: relays the finding
   T->>M: finish(summary)
 </pre>

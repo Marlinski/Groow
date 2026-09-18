@@ -1,5 +1,5 @@
-<!doctype html><html lang="en"><head><title>Groow · how it works</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
-<nav class="top"><a href="index.html" class="here">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a></nav>
+<!doctype html><html lang="en"><head><title>Groow · how it works</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="learning.html" class="">Learning</a><a href="harness.html" class="">Harness</a><a href="mind.html" class="">Mind</a><a href="extension.html">Self-extension</a></nav>
 <h1>Groow</h1>
 <p class="lead">A small language model whose weights are not frozen. It learns from every conversation, drills itself on purpose, reads the news when nobody talks to it, thinks in the background, and sleeps to make what it learned permanent.</p>
 
@@ -23,7 +23,7 @@ flowchart LR
   G --> B[brain: fp16 base + LoRA overlay]
   H -->|after every turn| L[learner: gradient step + rehearsal]
   L --> B
-  B -.night: merge overlay.-> B
+  B -.->|night: merge overlay| B
 </pre>
 
 <h2>The four mechanics</h2>
