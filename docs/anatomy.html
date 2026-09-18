@@ -1,36 +1,129 @@
-<!doctype html><html lang="en"><head><title>Groow · anatomy</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
+<!doctype html><html lang="en"><head><title>Groow · anatomy</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script><style>
+.plate { width: 100%; height: auto; display: block; margin: 10px 0 30px; }
+.plate .lead { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.plate .lead.soft { stroke-dasharray: 3 3; }
+.plate .pin { fill: var(--accent); }
+.plate .num { fill: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .16em; }
+.plate .ttl { fill: var(--ink); font: 600 18px/1 system-ui, sans-serif; }
+.plate .gloss { fill: var(--mute); font: 400 14px/1 system-ui, sans-serif; }
+.plate .tiny { fill: var(--accent); font: 600 13px/1 system-ui, sans-serif; }
+.plate .organ-ring { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: .5; }
+.plate .organ-limbic-halo { fill: #ff7b72; opacity: .16; }
+.plate .organ-limbic { fill: none; stroke: #ff7b72; stroke-width: 2.5; opacity: .85; }
+.plate .organ-spiral { fill: none; stroke: #b89cff; stroke-width: 2.5; stroke-linecap: round; opacity: .9; }
+h2 .roman { color: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .16em; margin-right: 10px; vertical-align: 2px; }
+.plate .organ-judge { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
+@media (max-width: 640px) { .plate .gloss { display: none; } }
+</style></head><body><main>
 <nav class="top"><a href="index.html">Overview</a><a href="anatomy.html" class="here">Anatomy</a><a href="learning.html">Learning</a><a href="harness.html">Harness</a><a href="mind.html">Mind</a><a href="extension.html">Self-extension</a><a href="gateway.html">Daemon &amp; UI</a></nav>
 <h1>Anatomy</h1>
-<p class="lead">Groow is an organism with five organs: a <b>body</b> it lives in, <b>senses</b> it acts through, a <b>limbic system</b> that decides how things felt, a <b>brain</b> that answers, and a <b>hippocampus</b> that turns the day into changes in that brain. Each one is a directory in this repository.</p>
+<p class="lead">Groow is an organism with five organs, each one a directory in this repository: a <b>body</b> it lives in, <b>senses</b> it acts through, a <b>limbic system</b> that decides how things felt, a <b>brain</b> that answers, and a <b>hippocampus</b> that turns the day into changes in that brain.</p>
 
-<pre class="mermaid">
-flowchart TB
-  subgraph BODY["body · a read-only container, a home that persists"]
-    direction TB
-    subgraph SENSE["senses · the only ways in and out"]
-      SH["shell<br/>commands, files, skills"]
-      TH["think<br/>inner thoughts"]
-      AS["ask<br/>the mentor"]
-    end
-    BRAIN["brain · Qwen3-4B fp16<br/>+ plastic LoRA overlay"]
-    LIMB["limbic · how it felt<br/>sensors + frozen judge"]
-    HIPP["hippocampus · what to learn<br/>logs → training sets"]
-    TRN["trainer · the only gradients"]
-  end
-  P["person"] <--> SH
-  SENSE --> LOG[("logs · journal, activity")]
-  BRAIN --> SENSE
-  LOG --> LIMB
-  LIMB -->|valence| HIPP
-  LOG --> HIPP
-  HIPP -->|samples| TRN
-  TRN -->|nap, night| BRAIN
-</pre>
+<svg viewBox="0 115 1000 520" class="plate" role="img" aria-label="Groow's anatomy on a drawing of the creature: I the body, II the senses, III the limbic system with its judge, IV the brain, V the hippocampus">
+  <g class="creature">
+      <rect x="432" y="140" width="34" height="34" fill="#fff1c4"/>
+      <rect x="466" y="140" width="34" height="34" fill="#f2c97d"/>
+      <rect x="500" y="140" width="34" height="34" fill="#f2c97d"/>
+      <rect x="534" y="140" width="34" height="34" fill="#fff1c4"/>
+      <rect x="398" y="174" width="34" height="34" fill="#fff1c4"/>
+      <rect x="432" y="174" width="34" height="34" fill="#f2c97d"/>
+      <rect x="466" y="174" width="34" height="34" fill="#d59a3a"/>
+      <rect x="500" y="174" width="34" height="34" fill="#d59a3a"/>
+      <rect x="534" y="174" width="34" height="34" fill="#f2c97d"/>
+      <rect x="568" y="174" width="34" height="34" fill="#fff1c4"/>
+      <rect x="432" y="208" width="34" height="34" fill="#f2c97d"/>
+      <rect x="466" y="208" width="34" height="34" fill="#d59a3a"/>
+      <rect x="500" y="208" width="34" height="34" fill="#d59a3a"/>
+      <rect x="534" y="208" width="34" height="34" fill="#f2c97d"/>
+      <rect x="330" y="242" width="34" height="34" fill="#9be26f"/>
+      <rect x="364" y="242" width="34" height="34" fill="#9be26f"/>
+      <rect x="466" y="242" width="34" height="34" fill="#5fa246"/>
+      <rect x="500" y="242" width="34" height="34" fill="#5fa246"/>
+      <rect x="602" y="242" width="34" height="34" fill="#9be26f"/>
+      <rect x="636" y="242" width="34" height="34" fill="#9be26f"/>
+      <rect x="364" y="276" width="34" height="34" fill="#9be26f"/>
+      <rect x="398" y="276" width="34" height="34" fill="#5fa246"/>
+      <rect x="466" y="276" width="34" height="34" fill="#5fa246"/>
+      <rect x="500" y="276" width="34" height="34" fill="#5fa246"/>
+      <rect x="568" y="276" width="34" height="34" fill="#5fa246"/>
+      <rect x="602" y="276" width="34" height="34" fill="#9be26f"/>
+      <rect x="398" y="310" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="432" y="310" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="466" y="310" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="500" y="310" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="534" y="310" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="568" y="310" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="364" y="344" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="398" y="344" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="432" y="344" width="34" height="34" fill="#b9f5e3"/>
+      <rect x="466" y="344" width="34" height="34" fill="#b9f5e3"/>
+      <rect x="500" y="344" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="534" y="344" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="568" y="344" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="602" y="344" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="330" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="364" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="398" y="378" width="34" height="34" fill="#0b1016"/>
+      <rect x="432" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="466" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="500" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="534" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="568" y="378" width="34" height="34" fill="#0b1016"/>
+      <rect x="602" y="378" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="636" y="378" width="34" height="34" fill="#3f9c82"/>
+      <rect x="330" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="364" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="398" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="432" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="466" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="500" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="534" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="568" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="602" y="412" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="636" y="412" width="34" height="34" fill="#3f9c82"/>
+      <rect x="330" y="446" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="364" y="446" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="398" y="446" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="432" y="446" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="466" y="446" width="34" height="34" fill="#1e4d40"/>
+      <rect x="500" y="446" width="34" height="34" fill="#1e4d40"/>
+      <rect x="534" y="446" width="34" height="34" fill="#1e4d40"/>
+      <rect x="568" y="446" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="602" y="446" width="34" height="34" fill="#3f9c82"/>
+      <rect x="636" y="446" width="34" height="34" fill="#3f9c82"/>
+      <rect x="364" y="480" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="398" y="480" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="432" y="480" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="466" y="480" width="34" height="34" fill="#7ee8c8"/>
+      <rect x="500" y="480" width="34" height="34" fill="#3f9c82"/>
+      <rect x="534" y="480" width="34" height="34" fill="#3f9c82"/>
+      <rect x="568" y="480" width="34" height="34" fill="#3f9c82"/>
+      <rect x="602" y="480" width="34" height="34" fill="#3f9c82"/>
+      <rect x="330" y="514" width="34" height="34" fill="#4e3722"/>
+      <rect x="364" y="514" width="34" height="34" fill="#4e3722"/>
+      <rect x="398" y="514" width="34" height="34" fill="#7a5a3a"/>
+      <rect x="432" y="514" width="34" height="34" fill="#7a5a3a"/>
+      <rect x="466" y="514" width="34" height="34" fill="#7a5a3a"/>
+      <rect x="500" y="514" width="34" height="34" fill="#7a5a3a"/>
+      <rect x="534" y="514" width="34" height="34" fill="#7a5a3a"/>
+      <rect x="568" y="514" width="34" height="34" fill="#7a5a3a"/>
+      <rect x="602" y="514" width="34" height="34" fill="#4e3722"/>
+      <rect x="636" y="514" width="34" height="34" fill="#4e3722"/>
+  </g>
+  <g class="organs">
+      <rect x="320" y="511" width="360" height="44" rx="8" class="organ-ring"/><rect x="426" y="134" width="148" height="121" rx="14" class="organ-ring"/><circle cx="350" cy="262" r="15" class="organ-ring"/><circle cx="650" cy="262" r="15" class="organ-ring"/><circle cx="463" cy="429" r="30" class="organ-limbic-halo"/><circle cx="463" cy="429" r="17" class="organ-limbic"/><rect x="605" y="445" width="34" height="30" rx="6" class="organ-judge"/><path d="M 485 437 Q 542 466 604 460" class="lead soft"/>
+  <polyline points="576.1,344.0 576.5,345.1 576.5,346.4 576.0,347.8 574.9,349.1 573.3,350.0 571.3,350.4 569.2,350.0 567.1,348.9 565.3,347.1 564.1,344.6 563.8,341.7 564.4,338.7 566.0,335.9 568.5,333.6 571.8,332.1 575.6,331.7 579.5,332.5 583.2,334.6 586.1,337.8 588.0,341.9 588.5,346.6 587.5,351.4 585.0,355.8 581.2,359.4 576.2,361.7 570.6,362.4 564.9,361.4 559.6,358.5 555.4,354.1 552.6,348.4 551.6,341.9 552.7,335.3 555.8,329.1 560.8,324.1" class="organ-spiral"/></g>
+  <g class="callouts">
+      <circle cx="483" cy="181" r="4.5" class="pin"/><path d="M 483 181 Q 616 181 748 205" class="lead"/><circle cx="582" cy="358" r="4.5" class="pin"/><path d="M 582 358 Q 665 358 748 345" class="lead"/><circle cx="350" cy="262" r="4.5" class="pin"/><path d="M 350 262 Q 301 262 252 250" class="lead"/><circle cx="439" cy="429" r="4.5" class="pin"/><path d="M 439 429 Q 345 429 252 430" class="lead"/><circle cx="398" cy="531" r="4.5" class="pin"/><path d="M 398 531 Q 325 531 252 585" class="lead"/><text x="760" y="470" text-anchor="start" class="tiny">the judge</text><text x="760" y="488" text-anchor="start" class="gloss">it evaluates, it never learns</text><path d="M 640 460 Q 685 460 748 466" class="lead"/>
+      <text x="760" y="189" text-anchor="start" class="num">IV</text><text x="760" y="209" text-anchor="start" class="ttl">the brain</text><text x="760" y="229" text-anchor="start" class="gloss">base + plastic overlay</text><text x="760" y="329" text-anchor="start" class="num">V</text><text x="760" y="349" text-anchor="start" class="ttl">the hippocampus</text><text x="760" y="369" text-anchor="start" class="gloss">logs → training sets</text><text x="240" y="234" text-anchor="end" class="num">II</text><text x="240" y="254" text-anchor="end" class="ttl">the senses</text><text x="240" y="274" text-anchor="end" class="gloss">shell · think · ask</text><text x="240" y="414" text-anchor="end" class="num">III</text><text x="240" y="434" text-anchor="end" class="ttl">the limbic system</text><text x="240" y="454" text-anchor="end" class="gloss">sensors + a frozen judge</text><text x="240" y="569" text-anchor="end" class="num">I</text><text x="240" y="589" text-anchor="end" class="ttl">the body</text><text x="240" y="609" text-anchor="end" class="gloss">a container; a home that persists</text>
+  </g>
+</svg>
 
-<h2>1. The body</h2>
+
+<h2><span class="roman">I</span>The body</h2>
 <p>A read-only Docker image (CUDA, Python, the runtime under <code>/opt</code>, root-owned) and a <b>home</b> that is the whole of Groow: <code>./home</code> on the host, the only writable place in its world. Weights, memory, identity, skills, packages, logs, all of it lives there and survives restarts, rebuilds and a move to another machine. Groow is an unprivileged user: no <code>apt</code>, no <code>sudo</code>, no way to alter its own runtime. It installs what it needs locally with Nix or <code>uv</code>. <code>./birth</code> (or <code>groow start</code>) creates the home, builds the body if missing, and gives birth the first time; the entrypoint checks for a birth certificate and otherwise just wakes it. Details: <a href="extension.html">Self-extension</a>.</p>
 
-<h2>2. The senses</h2>
+<h2><span class="roman">II</span>The senses</h2>
 <p>Three tools, and nothing else. Everything a richer agent would get as a tool is a file in the home or a command in the shell, because a small model chooses badly from a long menu and every schema costs prompt tokens.</p>
 <table><tr><th>Sense</th><th>What it reaches</th></tr>
 <tr><td><code>shell(command)</code></td><td>the home, its files and traces, the commands its skills install (<code>web &lt;url&gt;</code>, <code>news</code>, <code>tictactoe</code>, <code>arithmetic</code>) and the <code>groow …</code> commands that reach its own daemon</td></tr>
@@ -38,7 +131,7 @@ flowchart TB
 <tr><td><code>ask(question)</code></td><td>the mentor's inbox, the one channel out that is not the conversation</td></tr></table>
 <p>Everything a sense does is written to the <b>journal</b> (<code>state/main/</code>, every message and every tool result, fsynced as it happens) and, for skills that play in bulk, to the <b>activity log</b> (<code>state/log/activity.jsonl</code>). Those two files are the only inputs the rest of the organism has. Details: <a href="harness.html">Harness</a>.</p>
 
-<h2>3. The limbic system</h2>
+<h2><span class="roman">III</span>The limbic system</h2>
 <p>Nothing in the thinking part of an animal writes its own reward, so nothing here does either: there is no tool to rate a turn, and a skill cannot state its own score. Valence is computed from what happened, by two channels.</p>
 <pre class="mermaid">
 flowchart LR
@@ -64,10 +157,10 @@ outcome(command, result)             -> p(useful)  − p(failed)</code></pre>
 <p>It is hypothalamic on purpose: it evaluates, it never learns, Groow cannot edit it, and a smaller GLiClass scorer or nothing at all can be swapped in (<code>judge</code> in <code>groow.json</code>). Measured on this machine it reads praise, corrections, repeated questions and complaints correctly, and calls an illegal move in a game a failure with no annotation anywhere.</p>
 <p class="note"><b>Approval is late.</b> You do not know whether what you said landed until the person answers, so a turn is <em>held</em> until the next human message and only then learned from. A turn nobody will react to (an idle impulse, a reminder, an inner thought reporting back) is finalised on sensors alone. Pain and pleasure accumulate with a half-life of thirty minutes: that is the mood the creature in the UI shows, and it is what drives sleep pressure.</p>
 
-<h2>4. The brain</h2>
+<h2><span class="roman">IV</span>The brain</h2>
 <p>A frozen fp16 base (Qwen3-4B-Instruct-2507, 262k context) plus a <b>plastic overlay</b>: LoRA on every linear projection, ~66M parameters in fp32, the only thing that moves. A <b>generation server</b> batches concurrent requests from the main thought and its inner thoughts into single forward passes and preempts a background batch per token when the person speaks. At night the overlay is merged into the base exactly and a blank one opens: short-term plasticity becomes long-term memory. Any weight change blocks inference, which is why it is shown as a nap. Details: <a href="learning.html">Learning</a>, <a href="mind.html">Mind</a>.</p>
 
-<h2>5. The hippocampus</h2>
+<h2><span class="roman">V</span>The hippocampus</h2>
 <p>It reads the logs and the valence and writes <b>training sets</b> (<code>state/training/&lt;set&gt;.jsonl</code>). It is the only thing that decides what is learned, and the trainer is the only thing that turns samples into gradients.</p>
 <table><tr><th>When</th><th>What it prepares</th><th>How it is learned</th></tr>
 <tr><td>nap, after every turn</td><td>the exchange, weighted by its valence (reinforced when it went well, pushed away when it went badly), and every tool call as a decision with its own credit</td><td>supervised step + policy gradient, with two replayed memories</td></tr>
