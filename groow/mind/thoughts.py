@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -23,6 +24,17 @@ from pathlib import Path
 from typing import Callable
 
 from .signals import InputQueue, Priority
+
+def _alive(pid) -> bool:
+    """Is the process that claims this thought still there?"""
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, PermissionError):
+        return False
+
 
 THOUGHT_SYSTEM = """You are an inner thought of Groow, not Groow's voice. You cannot talk to the user or to the mentor; only the main thought can. You work step by step toward the goal below with your tools: shell (your home, your files, `web <url>`, `news`, `tictactoe`, `arithmetic`, the groow commands). Think out loud briefly. When you have something the main thought should know now, call focus(message). When the goal is reached or cannot be reached, call finish(summary) with what you found. Be concrete; do not repeat yourself.
 
@@ -42,6 +54,7 @@ class Thought:
     history: list[dict] = field(default_factory=list)   # the thought's own conversation
     tools_used: list[str] = field(default_factory=list)
     interrupted: int = 0
+    pid: int | None = None          # the process running it, while one is
 
     def brief(self) -> dict:
         return {"id": self.id, "status": self.status, "goal": self.goal[:160], "steps": f"{self.steps}/{self.max_steps}",
@@ -81,21 +94,72 @@ class ThoughtManager:
 
     # ------------------------------------------------------------------ persistence
     def _save(self, t: Thought) -> None:
+        """Write the whole thought. Only the process running it may do this: it owns the trace."""
         t.updated = time.time()
         (self.dir / f"{t.id}.json").write_text(json.dumps(asdict(t), ensure_ascii=False, indent=1))
 
+    def _patch(self, tid: str, **fields) -> dict:
+        """Change a few fields of a thought without touching the rest. This is what the daemon uses,
+        because the process running the thought is writing the same file."""
+        p = self.dir / f"{tid}.json"
+        if not p.exists():
+            return {}
+        try:
+            d = json.loads(p.read_text())
+        except json.JSONDecodeError:
+            return {}
+        d.update(fields)
+        d["updated"] = time.time()
+        p.write_text(json.dumps(d, ensure_ascii=False, indent=1))
+        t = self.thoughts.get(tid)
+        if t is not None:
+            for k, v in fields.items():
+                setattr(t, k, v)
+        return d
+
     def _load(self) -> None:
+        """Re-read every thought from disk. A thought whose process is gone is paused; one that was
+        just created is given a grace period to be picked up."""
+        now = time.time()
         for p in sorted(self.dir.glob("*.json")):
             try:
                 t = Thought(**json.loads(p.read_text()))
             except Exception:
                 continue
-            if t.status == "running":        # a previous session ended with it running
+            orphan = (t.pid and not _alive(t.pid)) or (not t.pid and now - (t.updated or 0) > 90)
+            if t.status == "running" and orphan:
                 t.status = "paused"
-                self._save(t)
+                t.pid = None
+                self._patch(t.id, status="paused", pid=None)
             self.thoughts[t.id] = t
 
     # ------------------------------------------------------------------ index operations (main thought only)
+    def spawn_record(self, goal: str, max_steps: int = 8) -> dict:
+        """Create the thought as a file and return its brief. Running it is a process, started by
+        the daemon; this only writes down what it is."""
+        t = Thought(id=uuid.uuid4().hex[:6], goal=goal.strip(), max_steps=max(1, min(int(max_steps), 60)))
+        t.history = [{"role": "system", "content": THOUGHT_SYSTEM.format(goal=t.goal)}]
+        self.thoughts[t.id] = t
+        self._save(t)
+        self.memory.log("thought_spawn", id=t.id, goal=t.goal[:200])
+        return t.brief()
+
+    def load_one(self, tid: str) -> "Thought | None":
+        """Re-read a thought's status from disk: its process checks this to notice a pause or a kill."""
+        p = self.dir / f"{tid}.json"
+        if not p.exists():
+            return self.thoughts.get(tid)
+        try:
+            fresh = Thought(**json.loads(p.read_text()))
+        except Exception:
+            return self.thoughts.get(tid)
+        keep = self.thoughts.get(tid)
+        if keep is None:
+            self.thoughts[tid] = fresh
+            return fresh
+        keep.status = fresh.status          # only the status is owned by the outside
+        return keep
+
     def spawn(self, goal: str, max_steps: int = 12) -> dict:
         if len(self.running()) >= self.max_concurrent:
             return {"error": f"already {self.max_concurrent} thoughts running; pause or kill one first"}
@@ -104,7 +168,6 @@ class ThoughtManager:
         if self.loop is None:
             return {"error": "inner thoughts need the running mind (start `groow chat`)"}
         self.thoughts[t.id] = t
-        self._start(t)
         self._save(t)
         self.memory.log("thought_spawn", id=t.id, goal=t.goal[:200])
         self._ev("spawn", t)
@@ -116,10 +179,13 @@ class ThoughtManager:
         hits = [t for k, t in self.thoughts.items() if k.startswith(tid)]
         return hits[0] if len(hits) == 1 else None
 
-    def running(self) -> list[Thought]:
+    def running(self, refresh: bool = False) -> list[Thought]:
+        if refresh:
+            self._load()
         return [t for t in self.thoughts.values() if t.status == "running"]
 
     def listing(self, include_finished: bool = True) -> list[dict]:
+        self._load()                      # the traces are written by processes; read what is there
         ts = sorted(self.thoughts.values(), key=lambda t: -t.updated)
         return [t.brief() for t in ts if include_finished or t.status in ("running", "paused")][:20]
 
@@ -143,8 +209,7 @@ class ThoughtManager:
             return {"error": f"thought {t.id} is {t.status}; only paused thoughts resume"}
         if len(self.running()) >= self.max_concurrent:
             return {"error": "too many running thoughts"}
-        t.status = "running"
-        self._save(t)
+        self._patch(t.id, status="running")
         self.memory.log("thought_resumed", id=t.id)
         self._start(t)
         self._ev("resumed", t)
@@ -154,12 +219,7 @@ class ThoughtManager:
         t = self.get(tid)
         if not t:
             return {"error": f"no thought {tid}"}
-        t.status = "killed"
-        t.summary = t.summary or f"killed: {reason}"
-        self._save(t)
-        task = self._tasks.get(t.id)
-        if task and self.loop is not None:
-            self.loop.call_soon_threadsafe(task.cancel)
+        self._patch(t.id, status="killed", summary=t.summary or f"killed: {reason}")
         self.memory.log("thought_killed", id=t.id, reason=reason)
         self._ev("killed", t, reason)
         return t.brief()
@@ -169,7 +229,6 @@ class ThoughtManager:
         for t in self.running():
             self.pause(t.id)
             n += 1
-        await self.wait_idle()
         return n
 
     async def wait_idle(self, timeout: float = 120.0) -> None:
@@ -179,6 +238,7 @@ class ThoughtManager:
             await asyncio.wait(tasks, timeout=timeout)
 
     def trace(self, tid: str, last_n: int = 12) -> dict:
+        self._load()
         t = self.get(tid)
         if not t:
             return {"error": f"no thought {tid}"}
@@ -205,63 +265,16 @@ class ThoughtManager:
         t = self.get(tid)
         if not t:
             return {"error": "unknown thought"}
-        t.status = "done"
-        t.summary = summary.strip()
-        self._save(t)
+        self._patch(t.id, status="done", summary=summary.strip())
         self.queue.push(Priority.FOCUS, "thought_done", summary.strip(), thought=t.id)
         self.memory.log("thought_done", id=t.id, steps=t.steps, summary=summary[:300])
         self._ev("done", t, summary.strip())
         return {"ok": True, "thought": t.id, "status": "done"}
 
-    # ------------------------------------------------------------------ the thought's own loop (its task)
+    # ------------------------------------------------------------------ nothing runs here
     def _start(self, t: Thought) -> None:
-        def create():
-            self._tasks[t.id] = self.loop.create_task(self._run(t), name=f"thought-{t.id}")
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is self.loop:
-            create()
-        else:
-            self.loop.call_soon_threadsafe(create)     # called from a tool in an executor thread
+        """A thought is run by a process (`groow think <id>`), started by the daemon."""
+        pass
 
-    async def _run(self, t: Thought) -> None:
-        h = self.make_harness(t)
-        h.history = t.history                 # the harness appends into the thought's own trace
-        try:
-            while t.status == "running" and t.steps < t.max_steps:
-                prompt = ("Begin. Plan briefly, then take the first concrete step with your tools." if t.steps == 0 else
-                          f"Step {t.steps + 1} of {t.max_steps}. Continue toward the goal. If the goal is reached, call finish.")
-                result = await h.turn(prompt, should_stop=lambda: t.status != "running")
-                if result.interrupted:
-                    t.interrupted += 1
-                    break
-                t.steps += 1
-                t.tools_used += result.tools_used
-                self._ev("step", t, result.final_text[:300])
-                self.memory.add_episode([], result.messages, result.tools_used, kind=f"thought:{t.id}")
-                if self.learn_from_thoughts and self.learner is not None:
-                    await h.brain.server.run_gpu(self.learner.passive, [], result.messages, result.tools_used)
-                if t.status == "running" and t.steps >= t.max_steps:
-                    t.status = "done"
-                    t.summary = t.summary or (result.final_text[:300] or "step budget exhausted")
-                    self.queue.push(Priority.FOCUS, "thought_done", f"(budget exhausted) {t.summary}", thought=t.id)
-                    self.memory.log("thought_done", id=t.id, steps=t.steps, summary=t.summary[:300], reason="budget")
-                    self._ev("done", t, t.summary)
-                elif t.status == "running" and self.reminder_every and t.steps % self.reminder_every == 0:
-                    self.queue.drop("reminder")
-                    self.queue.push(Priority.REMINDER, "reminder",
-                                    f"thought {t.id} is at step {t.steps}/{t.max_steps}: {result.final_text[:160]}",
-                                    thought=t.id)
-                self._save(t)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            t.status = "killed"
-            t.summary = f"crashed: {type(e).__name__}: {e}"
-            self.queue.push(Priority.FOCUS, "thought_done", t.summary, thought=t.id)
-            self._ev("killed", t, t.summary)
-        finally:
-            self._save(t)
-            self._tasks.pop(t.id, None)
+    async def wait_idle(self, timeout: float = 120.0) -> None:
+        return None

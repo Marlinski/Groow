@@ -19,7 +19,7 @@ from ..brain.chatfmt import build_sample, trim_messages
 from ..config import Config
 from ..memory import Memory
 
-REHEARSAL_SYSTEM = "You are Groow, a model that keeps learning from its conversations."
+from .prompts import REHEARSAL_SYSTEM  # noqa: F401  (kept importable from here)
 
 
 class Learner:

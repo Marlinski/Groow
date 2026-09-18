@@ -29,6 +29,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer, Stop
 from peft import LoraConfig, PeftModel, get_peft_model
 
 from ..config import Config
+from ..errors import Interrupted
 from .chatfmt import Sample, render
 
 Messages = list[dict]
@@ -411,10 +412,6 @@ def _weighted_ce(logits: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor)
     ul = -torch.log1p(-logp.exp().clamp(max=1 - 1e-4))
     denom = (pos + neg).sum().clamp(min=1e-6)
     return ((pos * ce) + (neg * ul)).sum() / denom
-
-
-class Interrupted(Exception):
-    """Generation was preempted by something more urgent."""
 
 
 class _InterruptCriteria(StoppingCriteria):

@@ -59,7 +59,7 @@ Inside the UI or the line client:
 | `/identity` `/inbox [clear]` | its self-description and how internalised it is; questions it left for its mentor |
 | `/thoughts [all]` `/thought read|pause|resume|kill <id>` `/skill …` `/incidents` `/news` `/play <game>` | the same operations Groow runs as `groow …` in its shell |
 | `/learn off` `/reasoning on` | pause passive learning; enable Qwen3 thinking mode |
-| `/tools` `/stats` `/reset` `/restart` `/quit` | list tools, learning report, clear the conversation, rebuild the session, stop the daemon |
+| `/tools` `/stats` `/restart` `/quit` | list tools, learning report, clear the conversation, rebuild the session, stop the daemon |
 
 Scripts can skip the UI entirely: `groow ask "…"`, or `curl -X POST localhost:7373/ask -d '{"text":"…"}'`.
 
@@ -133,6 +133,19 @@ overlay, the only thing that moves. A generation server batches the main
 thought and its inner thoughts and preempts background work when you speak. At
 night the overlay merges into the base exactly.
 
+**A turn is a process.** The daemon is small: it owns the GPU, the clock and
+the files, and holds no conversation. When a signal arrives (a message, an
+alarm, an inner thought reporting back, the idle impulse) it fires
+`groow turn`: a short-lived process that rebuilds the conversation from the
+journal, loads the skills, runs one exchange through the harness, prints what
+happened as JSON lines, and exits. Generation goes back to the daemon over
+HTTP, the only place the model lives. The process keeps no state and starts in
+about 0.2 s, because it never imports torch. An inner thought is the same thing
+with a restricted toolset and no way to speak: `groow think <id>`, one process
+per thought, several at once. A lockfile makes the single conscious thread a
+fact rather than a habit, and `groow debug step [--say "…"]` runs one pass by
+hand with every event printed.
+
 **The hippocampus.** Reads the logs and the valence, writes training sets; the
 trainer is the only thing that produces gradients. A nap after every turn (the
 exchange weighted by how it felt, every tool call credited), idle naps for what
@@ -167,8 +180,11 @@ groow/
     identity.py        Identity: seed, self-edit, context distillation into weights
   senses/
     news.py            NewsSense: RSS/Atom -> dated, sourced items; remembers what it has seen
-  mind/                the conscious thread and its inner thoughts
+  turn.py              one turn, one process: rebuild from files, run one exchange, exit
+  remote.py            how a turn process talks to the daemon (generation, ops, events)
+  mind/                the scheduler and the records it keeps
     clock.py           Schedule: alarms and periodic tasks (state/schedule.json)
+    lock.py            Conscious: one conscious turn at a time (state/conscious.lock)
     signals.py         Priority, Signal, Mailbox (the input queue on disk)
     thoughts.py        Thought, ThoughtManager: concurrent coroutine run-loops with own traces
     mind.py            Mind: the scheduler loop; frames signals into the main conversation
@@ -210,6 +226,7 @@ state/                 runtime, created by init (gitignored); inside the contain
   main/                the conversation journal: every message, one JSONL file per day, rotated
   mailbox/             the input queue on disk (new/, cur/)
   schedule.json        alarms Groow (or you) set: when, what, how often
+  conscious.lock       the pid of the turn process holding the conscious thread, while one runs
   log/activity.jsonl   what skills log when they play in bulk; read by the hippocampus
   limbic/              valence.jsonl (how each turn felt), state.json (mood), held.json (turns awaiting a reaction)
   training/            training sets prepared by the hippocampus, waiting for the trainer (<set>.jsonl, cursor.json)

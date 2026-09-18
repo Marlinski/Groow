@@ -53,8 +53,21 @@ def op_thoughts(app, all: bool = False, **_) -> dict:
     return {"thoughts": app.thoughts.listing(bool(all))}
 
 
-def op_thought(app, action: str = "read", id: str = "", last: int = 10, **_) -> dict:
+def op_think(app, goal: str = "", max_steps: int = 8, **_) -> dict:
+    return app.daemon.spawn_thought(goal, int(max_steps))
+
+
+def op_thought(app, action: str = "read", id: str = "", last: int = 10, text: str = "", **_) -> dict:
     t = app.thoughts
+    if action == "focus":
+        return t.focus(id, text)
+    if action == "finish":
+        return t.finish(id, text)
+    if action == "resume":
+        r = t.resume(id)
+        if r.get("status") == "running":
+            app.daemon.loop.create_task(app.daemon.run_thought(t.get(id).id))
+        return r
     if action == "read":
         return t.trace(id, int(last))
     if action == "pause":
@@ -154,7 +167,7 @@ def op_feedback(app, value: int = 1, **_) -> dict:
 
 OPS = {
     "train": op_train, "training": op_training, "hippocampus": op_hippocampus, "sleep": op_sleep, "probe": op_probe, "stats": op_stats,
-    "thoughts": op_thoughts, "thought": op_thought, "skill": op_skill, "identity": op_identity, "inbox": op_inbox,
+    "thoughts": op_thoughts, "thought": op_thought, "think": op_think, "skill": op_skill, "identity": op_identity, "inbox": op_inbox,
     "incidents": op_incidents, "patch": op_patch, "feedback": op_feedback, "learn": op_learn, "quiz": op_quiz,
     "remind": op_remind, "schedule": op_schedule,
 }

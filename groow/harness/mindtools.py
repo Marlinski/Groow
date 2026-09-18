@@ -10,6 +10,27 @@ from __future__ import annotations
 from .registry import ToolRegistry
 
 
+def make_think_tool(spawn) -> ToolRegistry:
+    """`think` for a turn process: `spawn(goal, max_steps)` asks the daemon to start the thought."""
+    reg = ToolRegistry()
+
+    @reg.tool(group="mind")
+    def think(goal: str, max_steps: int = 8) -> dict:
+        """Start an inner thought: a separate line of reasoning that works toward a goal in the background,
+        in its own process, with its own shell. It cannot talk to anyone; it reports back to you with focus
+        and finish, and you get a reminder every few steps. Its trace is state/thoughts/<id>.json;
+        `groow thoughts` lists them, `groow thought pause|resume|kill <id>` manages them. Use it for anything
+        that takes several steps and does not need the person waiting.
+
+        Args:
+            goal: what the thought should achieve, concretely
+            max_steps: budget in steps (default 8, max 60)
+        """
+        return spawn(goal, max_steps)
+
+    return reg
+
+
 def make_main_mind_tools(thoughts, memory=None) -> ToolRegistry:
     reg = ToolRegistry()
 

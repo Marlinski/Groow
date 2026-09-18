@@ -4,6 +4,7 @@
   groow start --nosandbox [-v]     run on this host, as you (state in ~/.groow, or state/ in a checkout)
   groow ui | chat | ask "…" | say  fullscreen UI (WebSocket) | line client (SSE) | one question over HTTP | drop a message
   groow status | stop | doctor     snapshot | sleep | static health check
+  groow debug step [--say "…"]     run one pass of the run loop here, printing every event
 
   operations on the running Groow (also what Groow runs in its own shell):
   groow thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name> | training | stats
@@ -35,27 +36,27 @@ Incident: {incident}"""
 
 # ====================================================================== the App
 class App:
-    """Wires the organs together: brain + generation server, memory, journal, learner, identity, the six
-    substrate tools, the main harness (the conscious thread), inner thoughts, sleep, curiosity, skills.
-    Everything observable goes through `emit(event, **data)`; every message goes to the journal at once."""
+    """The daemon's organs: the brain and its generation server, memory, the journal, the learner,
+    the limbic system, the hippocampus and the trainer, the identity, the schedule, the thought
+    records and the skills. It runs no conversation: a turn is a process (see groow/turn.py)."""
 
     def __init__(self, cfg: Config, emit=None, safe_mode: bool = False, incident: dict | None = None):
         import transformers
         transformers.logging.set_verbosity_error()
         transformers.logging.disable_progress_bar()
-        from .brain import Brain, GenServer, ServedBrain
+        from .brain import Brain, GenServer
         from .memory import Memory, Journal
         from .learning import Learner, SleepPolicy, Curiosity, Identity, TrainingSets, Trainer, Hippocampus
         from .limbic import Limbic
         from .senses import NewsSense
         from .mind import InputQueue, ThoughtManager, Schedule
         from .birth import load_or_create
-        from .harness import (Harness, Hooks, ToolRegistry, make_substrate_tools, make_self_tools,
-                              make_main_mind_tools, make_thought_tools, SkillManager)
+        from .harness import ToolRegistry, SkillManager, make_substrate_tools, make_self_tools, make_main_mind_tools
 
         self.cfg = cfg
         self.emit = emit or console_emit
         self.safe_mode = safe_mode
+        self.daemon = None                      # set by the daemon so ops can spawn processes
         self.brain = Brain(cfg).load()
         self.birth = load_or_create(cfg.state, cfg.model_id)
         self.server = GenServer(self.brain, max_batch=cfg.gen_max_batch)
@@ -69,151 +70,38 @@ class App:
         self.hippocampus.person = self.birth.mentor
         self.identity = Identity(cfg, self.memory, self.birth)
         self.news = NewsSense(cfg.state, feeds=cfg.feeds or None)
-        self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity, trainer=self.trainer, hippocampus=self.hippocampus)
+        self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity, trainer=self.trainer,
+                                 hippocampus=self.hippocampus)
         self.curiosity = Curiosity(self.learner, self.memory, cfg, self.news)
         self.queue = InputQueue(cfg.state / "mailbox")
         self.schedule = Schedule(cfg.state)
+        self.thoughts = ThoughtManager(cfg.state, self.queue, lambda t: None, self.memory,
+                                       reminder_every=cfg.thought_reminder_every, learner=self.learner,
+                                       max_concurrent=cfg.max_thoughts)
+        self.thoughts.on_event = lambda ev, t, text="": self.emit(
+            "thought", event=ev, id=t.id, status=t.status, goal=t.goal[:140],
+            steps=f"{t.steps}/{t.max_steps}", text=text[:300])
         self.learning_enabled = cfg.passive_learning and not safe_mode
         self.last_episode: str | None = None
         self.restart = False
         os.environ["GROOW_STATE"] = str(Path(cfg.state).resolve())
 
-        # tools ----------------------------------------------------------------------
         home = Path(cfg.home_dir).expanduser() if cfg.home_dir else Path.home()
-        self._substrate = make_substrate_tools(home, cfg.allow_shell)
-        self._self = make_self_tools(self.learner, self.identity, self.memory)
-        self.thoughts = ThoughtManager(cfg.state, self.queue, self._thought_harness, self.memory,
-                                       reminder_every=cfg.thought_reminder_every,
-                                       learn_from_thoughts=cfg.learn_from_thoughts, learner=self.learner,
-                                       max_concurrent=cfg.max_thoughts)
-        self.thoughts.on_event = lambda ev, t, text="": self.emit(
-            "thought", event=ev, id=t.id, status=t.status, goal=t.goal[:140], steps=f"{t.steps}/{t.max_steps}", text=text[:300])
-        self._mind = make_main_mind_tools(self.thoughts, self.memory)
-        core = set(self._substrate.names()) | set(self._self.names()) | set(self._mind.names()) | {"focus", "finish"}
-        self.skills = SkillManager(cfg.state, protected=core, memory=self.memory, check_timeout=cfg.skill_check_timeout, home=home)
+        self.skills = SkillManager(cfg.state, protected={"shell", "think", "ask", "focus", "finish"},
+                                   memory=self.memory, check_timeout=cfg.skill_check_timeout, home=home)
         seed_home(cfg, self.skills, self.emit)
         if cfg.skills_enabled and not safe_mode:
             r = self.skills.load_all()
             if r["quarantined"]:
                 self.emit("log", level="warn", text=f"quarantined skills that failed to load: {r['quarantined']}")
+        # a registry built only so /hello can say what a turn process will have
         self.tools = ToolRegistry()
-        self.refresh_tools()
-        self.skills.on_change = self.refresh_tools
-        for r in (self._substrate, self._self, self._mind):
-            r.on_progress = lambda m: self.emit("log", level="progress", text=m)
-        self._Harness, self._Hooks, self._ServedBrain, self._make_thought_tools, self._ToolRegistry = (
-            Harness, Hooks, ServedBrain, make_thought_tools, ToolRegistry)
+        self.tools.include(make_substrate_tools(home, cfg.allow_shell))
+        self.tools.include(make_self_tools(cfg.state))
+        self.tools.include(make_main_mind_tools(self.thoughts, self.memory))
+        if cfg.skills_enabled and not safe_mode:
+            self.tools.include(self.skills.registry)
 
-        # the conscious thread: priority 0, streams text, journals every message ------------
-        prompt = self.identity.system_prompt()
-        if safe_mode:
-            prompt = SAFE_MODE_PROMPT.format(incident=json.dumps(incident or {}, ensure_ascii=False)[:3000])
-        self.harness = Harness(ServedBrain(self.brain, self.server, 0), self.tools, cfg, prompt,
-                               Hooks(on_message=self._journal_message,
-                                     on_text=lambda t: self.emit("text", delta=t, req=self._req()),
-                                     on_tool_call=lambda n, a: self.emit("tool_call", name=n, args=a, actor="main", req=self._req()),
-                                     on_tool_result=lambda n, a, r: self.emit("tool_result", name=n, result=r[:600], actor="main", req=self._req()),
-                                     after_turn=self._after_turn,
-                                     on_error=lambda where, e: (self.skills.record_incident(where, f"{type(e).__name__}: {e}"),
-                                                                self.emit("log", level="error", text=f"{where} failed: {type(e).__name__}: {e}"))), name="main")
-        self._restore_conversation()
-
-    # ---- durable conversation -------------------------------------------------------
-    def _journal_message(self, msg: dict) -> None:
-        rec = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls", "reasoning_content", "name", "args")}
-        rec["kind"] = getattr(self.harness, "turn_kind", "user") if msg["role"] == "user" else None
-        if rec["kind"] is None:
-            rec.pop("kind")
-        self.journal.append(rec)
-
-    def _restore_conversation(self, n: int = 30) -> None:
-        """A reboot keeps the thread of the conversation: rebuild the rolling window from the journal."""
-        # the clean transcript only: what people said and what Groow answered. Tool calls and results stay in the
-        # journal but are not fed back as context (they are the fastest way to teach it a reflex).
-        msgs = []
-        for rec in self.journal.tail(n * 3):
-            if rec.get("role") == "user" and rec.get("kind", "user") in ("user", "command"):
-                msgs.append({"role": "user", "content": rec.get("content", "")})
-            elif rec.get("role") == "assistant" and rec.get("content") and not rec.get("tool_calls"):
-                msgs.append({"role": "assistant", "content": rec["content"]})
-        # only complete exchanges (a question and its answer): a dangling request from before the reboot
-        # would be acted on again as if it were new
-        pairs = []
-        i = 0
-        while i < len(msgs) - 1:
-            if msgs[i]["role"] == "user" and msgs[i + 1]["role"] == "assistant":
-                pairs.append(msgs[i]); pairs.append(msgs[i + 1]); i += 2
-            else:
-                i += 1
-        pairs = pairs[-(n - n % 2):]
-        if pairs:
-            self.harness.history = [self.harness.history[0]] + pairs
-
-    def _req(self):
-        return getattr(getattr(self, "mind", None), "_req", None)
-
-    def refresh_tools(self) -> None:
-        """The main tool set, rebuilt in place. Safe mode: shell and ask only."""
-        merged = {}
-        if self.safe_mode:
-            merged.update(self._substrate.tools)
-            merged["ask"] = self._self.tools["ask"]
-        else:
-            for r in (self._substrate, self._self, self._mind):
-                merged.update(r.tools)
-            if self.cfg.skills_enabled:
-                merged.update(self.skills.registry.tools)
-        self.tools.tools.clear()
-        self.tools.tools.update(merged)
-
-    # ---- inner thoughts: own harness, substrate + learn/quiz + focus/finish, priority 2 -----
-    def _thought_harness(self, thought):
-        reg = self._ToolRegistry()
-        reg.include(self._substrate)
-        if self.cfg.skills_enabled and not self.safe_mode:
-            reg.include(self.skills.registry)
-        reg.include(self._make_thought_tools(self.thoughts, thought.id))
-        actor = f"thought:{thought.id}"
-        return self._Harness(self._ServedBrain(self.brain, self.server, 2), reg, self.cfg, thought.history[0]["content"],
-                             self._Hooks(on_tool_call=lambda n, a: self.emit("tool_call", name=n, args=a, actor=actor),
-                                         on_tool_result=lambda n, a, r: self.emit("tool_result", name=n, result=r[:300], actor=actor)),
-                             name=actor)
-
-    # ---- learning after every main turn (runs on the GPU executor) ------------------
-    def _after_turn(self, turn) -> None:
-        """The nap: the limbic system feels the turn, the hippocampus turns it into samples once its
-        valence is final, the trainer consumes what is pending. Inference pauses for a few seconds."""
-        if not self.learning_enabled or not turn.messages:
-            return
-        prepared = self.hippocampus.nap(turn.messages, turn.context, turn.flags,
-                                        kind=getattr(self.harness, "turn_kind", "user"),
-                                        user_text=turn.user_text, final_text=turn.final_text)
-        self.last_episode = (self.memory.episodes() or [{}])[-1].get("id")
-        if prepared.get("skipped"):
-            self.emit("log", level="info", text=f"not learned from: {', '.join(prepared['skipped'])}", req=self._req())
-        r = self.trainer.consume(max_samples=self.cfg.nap_max_samples)
-        self.emit("felt", valence=prepared.get("valence"), pending=prepared.get("pending", False),
-                  mood=self.limbic.mood(), consumed=r.get("consumed", 0), sets=r.get("sets"), req=self._req())
-        if self.brain.meta["steps"] % 10 == 0:
-            self.brain.save()
-        if self.cfg.probe_every and self.brain.meta["steps"] % self.cfg.probe_every == 0:
-            pr = self.learner.probe()
-            self.emit("log", level="info", text=f"probe: mean loss {pr['mean_loss']:.3f} (birth {pr['baseline_mean']:.3f})")
-
-    async def idle_nap(self) -> dict:
-        """Nobody is talking: digest the activity log (games, drills) and consume what is pending."""
-        if not self.learning_enabled:
-            return {"consumed": 0}
-        self.hippocampus.digest_activity()
-        self.hippocampus.flush()                 # nobody reacted: finalise the held turn on sensors alone
-        if not self.sets.pending(limit=1):
-            return {"consumed": 0}
-        r = await self.server.run_gpu(lambda: self.trainer.consume(max_samples=self.cfg.idle_nap_max_samples))
-        if r.get("consumed"):
-            self.emit("log", level="info", text=f"idle nap: {r['consumed']} samples consumed {r.get('sets')}")
-        return r
-
-    # ---- nights ------------------------------------------------------------------------
     async def maybe_sleep(self, force: bool = False) -> bool:
         why = "requested" if force else self.sleep.should_sleep()
         if not why:
@@ -222,10 +110,22 @@ class App:
         self.emit("sleep", phase="start", why=why, thoughts_paused=paused)
         r = await self.server.run_gpu(lambda: self.sleep.sleep(
             on_progress=lambda m: self.emit("sleep", phase="progress", text=m), force=force))
-        self.emit("sleep", phase="done", **{k: v for k, v in r.items() if k != "internalize"}, identity=r.get("internalize"))
-        self.harness.system_prompt = self.identity.system_prompt()
-        self.harness.history[0] = {"role": "system", "content": self.harness.system_prompt}
+        self.emit("sleep", phase="done", **{k: v for k, v in r.items() if k != "internalize"},
+                  identity=r.get("internalize"))
         return True
+
+    async def idle_nap(self) -> dict:
+        """Nobody is talking: digest the activity log and consume what is pending."""
+        if not self.learning_enabled:
+            return {"consumed": 0}
+        self.hippocampus.digest_activity()
+        self.hippocampus.flush()
+        if not self.sets.pending(limit=1):
+            return {"consumed": 0}
+        r = await self.server.run_gpu(lambda: self.trainer.consume(max_samples=self.cfg.idle_nap_max_samples))
+        if r.get("consumed"):
+            self.emit("log", level="info", text=f"idle nap: {r['consumed']} samples consumed {r.get('sets')}")
+        return r
 
     def open_questions(self) -> list[dict]:
         p = self.memory.dir / "mentor_inbox.jsonl"
@@ -321,8 +221,7 @@ async def run_command(user: str, app: App) -> bool:
     elif cmd == "/tools":
         emit("log", text="\n".join(f"{s['function']['name']}  {s['function']['description'].splitlines()[0][:90]}" for s in app.tools.schemas()))
     elif cmd == "/reset":
-        app.harness.reset()
-        emit("log", text="conversation window cleared (the journal and the weights are untouched)")
+        emit("log", text="the window is rebuilt from the journal each turn; nothing to clear")
     elif cmd == "/inbox":
         r = await run_op(app, "inbox", {"clear": arg == "clear"})
         emit("inbox", questions=r.get("questions", []))
@@ -637,6 +536,43 @@ def cmd_ui(cfg: Config, args) -> None:
     run_ui(_url(cfg))
 
 
+def cmd_turn(cfg: Config, args) -> None:
+    """Internal: run one turn in this process (the daemon fires this). Events go to stdout."""
+    from .turn import main_turn
+    _resolve_state(cfg, args)
+    main_turn(cfg, json.loads(args.signal))
+
+
+def cmd_think(cfg: Config, args) -> None:
+    """Internal: run one inner thought to its end in this process."""
+    from .turn import main_thought
+    _resolve_state(cfg, args)
+    main_thought(cfg, args.id)
+
+
+def cmd_debug(cfg: Config, args) -> None:
+    """One pass of the run loop by hand: take the next signal (or the one you give) and run a turn
+    here, printing every event. The daemon must be awake, because it owns the model."""
+    from .turn import main_turn
+    import asyncio as _a
+    _resolve_state(cfg, args)
+    if args.what != "step":
+        console.print("[dim]usage: groow debug step [--say TEXT] [--kind user|alarm|idle|reminder][/dim]")
+        return
+    if args.say:
+        signal = {"kind": args.kind or "user", "text": args.say, "meta": {}}
+    else:
+        from .mind import Mailbox
+        sig = _a.run(Mailbox(cfg.state / "mailbox").pop(timeout=0.2))
+        if sig is None:
+            console.print("[dim]nothing in the mailbox; use --say \"…\" to make one up[/dim]")
+            return
+        signal = {"kind": sig.kind, "text": sig.text, "meta": sig.meta}
+        Mailbox(cfg.state / "mailbox").ack(sig)
+    console.print(f"[dim]one pass on: {signal['kind']} · {signal['text'][:80]}[/dim]")
+    main_turn(cfg, signal)
+
+
 def cmd_doctor(cfg: Config, args) -> None:
     from .harness import SkillManager
     _resolve_state(cfg, args)
@@ -813,6 +749,10 @@ def main(argv=None) -> None:
     sub.add_parser("ui").set_defaults(fn=cmd_ui)
     s = sub.add_parser("say"); s.add_argument("text"); s.set_defaults(fn=cmd_say)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("turn"); s.add_argument("--signal", required=True); s.set_defaults(fn=cmd_turn)
+    s = sub.add_parser("think"); s.add_argument("id"); s.set_defaults(fn=cmd_think)
+    s = sub.add_parser("debug"); s.add_argument("what", nargs="?", default="step"); s.add_argument("--say")
+    s.add_argument("--kind"); s.set_defaults(fn=cmd_debug)
     s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600); s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_ask)
     # operations
     s = sub.add_parser("train"); s.add_argument("--urgent", action="store_true"); s.add_argument("--max", type=int, default=64); s.set_defaults(fn=cmd_train)

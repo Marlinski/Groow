@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..brain import Interrupted, trim_messages
+from ..errors import Interrupted
 from ..config import Config
 from .registry import ToolRegistry
 
@@ -109,8 +109,12 @@ class Harness:
         self.history = [{"role": "system", "content": self.system_prompt}]
 
     def _fit_context(self, turn_start: int) -> None:
-        """Rolling context: drop the oldest *previous* turns when the rendered prompt
-        would not leave room to answer. The current turn is never cut."""
+        """Rolling context: drop the oldest *previous* turns when the rendered prompt would not leave
+        room to answer. The current turn is never cut. Skipped when the brain is remote: the daemon,
+        which owns the tokenizer, trims what it is sent."""
+        if getattr(self.brain, "remote", False):
+            return
+        from ..brain import trim_messages
         budget = self.cfg.max_seq_len - self.cfg.max_new_tokens
         while turn_start > 1:
             text = self.brain.prompt_text(self.history, tools=self.tools.schemas())

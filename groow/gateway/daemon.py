@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -41,6 +42,8 @@ class Daemon:
         self.req_events: dict[str, list] = {}
         self.mood = "idle"
         self._night = False
+        self.children: set = set()
+        self.turn_running = False
         self.app = None
         self.mind = None
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -196,19 +199,55 @@ class Daemon:
                                   "seconds": end.get("seconds"), "events": [e for e in evs if e["ev"] != "text"]}, dumps=encode)
 
     async def h_complete(self, request: web.Request) -> web.Response:
-        """Raw completions for skills (self-play, drills): a list of conversations in, one text out each,
-        batched by the generation server at inner-thought priority. No learning, no journal."""
+        """The only model call. A turn process sends its conversation (and its tools); the daemon owns
+        the tokenizer, so it trims to fit, generates, and streams the text out as events if asked."""
         body = await request.json()
         convs = body.get("messages") or []
         if isinstance(convs, dict) or (convs and isinstance(convs[0], dict)):
             convs = [convs]
         if not convs or len(convs) > 32:
-            raise web.HTTPBadRequest(text='{"error": "messages: a conversation or a list of at most 32"}', content_type="application/json")
-        max_new = int(body.get("max_new_tokens") or 64)
-        temperature = float(body.get("temperature") if body.get("temperature") is not None else 1.0)
-        texts = await asyncio.gather(*[self.app.server.complete(c, None, priority=2, max_new_tokens=max_new, temperature=temperature,
-                                                                  enable_thinking=False) for c in convs])
+            raise web.HTTPBadRequest(text='{"error": "messages: a conversation or a list of at most 32"}',
+                                     content_type="application/json")
+        tools = body.get("tools")
+        max_new = int(body.get("max_new_tokens") or self.cfg.max_new_tokens)
+        temperature = body.get("temperature")
+        thinking = body.get("enable_thinking")
+        stream = body.get("stream_as") or None
+        if body.get("trim"):
+            convs = [self._trim(c, tools, max_new) for c in convs]
+        on_text = None
+        if stream:
+            on_text = lambda t: self.emit("text", delta=t, actor=stream.get("actor", "main"), req=stream.get("req"))
+        try:
+            texts = await asyncio.gather(*[
+                self.app.server.complete(c, tools, priority=int(body.get("priority", 2)), max_new_tokens=max_new,
+                                         temperature=temperature, enable_thinking=thinking,
+                                         on_text=on_text if i == 0 else None)
+                for i, c in enumerate(convs)])
+        except Exception as e:
+            return web.json_response({"interrupted": True, "reason": f"{type(e).__name__}: {e}"}, dumps=encode)
         return web.json_response({"completions": list(texts)}, dumps=encode)
+
+    def _trim(self, messages: list, tools, max_new: int) -> list:
+        """Drop the oldest exchanges until the rendered prompt leaves room to answer."""
+        from ..brain import trim_messages
+        b = self.app.brain
+        budget = self.cfg.max_seq_len - max_new
+        msgs = list(messages)
+        while len(msgs) > 3:
+            text = b.prompt_text(msgs, tools=tools)
+            if len(b.tok(text, add_special_tokens=False)["input_ids"]) <= budget:
+                break
+            head = msgs[:1] if msgs and msgs[0]["role"] == "system" else []
+            msgs = head + trim_messages(msgs[len(head):], max(2, len(msgs) - len(head) - 3))
+        return msgs
+
+    async def h_emit(self, request: web.Request) -> web.Response:
+        """A process asks for an event to be broadcast (it has no connection to the UIs itself)."""
+        body = await request.json()
+        ev = body.pop("ev", "log")
+        self.emit(ev, **body)
+        return web.json_response({"ok": True})
 
     async def h_op(self, request: web.Request) -> web.Response:
         """Operations on the running Groow (what `groow …` commands in its shell call)."""
@@ -286,6 +325,115 @@ class Daemon:
             self.subscribers.discard(q)
         return ws
 
+    # ------------------------------------------------------------------ processes
+    def _child_env(self) -> dict:
+        env = dict(os.environ)
+        if self.safe_mode:
+            env["GROOW_SAFE"] = "1"
+            env["GROOW_INCIDENT"] = json.dumps(self.incident or {}, default=str)[:3000]
+        env["GROOW_STATE"] = str(Path(self.cfg.state).resolve())
+        env["GROOW_URL"] = self.urlfile.read_text().strip() if self.urlfile.exists() else \
+            f"http://127.0.0.1:{self.cfg.api_port}"
+        env["PYTHONUNBUFFERED"] = "1"
+        return env
+
+    async def _run_child(self, args: list[str], on_event, timeout: float = 1800.0) -> int:
+        """Fire a process, read its events off stdout as they come, return its exit code."""
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "groow.cli", *args, cwd=str(Path(self.cfg.state).parent),
+            env=self._child_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        self.children.add(proc)
+
+        async def pump():
+            async for line in proc.stdout:
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    on_event(ev)
+                except Exception as e:
+                    self.emit("log", level="warn", text=f"event handling failed: {type(e).__name__}: {e}")
+
+        try:
+            await asyncio.wait_for(asyncio.gather(pump(), proc.wait()), timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            self.emit("log", level="error", text=f"a {args[0]} process ran past {timeout:.0f}s and was killed")
+        except asyncio.CancelledError:
+            proc.kill()
+            raise
+        finally:
+            self.children.discard(proc)
+            err = (await proc.stderr.read())[-2000:].decode(errors="replace") if proc.stderr else ""
+            if proc.returncode not in (0, None) and err.strip():
+                self.emit("log", level="error", text=f"{args[0]} exited {proc.returncode}: {err.strip()[-400:]}")
+                self.app.skills.record_incident(f"child_{args[0]}", err)
+        return proc.returncode or 0
+
+    async def run_turn(self, signal: dict) -> None:
+        """One signal, one process. Its events are broadcast as they arrive; its finished turn is
+        handed to the limbic system and the hippocampus, which is where the GPU work happens."""
+        done: dict = {}
+
+        def on_event(ev: dict):
+            if ev.get("ev") == "turn_done":
+                done.update(ev)
+                return
+            if ev.get("ev") == "message":
+                return                                  # journalled by the process itself
+            self.emit(ev.pop("ev"), **{k: v for k, v in ev.items() if k != "t"})
+
+        self.turn_running = True
+        try:
+            await self._run_child(["turn", "--signal", json.dumps(signal, default=str)], on_event,
+                                  timeout=self.cfg.turn_timeout)
+        finally:
+            self.turn_running = False
+        if done:
+            await self.after_turn(done)
+
+    async def after_turn(self, done: dict) -> None:
+        """The GPU side of a turn: feel it, prepare samples, learn, then decide about a night."""
+        app = self.app
+        if not app.learning_enabled or not done.get("messages"):
+            return
+        try:
+            prepared = await self.app.server.run_gpu(
+                lambda: app.hippocampus.nap(done["messages"], done.get("context") or [], done.get("flags") or [],
+                                            kind=done.get("kind", "user"), user_text=done.get("user_text", ""),
+                                            final_text=done.get("final", "")))
+            r = await self.app.server.run_gpu(lambda: app.trainer.consume(max_samples=self.cfg.nap_max_samples))
+        except Exception as e:
+            self.emit("log", level="error", text=f"nap failed: {type(e).__name__}: {e}")
+            return
+        self.emit("felt", valence=prepared.get("valence"), pending=prepared.get("pending", False),
+                  mood=app.limbic.mood(), consumed=r.get("consumed", 0), sets=r.get("sets"))
+        if app.brain.meta["steps"] % 10 == 0:
+            app.brain.save()
+
+    async def run_thought(self, thought_id: str) -> None:
+        def on_event(ev: dict):
+            if ev.get("ev") == "thought_step":
+                app = self.app
+                app.memory.add_episode([], ev.get("messages") or [], ev.get("tools_used") or [],
+                                       kind=f"thought:{thought_id}")
+                return
+            self.emit(ev.pop("ev"), **{k: v for k, v in ev.items() if k != "t"})
+        await self._run_child(["think", thought_id], on_event, timeout=self.cfg.thought_timeout)
+
+    def spawn_thought(self, goal: str, max_steps: int = 8) -> dict:
+        """Called through /op by a turn process's `think` tool."""
+        app = self.app
+        running = app.thoughts.running(refresh=True)
+        if len(running) >= self.cfg.max_thoughts:
+            return {"error": f"already {self.cfg.max_thoughts} thoughts running; pause or kill one first"}
+        brief = app.thoughts.spawn_record(goal, max_steps)
+        self.loop.create_task(self.run_thought(brief["id"]))
+        self.emit("thought", event="spawn", id=brief["id"], status="running", goal=goal[:140],
+                  steps=brief["steps"], text="")
+        return brief
+
     async def _status_loop(self) -> None:
         while True:
             await asyncio.sleep(2.0)
@@ -301,14 +449,16 @@ class Daemon:
         self.loop = loop = asyncio.get_running_loop()
         print(f"groow: waking up: loading {self.cfg.model_id} into the GPU (~30 s), then memory, skills, senses…", flush=True)
         self.app = app = App(self.cfg, emit=self.emit, safe_mode=self.safe_mode, incident=self.incident)
+        app.daemon = self
         app.brain.on_busy = lambda op: self.emit("weights", busy=op is not None, op=op or "")
         app.queue.bind(loop)
         app.thoughts.bind(loop)
         idle_s = self.cfg.sense_idle_minutes * 60 if (self.cfg.curiosity and self.cfg.sense_idle_minutes > 0
                                                        and not self.safe_mode) else 0
-        self.mind = mind = Mind(app.harness, app.queue, app.thoughts, on_idle_text=app.curiosity.impulse_text,
+        self.mind = mind = Mind(app.queue, on_idle_text=app.curiosity.impulse_text,
                                 idle_seconds=idle_s, maybe_sleep=app.maybe_sleep, emit=self.emit,
                                 run_command=lambda line: run_command(line, app))
+        mind.run_turn = self.run_turn
         mind.on_error = lambda kind, tb: app.skills.record_incident(kind, tb)
         mind.idle_nap = app.idle_nap
         mind.schedule = app.schedule
@@ -320,7 +470,7 @@ class Daemon:
         web_app = web.Application(client_max_size=2**20)
         web_app.add_routes([web.get("/hello", self.h_hello), web.get("/status", self.h_status),
                             web.post("/say", self.h_say), web.post("/command", self.h_command),
-                            web.post("/ask", self.h_ask), web.post("/op", self.h_op), web.post("/complete", self.h_complete),
+                            web.post("/ask", self.h_ask), web.post("/op", self.h_op), web.post("/complete", self.h_complete), web.post("/emit", self.h_emit),
                             web.get("/events", self.h_events), web.get("/ws", self.h_ws),
                             web.get("/", self.h_hello)])
         runner = web.AppRunner(web_app, access_log=None, shutdown_timeout=2.0)
@@ -346,7 +496,8 @@ class Daemon:
             await asyncio.sleep(0.3)                      # let writers flush the goodbye
             for t in app.thoughts.running():
                 app.thoughts.pause(t.id)
-            await app.thoughts.wait_idle(10)
+            for child in list(self.children):
+                child.terminate()
             await app.server.stop()
             app.brain.save()
             await runner.cleanup()

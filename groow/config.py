@@ -71,6 +71,10 @@ class Config:
     tool_timeout: int = 120            # seconds an I/O tool may run before the loop gives up on it
     skill_check_timeout: int = 60      # sandbox check budget for a draft
 
+    # --- processes -----------------------------------------------------------------
+    turn_timeout: float = 900.0       # a turn process is killed past this
+    thought_timeout: float = 3600.0   # so is an inner thought
+
     # --- limbic (how things felt) ------------------------------------------------
     judge: str = "laya"               # laya | gliclass | none: the frozen model that judges reactions and outcomes
     mood_halflife_s: float = 1800.0   # how fast pain and pleasure fade

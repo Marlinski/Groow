@@ -8,10 +8,10 @@ import time
 from .registry import ToolRegistry
 
 
-def make_self_tools(learner=None, identity=None, memory=None) -> ToolRegistry:
+def make_self_tools(state_dir) -> ToolRegistry:
+    from pathlib import Path
     reg = ToolRegistry()
-    mem = memory or (learner.memory if learner is not None else None)
-    inbox = mem.dir / "mentor_inbox.jsonl"
+    inbox = Path(state_dir) / "mentor_inbox.jsonl"
 
     @reg.tool(group="self")
     def ask(question: str, context: str = "") -> dict:

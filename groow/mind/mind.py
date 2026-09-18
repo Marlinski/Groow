@@ -14,7 +14,6 @@ import time
 from typing import Callable
 
 from .signals import InputQueue, Priority, Signal
-from .thoughts import ThoughtManager
 
 FRAMES = {
     "focus": "[inner thought {thought} says] {text}",
@@ -27,10 +26,10 @@ FRAMES = {
 
 
 class Mind:
-    def __init__(self, harness, queue: InputQueue, thoughts: ThoughtManager, *, on_idle_text: Callable[[], str],
+    def __init__(self, queue: InputQueue, *, on_idle_text: Callable[[], str],
                  idle_seconds: float, maybe_sleep: Callable[[], "asyncio.Future | None"], emit: Callable[..., None],
                  run_command: Callable[[str], "asyncio.Future | bool"] | None = None):
-        self.harness, self.queue, self.thoughts = harness, queue, thoughts
+        self.queue = queue
         self.on_idle_text, self.idle_seconds, self.maybe_sleep, self.emit = on_idle_text, idle_seconds, maybe_sleep, emit
         self.run_command = run_command
         self.alive = True
@@ -55,6 +54,7 @@ class Mind:
     # ------------------------------------------------------------------ the loop
     on_error = None      # callable(kind, traceback) -> None, set by the app (records incidents)
     idle_nap = None      # async callable() -> dict, set by the app: consume pending training samples when idle
+    run_turn = None      # async callable(signal) -> None, set by the daemon: fire a turn process
     schedule = None      # mind.Schedule, set by the app: alarms Groow set for itself
 
     async def run(self) -> None:
@@ -88,6 +88,8 @@ class Mind:
                 self.queue.ack(sig)
 
     async def handle(self, sig: Signal) -> None:
+        """One signal, one turn. The turn itself is a separate process: it rebuilds what it needs
+        from files, runs the exchange, and exits. The mind only decides what gets a turn and when."""
         self.handled += 1
         if sig.kind == "user":
             self.last_human = time.time()
@@ -101,31 +103,12 @@ class Mind:
                 if r is True:
                     self.alive = False
                 return
-            req = sig.meta.get("req")
-            self.emit("turn_start", who="user", kind="user", text=sig.text, req=req)
-            self._req = req
-            self.harness.turn_kind = "user"
-            r = None
-            try:
-                r = await self.harness.turn(sig.text, should_stop=self._should_stop)
-            finally:
-                self._req = None
-                self.emit("turn_end", who="user", final=r.final_text if r else "", tools_used=r.tools_used if r else [],
-                          seconds=r.seconds if r else 0, req=req, error=None if r else "turn failed")
-        elif sig.kind in ("focus", "thought_done", "reminder", "idle", "note", "alarm"):
-            if sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
-                return                               # something more concrete is right behind it
-            framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))
-            self.emit("turn_start", who="signal", kind=sig.kind, text=sig.text, thought=sig.meta.get("thought"))
-            self.harness.turn_kind = sig.kind
-            r = None
-            try:
-                r = await self.harness.turn(framed, should_stop=self._should_stop)
-            finally:
-                self.emit("turn_end", who="signal", kind=sig.kind, final=r.final_text if r else "", tools_used=r.tools_used if r else [],
-                          seconds=r.seconds if r else 0)
+        elif sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
+            return                                   # something more concrete is right behind it
         elif sig.kind in ("housekeeping", "noop"):
-            pass
+            return
+        await self.run_turn({"kind": sig.kind, "text": sig.text, "meta": sig.meta})
+
         if self.alive and not self.queue.has_urgent():
             r = self.maybe_sleep()
             if asyncio.iscoroutine(r):

@@ -16,7 +16,6 @@ import random
 import time
 from pathlib import Path
 
-from ..brain import build_sample
 from ..config import Config
 from ..memory import Memory
 
@@ -70,6 +69,7 @@ class Identity:
     # ------------------------------------------------------------------ measurement
     def probe(self, brain) -> float:
         """Loss of the self-description given only 'Who are you?', no system prompt."""
+        from ..brain import build_sample
         msgs = [{"role": "user", "content": "Who are you? Describe yourself."},
                 {"role": "assistant", "content": self.text()}]
         return brain.sample_loss(build_sample(brain.tok, msgs, BARE_WEIGHTS, max_len=self.cfg.train_max_len))
@@ -78,6 +78,7 @@ class Identity:
     def internalize(self, brain, learner, steps: int, on_progress=None) -> dict:
         """Context distillation. For sampled recent user prompts, generate the answer
         with the identity prompt (teacher) and train on it without (student)."""
+        from ..brain import build_sample
         t0 = time.time()
         before = self.probe(brain)
         prompts = [m["content"] for e in learner.memory.episodes()[-200:] for m in e["turn"]

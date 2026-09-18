@@ -26,7 +26,7 @@ from pathlib import Path
 from ..brain import build_sample, trim_messages
 from ..config import Config
 from ..memory import Memory, Journal
-from .learner import REHEARSAL_SYSTEM
+from .prompts import REHEARSAL_SYSTEM
 from .trainingset import TrainingSets
 
 EXTRACT_PROMPT = """Below is a transcript between a person ({person}) and an assistant. List the concrete facts that are STATED in it as true (by {person}, or quoted from a source that was read): names, numbers, dates, places, decisions, preferences. Ignore questions, opinions about the assistant, dates of today, and anything not actually asserted.
