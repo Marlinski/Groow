@@ -21,6 +21,11 @@ groow-harness = { path = "crates/harness" }
 groow-ui      = { path = "crates/ui" }
 
 anyhow      = "1"
+prost       = "0.13"
+pbjson      = "0.7"
+pbjson-types = "0.7"
+prost-build = "0.13"
+pbjson-build = "0.7"
 thiserror   = "2"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = { version = "1", features = ["preserve_order"] }

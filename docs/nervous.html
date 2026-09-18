@@ -1,0 +1,147 @@
+<!doctype html><html lang="en"><head><title>Groow · nervous system</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script>
+<style>
+.plate { width: 100%; height: auto; display: block; margin: 10px 0 30px; }
+.plate .nerve { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+.plate .nerve.socket { stroke: #7ee8c8; }
+.plate .nerve.http { stroke: #6fb7ff; }
+.plate .nerve.files { stroke: #f2c97d; stroke-dasharray: 6 4; }
+.plate .lead { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.plate .organ { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.plate .organ.root { stroke: #7ee8c8; stroke-width: 2.5; }
+.plate .pin { fill: var(--accent); }
+.plate .num { fill: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .16em; }
+.plate .ttl { fill: var(--ink); font: 600 16px/1 system-ui, sans-serif; }
+.plate .gloss { fill: var(--mute); font: 400 13px/1 system-ui, sans-serif; }
+.plate .tiny { fill: var(--accent); font: 600 12px/1 system-ui, sans-serif; }
+h2 .roman { color: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .16em; margin-right: 10px; vertical-align: 2px; }
+@media (max-width: 640px) { .plate .gloss { display: none; } }
+</style></head><body><main>
+<nav class="top"><a href="index.html">Overview</a><a href="anatomy.html">Anatomy</a><a href="nervous.html" class="here">Nervous system</a><a href="core.html">Core</a><a href="learning.html">Learning</a><a href="mind.html">Mind</a><a href="extension.html">Skills</a></nav>
+<h1>The nervous system</h1>
+<p class="lead">Four parts, three ways of talking, and one rule that explains the shape of all of it: the part that owns a thing is the only part that touches it. The core owns the state, the brain owns the GPU, and the mind owns nothing at all.</p>
+
+<svg viewBox="0 0 1000 470" class="plate" role="img" aria-label="Groow's nervous system: the socket between the core and the mind, the loopback to the brain, and the files nobody sends over a wire">
+  <!-- organs -->
+  <rect class="organ root" x="380" y="150" width="240" height="90" rx="10"/>
+  <text class="ttl" x="500" y="185" text-anchor="middle">core</text>
+  <text class="gloss" x="500" y="207" text-anchor="middle">rust · root · owns the state</text>
+  <text class="tiny" x="500" y="227" text-anchor="middle">decides what happens next</text>
+
+  <rect class="organ" x="60" y="150" width="210" height="90" rx="10"/>
+  <text class="ttl" x="165" y="185" text-anchor="middle">the mind</text>
+  <text class="gloss" x="165" y="207" text-anchor="middle">rust · one process per turn</text>
+  <text class="tiny" x="165" y="227" text-anchor="middle">holds nothing</text>
+
+  <rect class="organ" x="730" y="150" width="210" height="90" rx="10"/>
+  <text class="ttl" x="835" y="185" text-anchor="middle">the brain</text>
+  <text class="gloss" x="835" y="207" text-anchor="middle">python · owns the GPU</text>
+  <text class="tiny" x="835" y="227" text-anchor="middle">generate · train · merge</text>
+
+  <rect class="organ" x="380" y="30" width="240" height="70" rx="10"/>
+  <text class="ttl" x="500" y="60" text-anchor="middle">a window</text>
+  <text class="gloss" x="500" y="82" text-anchor="middle">groow ui · a person watching</text>
+
+  <rect class="organ" x="730" y="310" width="210" height="70" rx="10"/>
+  <text class="ttl" x="835" y="340" text-anchor="middle">the passes</text>
+  <text class="gloss" x="835" y="362" text-anchor="middle">limbic · hippocampus</text>
+
+  <rect class="organ" x="60" y="310" width="560" height="70" rx="10"/>
+  <text class="ttl" x="140" y="340" text-anchor="middle">the state</text>
+  <text class="gloss" x="420" y="340" text-anchor="middle">journal · queue · questions · alarms · samples · statistics</text>
+  <text class="tiny" x="420" y="362" text-anchor="middle">root writes · the mind reads · nothing is sent over a wire</text>
+
+  <!-- nerves -->
+  <path class="nerve socket" d="M270 195 H380"/>
+  <text class="num" x="325" y="185" text-anchor="middle">I</text>
+  <path class="nerve socket" d="M500 100 V150"/>
+  <text class="num" x="515" y="128">I</text>
+  <path class="nerve http" d="M620 195 H730"/>
+  <text class="num" x="675" y="185" text-anchor="middle">II</text>
+  <path class="nerve http" d="M835 310 V240"/>
+  <text class="num" x="850" y="278">II</text>
+  <path class="nerve files" d="M500 240 V310"/>
+  <text class="num" x="515" y="278">III</text>
+  <path class="nerve files" d="M730 345 H620"/>
+  <text class="num" x="675" y="335" text-anchor="middle">III</text>
+  <path class="nerve files" d="M165 240 V310"/>
+  <text class="num" x="180" y="278">III</text>
+
+  <circle class="pin" cx="270" cy="195" r="4"/>
+  <circle class="pin" cx="380" cy="195" r="4"/>
+  <circle class="pin" cx="620" cy="195" r="4"/>
+  <circle class="pin" cx="730" cy="195" r="4"/>
+</svg>
+
+<h2><span class="roman">I</span>The socket</h2>
+<p>A Unix socket in the state directory, carrying newline-delimited JSON frames. Everything
+between the core and anything that is not the brain goes down it: the mind claiming its turn,
+the messages it writes, the events it sends up, and a window watching all of it.</p>
+<p>It is one connection per process and it carries every kind of traffic at once, which buys
+three things. The core learns the instant a turn process dies, because the socket closes.
+It can cancel a turn by closing its own end. And a turn that is generating can still be told
+something, because a request in flight does not occupy the connection.</p>
+<p>Authority comes from the kernel here, not from the conversation. The socket carries the
+peer's real user id, so the core knows whether it is talking to its owner, to the mind, or to a
+window before it has read a byte. Nothing a caller says about itself is used to grant anything.</p>
+<pre><code>{"f":"req", "id":7, "op":"turn.claim", "arg":{}}
+{"f":"rep", "id":7, "ok":{"turn":"01J…","window":[…]}}
+{"f":"ev",  "name":"tool_call", "t":1789.5, "data":{"name":"shell"}}
+{"f":"push","name":"turn_end", "data":{…}}</code></pre>
+
+<h2><span class="roman">II</span>The loopback</h2>
+<p>HTTP on a loopback port, answering in newline-delimited JSON so a long piece of work is not
+silence. Three endpoints, and they are all the same kind of request: generate, train,
+consolidate. They go into one queue served by one worker, because there is one GPU.</p>
+<p><b>The mind never reaches the brain itself.</b> It asks the core to generate, and the core
+relays. That indirection is not ceremony: it is why the core can stream the tokens to a window
+while they arrive, count what the turn cost, and refuse a turn that is no longer current. The
+mind has no address for the brain at all.</p>
+<p>The exception is a skill playing in the background, which does call the brain directly, at
+the lowest priority. A game is not a turn and must never come before a person.</p>
+<pre><code>POST /generate    {"messages":[…], "tools":[…], "priority":0}
+POST /train       {"max_samples":8}
+POST /consolidate {}
+GET  /health      {"busy":true, "doing":"train", "waiting":2}</code></pre>
+
+<h2><span class="roman">III</span>The files</h2>
+<p>The largest things never travel. The conversation, the queue of what is waiting, the
+questions, the alarms and the training samples are files, and the parts that need them open
+them. The hippocampus appends samples and the brain reads them from a cursor; neither sends the
+other a dataset.</p>
+<p>This is what makes the privilege split possible. Root owns those files and the mind can read
+them and not write them, which is a stronger statement than any protocol could make: there is
+no message it could send that would edit its own history, because editing is not something that
+happens by message.</p>
+
+<h2>What travels which way</h2>
+<table>
+<tr><th>From</th><th>To</th><th>Along</th><th>Carrying</th></tr>
+<tr><td>core</td><td>mind</td><td>socket</td><td>the turn: what came in, the window, the prompt, the budget</td></tr>
+<tr><td>mind</td><td>core</td><td>socket</td><td>messages to record, tool results, events, a request to generate</td></tr>
+<tr><td>core</td><td>brain</td><td>loopback</td><td>a generation, relayed on the mind's behalf</td></tr>
+<tr><td>core</td><td>window</td><td>socket</td><td>every event, fanned out and dropped rather than made to wait</td></tr>
+<tr><td>passes</td><td>brain</td><td>loopback</td><td>train, consolidate</td></tr>
+<tr><td>passes</td><td>state</td><td>files</td><td>what each turn felt like, and what is worth practising</td></tr>
+</table>
+
+<h2>The reflexes</h2>
+<p>Some things happen without the mind being involved at all, which is the point of putting them
+in the core rather than in a tool. An alarm comes due and becomes a signal. A question nobody
+answered expires and is charged for. A turn whose process died is released and its message put
+back. A turn that keeps failing is waited out and eventually set down with a line in the
+conversation. None of these are decisions the mind makes, and none of them can be refused by it.</p>
+
+<h2>Why it is not one process</h2>
+<p>It could be, and it would be simpler. Three things keep it apart:</p>
+<ul>
+<li>The mind runs as a different user from the core, which is the only reason it cannot write its
+own history. That needs a process boundary.</li>
+<li>A turn that goes wrong should take down a turn, not the creature. A process that holds
+nothing can be killed and restarted with no state to repair.</li>
+<li>The GPU can hold one copy of the weights, so everything that touches them lives in one
+process. Training in a second one was tried, and it ran the GPU out of memory while the first
+went on answering.</li>
+</ul>
+<p>What that costs is this page: three ways of talking instead of one. It seems a fair trade for
+a mind that cannot rewrite what it said.</p>
+</main></body></html>

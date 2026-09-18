@@ -16,6 +16,8 @@
 
 pub mod frame;
 pub mod ops;
+pub mod pb;
+pub mod spec;
 pub mod turn;
 pub mod event;
 

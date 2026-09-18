@@ -1,0 +1,87 @@
+// The socket: between the core and everything that is not the brain.
+//
+// One message per line, encoded as canonical protobuf JSON, which both sides produce
+// identically. The encoding is readable on purpose: a person can watch the traffic with
+// `nc` and read the conversation on disk with `cat`.
+syntax = "proto3";
+package groow.wire;
+
+import "google/protobuf/struct.proto";
+
+// Everything that can appear on the socket. Exactly one field is set.
+//
+// An unknown or absent variant is a parse error rather than a guess: a frame that is silently
+// misread is a lost reply and a waiter that never wakes.
+message Frame {
+  oneof of {
+    Request req = 1;    // a request, answered exactly once
+    Part part = 2;      // a piece of an answer still in flight
+    Reply rep = 3;      // the answer
+    Failure err = 4;    // the refusal
+    Event ev = 5;       // something happened; nobody replies to it
+    Push push = 6;      // the core telling a peer something it did not ask for
+  }
+}
+
+// `id` is chosen by the caller and unique within its connection. Exactly one Reply or Failure
+// closes it; any number of Parts may precede them.
+message Request {
+  uint32 id = 1;
+  string op = 2;
+  google.protobuf.Struct arg = 3;
+}
+
+message Part {
+  uint32 id = 1;
+  google.protobuf.Struct data = 2;
+}
+
+message Reply {
+  uint32 id = 1;
+  google.protobuf.Value ok = 2;
+}
+
+message Failure {
+  uint32 id = 1;
+  Code code = 2;
+  string msg = 3;        // for a person reading a log; the code is what a program reads
+}
+
+// Stable. A caller may act on these; it must not parse `msg`.
+// Values carry the enum's name because protobuf enum values are siblings within a package,
+// not children of their type.
+enum Code {
+  CODE_UNSPECIFIED = 0;
+  CODE_UNKNOWN_OP = 1;
+  CODE_BAD_ARG = 2;
+  CODE_DENIED = 3;
+  CODE_STALE_EPOCH = 4;    // the turn it belongs to is over
+  CODE_NOT_FOUND = 5;
+  CODE_IDLE = 6;           // there is nothing to do
+  CODE_BUSY = 7;
+  CODE_CANCELLED = 8;
+  CODE_INTERNAL = 9;
+}
+
+message Event {
+  string name = 1;       // see EventName
+  double t = 2;          // seconds since the epoch, rounded to the microsecond
+  google.protobuf.Struct data = 3;
+}
+
+message Push {
+  string name = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// Who is on the other end, decided from the peer's credentials on the socket. Nothing a
+// caller says about itself is used.
+//
+// These are not a ladder. A viewer may speak and watch and must never be able to claim a
+// turn, whatever order they are written in.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_AGENT = 1;        // the mind
+  ROLE_VIEWER = 2;       // a window
+  ROLE_MENTOR = 3;       // the owner
+}

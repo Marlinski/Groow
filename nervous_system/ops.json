@@ -1,0 +1,119 @@
+{
+  "_": "Generated from the code. `cargo test -p groow-proto` fails if this file and the code disagree; the failure prints what it should say.",
+  "ops": {
+    "ask": [
+      "agent",
+      "mentor"
+    ],
+    "command": [
+      "mentor",
+      "viewer"
+    ],
+    "complete": [
+      "agent",
+      "mentor"
+    ],
+    "consolidate": [
+      "mentor"
+    ],
+    "hello": [
+      "agent",
+      "mentor",
+      "viewer"
+    ],
+    "inbox": [
+      "agent",
+      "mentor",
+      "viewer"
+    ],
+    "quit": [
+      "mentor"
+    ],
+    "recall": [
+      "agent",
+      "mentor",
+      "viewer"
+    ],
+    "say": [
+      "mentor",
+      "viewer"
+    ],
+    "schedule": [
+      "agent",
+      "mentor"
+    ],
+    "status": [
+      "agent",
+      "mentor",
+      "viewer"
+    ],
+    "think": [
+      "agent",
+      "mentor"
+    ],
+    "thought": [
+      "agent",
+      "mentor"
+    ],
+    "thought.append": [
+      "agent",
+      "mentor"
+    ],
+    "thought.claim": [
+      "agent",
+      "mentor"
+    ],
+    "thought.end": [
+      "agent",
+      "mentor"
+    ],
+    "train": [
+      "mentor"
+    ],
+    "turn.append": [
+      "agent",
+      "mentor"
+    ],
+    "turn.claim": [
+      "agent",
+      "mentor"
+    ],
+    "turn.end": [
+      "agent",
+      "mentor"
+    ],
+    "watch": [
+      "mentor",
+      "viewer"
+    ]
+  },
+  "events": [
+    "turn_start",
+    "turn_end",
+    "message",
+    "token",
+    "tool_call",
+    "tool_result",
+    "thought",
+    "feeling",
+    "learned",
+    "question",
+    "log",
+    "status"
+  ],
+  "droppable_events": [
+    "token",
+    "log"
+  ],
+  "error_codes": [
+    "unknown_op",
+    "bad_arg",
+    "denied",
+    "stale_epoch",
+    "not_found",
+    "idle",
+    "busy",
+    "cancelled",
+    "internal"
+  ]
+}

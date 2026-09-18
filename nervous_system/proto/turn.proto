@@ -1,0 +1,63 @@
+// The turn contract: what a process running a turn is given, and what it reports back.
+syntax = "proto3";
+package groow.wire;
+
+import "google/protobuf/struct.proto";
+
+// One message in a conversation, as it is journalled and as it is sent to the model.
+message Message {
+  string role = 1;                              // user, assistant, tool, system
+  optional string content = 2;
+  optional google.protobuf.ListValue tool_calls = 3;   // on an assistant message that called tools
+  optional string name = 4;                     // on a tool result: which tool
+  optional google.protobuf.Struct args = 5;
+  optional string kind = 6;                     // on an incoming message: which signal it was
+  optional string turn = 7;                     // which turn it belongs to
+  optional double ts = 8;                       // when it was written
+}
+
+// A tool as the model sees it.
+message ToolSchema {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct parameters = 3;
+}
+
+// What woke the mind. Only USER and COMMAND reach it unframed; the rest are wrapped in a
+// sentence saying what happened.
+enum SignalKind {
+  SIGNAL_UNSPECIFIED = 0;
+  SIGNAL_USER = 1;
+  SIGNAL_COMMAND = 2;
+  SIGNAL_FOCUS = 3;          // an inner thought calling back
+  SIGNAL_THOUGHT_DONE = 4;
+  SIGNAL_REMINDER = 5;
+  SIGNAL_ALARM = 6;
+  SIGNAL_NOTE = 7;           // something it left for itself
+  SIGNAL_EXPIRED = 8;        // a question nobody answered
+  SIGNAL_IDLE = 9;
+}
+
+// Everything a turn needs, handed over in one reply, so the process that runs it holds
+// nothing of its own.
+message TurnContext {
+  string turn = 1;
+  uint64 epoch = 2;       // bumped whenever a turn ends; a stale write is refused
+  SignalKind kind = 3;
+  string text = 4;        // what arrived, unframed
+  string framed = 5;      // what the mind actually reads
+  string system = 6;      // the identity prompt in force
+  repeated Message window = 7;
+  uint32 max_rounds = 8;
+  google.protobuf.Struct meta = 9;
+}
+
+// How a turn ended. The flags are the free signals the limbic system reads.
+message TurnOutcome {
+  string turn = 1;
+  uint64 epoch = 2;
+  string final_text = 3;
+  repeated string flags = 4;
+  uint32 tools_used = 5;
+  double seconds = 6;
+}

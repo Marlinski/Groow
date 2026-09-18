@@ -1,0 +1,83 @@
+// The loopback: between anything that needs the GPU and the one process that owns it.
+//
+// Three kinds of work, one queue, one worker, because there is one GPU. Lower priority goes
+// first, and training sits at the back, so anything already waiting to be answered is answered
+// before the brain sits down to learn.
+syntax = "proto3";
+package groow.brain;
+
+import "turn.proto";
+
+message GenRequest {
+  repeated groow.wire.Message messages = 1;
+  repeated groow.wire.ToolSchema tools = 2;
+  uint32 max_new_tokens = 3;
+  double temperature = 4;
+  double top_p = 5;
+  uint32 top_k = 6;
+  bool enable_thinking = 7;
+  uint32 priority = 8;       // 0 a conscious turn, 2 a thought, 4 a game, 8 learning
+  string turn = 9;           // for the events, so a watcher knows what it is seeing
+  bool stream = 10;
+}
+
+// Zero or more deltas, then exactly one terminal chunk. The deltas exist so a person can watch
+// the answer appear; `text` is what is authoritative, so a dropped delta cannot corrupt what
+// gets journalled.
+message GenChunk {
+  oneof of {
+    string delta = 1;
+    Generated done = 2;
+    string error = 3;
+  }
+}
+
+message Generated {
+  string text = 1;
+  uint32 tokens = 2;
+  double seconds = 3;
+}
+
+message TrainRequest {
+  uint32 max_samples = 1;
+  bool urgent_only = 2;
+}
+
+// What a learning pass says while it works, and what it says at the end.
+message TrainChunk {
+  oneof of {
+    string progress = 1;
+    TrainReport done = 2;
+    string error = 3;
+  }
+}
+
+message TrainReport {
+  uint32 consumed = 1;
+  uint32 sft_steps = 2;
+  uint32 pg_steps = 3;
+  optional double last_loss = 4;
+  double seconds = 5;
+  map<string, uint32> sets = 6;
+  repeated SkippedGroup skipped_groups = 7;
+}
+
+// A group whose samples all scored the same has nothing to prefer: the advantages would be
+// zero and the step would change nothing. It is reported rather than silently run.
+message SkippedGroup {
+  string group = 1;
+  uint32 decisions = 2;
+  double reward = 3;
+  string why = 4;
+}
+
+message Health {
+  bool ok = 1;
+  string model = 2;
+  bool busy = 3;
+  string doing = 4;          // generate, train, consolidate, or empty
+  uint32 waiting = 5;
+  uint32 generated = 6;
+  uint32 trained = 7;
+  optional uint32 steps = 8;
+}
