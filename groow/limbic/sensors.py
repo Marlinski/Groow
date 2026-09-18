@@ -4,6 +4,7 @@ These are Groow's nociception. They are unambiguous, free, and they dominate the
 judge wherever they fire: a command that exits non-zero hurt, whatever anyone thinks.
 
     tool_error     a command failed, a tool raised            pain
+    truncated      the answer was cut off mid-thought         pain (small)
     timeout        a call did not come back in time           pain
     repeat         the same call made twice in one turn       pain (frustration)
     exhausted      the turn ran out of rounds without an answer   pain
@@ -22,10 +23,24 @@ WEIGHTS = {
     "timeout": -0.7,
     "repeat": -0.6,
     "exhausted": -0.8,
+    "truncated": -0.3,
     "recovered": 0.6,
     "completed": 0.15,
     "restated": -0.8,
 }
+
+
+def from_flags(flags: list[str]) -> dict[str, int]:
+    """The flags a turn reported, counted.
+
+    The harness names each signal once per occurrence; the weights are applied per signal with
+    each repeat counting for less, so what matters here is how many times each one fired.
+    """
+    counted: dict[str, int] = {}
+    for f in flags:
+        if f in WEIGHTS:
+            counted[f] = counted.get(f, 0) + 1
+    return counted
 
 
 def is_error(tool_result: str) -> bool:

@@ -178,12 +178,14 @@ outcome(command, result)             -> p(useful)  − p(failed)</code></pre>
   ui/           the window, the creature and the card
   cli/          the groow command, in its two lives
 groow/
-  serve.py      the brain: one streamed generation at a time, ordered by priority
-  learn.py      feel, harvest, train, night; the mind never calls these
+  serve.py      the brain: generation, training and consolidation, one queue, one GPU
+  learn.py      the conductor: feel, harvest, train, consolidate; the mind never calls these
+  limbic/       sensors.py (free signals), judge.py (frozen), feel.py (the pass), calibrate.py
+  hippocampus.py  what was felt becomes something to practise
+  stats.py      the core's statistics, readable only from the root side
   brain/        model.py (the weights), chatfmt.py (loss masks)
-  limbic/       sensors.py (free signals), judge.py (the frozen judge)
   learning/     trainer.py (the only gradients), trainingset.py, sleep.py, learner.py
-  memory/       journal.py, episodic.py
+  memory/       journal.py, day.py (the conversation as whole turns), episodic.py
 skills/         the commands it starts with; any executable
 state/          base/ plastic/ main/ mailbox/ training/ log/ thoughts/ recipes/ groow.db …</code></pre>
 <footer>Groow · docs · anatomy</footer>
