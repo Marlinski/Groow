@@ -90,6 +90,7 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
     }
 
     let schemas = tools::schemas(settings.surface);
+    let tool_names = tools::names(settings.surface);
     let mut seen_calls: Vec<String> = Vec::new();
     let mut last_call_failed = false;
     let mut final_text = String::new();
@@ -112,7 +113,7 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
             )
             .await?;
         let raw = generated.get("text").and_then(|v| v.as_str()).unwrap_or("");
-        let p = parse::parse(raw);
+        let p = parse::parse_with_tools(raw, &tool_names);
         if p.truncated {
             flags.truncated += 1;
         }
@@ -550,6 +551,21 @@ mod tests {
         let result = l.appended.iter().find(|m| m.name.as_deref() == Some("ask")).unwrap();
         assert!(result.text().contains("of 5 questions"), "the cost was not shown: {}", result.text());
         assert!(result.text().contains("expires"));
+    }
+
+    #[tokio::test]
+    async fn a_call_the_model_wrote_without_tags_still_runs() {
+        let (out, log, _d) = run(
+            vec![
+                "{\"name\": \"shell\", \"arguments\": {\"command\": \"echo untagged\"}}".into(),
+                "It said untagged.".into(),
+            ],
+            10,
+        )
+        .await;
+        assert_eq!(out.tools_used, 1, "the call was read as prose instead of run");
+        let l = log.lock().unwrap();
+        assert!(l.appended.iter().any(|m| m.text().contains("untagged")));
     }
 
     #[tokio::test]

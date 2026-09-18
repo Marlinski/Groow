@@ -24,11 +24,7 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         Self::prepare(&conn)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-        }
+        keep_private(path);
         Ok(Db { conn })
     }
 
@@ -37,6 +33,11 @@ impl Db {
         let conn = Connection::open_in_memory()?;
         Self::prepare(&conn)?;
         Ok(Db { conn })
+    }
+
+    /// The path of the database, so its permissions can be reasserted after a checkpoint.
+    pub fn keep_private(path: &Path) {
+        keep_private(path)
     }
 
     fn prepare(conn: &Connection) -> anyhow::Result<()> {
@@ -261,6 +262,31 @@ impl Db {
     }
 }
 
+/// Make the database unreadable to anyone but its owner.
+///
+/// Write-ahead logging means there are three files, not one, and the two extra ones are
+/// created by SQLite with the default permissions. Locking only the main file would leave
+/// everything recent in a file the mind can read, which is precisely the part that matters.
+fn keep_private(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let p = if suffix.is_empty() {
+                path.to_path_buf()
+            } else {
+                let mut name = path.as_os_str().to_os_string();
+                name.push(suffix);
+                std::path::PathBuf::from(name)
+            };
+            if p.exists() {
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+    let _ = path;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,15 +424,25 @@ mod tests {
     }
 
     #[test]
-    fn the_database_file_is_private_to_the_core() {
+    fn every_database_file_is_private_to_the_core() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("groow.db");
-        let _db = Db::open(&p).unwrap();
+        let db = Db::open(&p).unwrap();
+        // Force the write-ahead files into existence, which is where the recent scores live.
+        db.bump("turns", 1.0).unwrap();
+        db.felt("t1", 1.0, 0.0, None, -0.5).unwrap();
+        Db::keep_private(&p);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o077;
-            assert_eq!(mode, 0, "the mind must not be able to read how it is scored");
+            for suffix in ["", "-wal", "-shm"] {
+                let f = std::path::PathBuf::from(format!("{}{suffix}", p.display()));
+                if !f.exists() {
+                    continue;
+                }
+                let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o077;
+                assert_eq!(mode, 0, "{} can be read by the mind", f.display());
+            }
         }
     }
 }

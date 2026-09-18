@@ -143,11 +143,9 @@ pub fn lock_state(state: &Path, agent_uid: Option<u32>) -> std::io::Result<bool>
             set(&p, 0o755)?;
         }
     }
-    // How it is being scored is not its business.
-    let db = state.join("groow.db");
-    if db.exists() {
-        set(&db, 0o600)?;
-    }
+    // How it is being scored is not its business, and that includes the write-ahead files,
+    // which hold everything recent.
+    crate::db::Db::keep_private(&state.join("groow.db"));
     return Ok(true);
 
     fn set(p: &Path, mode: u32) -> std::io::Result<()> {
