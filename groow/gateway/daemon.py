@@ -38,7 +38,7 @@ class Daemon:
         self.urlfile = Path(cfg.state) / "groow.url"
         self.pidfile = Path(cfg.state) / "groow.pid"
         self.subscribers: set[asyncio.Queue] = set()
-        self.history: collections.deque = collections.deque(maxlen=300)
+        self.history: collections.deque = collections.deque(maxlen=600)   # text deltas are coalesced per turn
         self.waiters: dict[str, asyncio.Future] = {}        # /ask correlation id -> future(turn_end event)
         self.req_events: dict[str, list] = {}
         self.mood = "idle"
@@ -60,7 +60,14 @@ class Daemon:
 
     def _fanout(self, e: dict) -> None:
         self._update_mood(e)
-        if e["ev"] != "status":
+        if e["ev"] == "text":
+            # keep one coalesced text entry per turn in the history (a copy: live queues hold the original)
+            last = self.history[-1] if self.history else None
+            if last is not None and last["ev"] == "text" and last.get("req") == e.get("req"):
+                last["delta"] += e["delta"]
+            else:
+                self.history.append({**e})
+        elif e["ev"] != "status":
             self.history.append(e)
         req = e.get("req")
         if req in self.req_events:
@@ -100,7 +107,10 @@ class Daemon:
         b = a.brain.meta
         if self.mood == "listening" and self.mind and time.time() - self.mind.last_human > 60 and not a.thoughts.running():
             self.mood = "idle"
-        return {"mood": self.mood, "steps": b["steps"], "nights": b["consolidations"], "rank": b["rank"],
+        return {"mood": self.mood, "body": os.environ.get("GROOW_BODY", "host"),
+                "home": str(Path(self.cfg.home_dir).expanduser() if self.cfg.home_dir else Path.home()),
+                "state": str(Path(self.cfg.state).resolve()),
+                "steps": b["steps"], "nights": b["consolidations"], "rank": b["rank"],
                 "tokens_seen": b.get("tokens_seen", 0), "age": a.birth.age_text(), "safe_mode": self.safe_mode,
                 "learning": a.learning_enabled, "thoughts": a.thoughts.listing(False),
                 "thoughts_running": len(a.thoughts.running()), "queue": len(a.queue),
@@ -196,7 +206,7 @@ class Daemon:
     async def h_ws(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
-        replay = int(request.query.get("replay", "120"))
+        replay = int(request.query.get("replay", "200"))
         q: asyncio.Queue = asyncio.Queue()
         self.subscribers.add(q)
 

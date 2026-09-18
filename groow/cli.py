@@ -448,7 +448,11 @@ def cmd_status(cfg: Config, args) -> None:
         console.print(f"[dim]no daemon at {_url(cfg)} ({type(e).__name__}); start one with `groow start`[/dim]")
         return
     b, s = h["birth"], h["status"]
+    body = s.get("body", "host")
+    where = f"[green]sandbox[/green] (body: read-only image, home {s.get('home')})" if body == "sandbox" \
+        else f"[yellow]host, no sandbox[/yellow] (running as you, shell in {s.get('home')}, state {s.get('state')})"
     console.print(Panel.fit(f"[bold]{b['name']}[/bold] · id {b['id']} · born {b['born_text']} · age {b['age']}\n"
+                            f"{where}\n"
                             f"lineage {b['lineage']} · {b['hardware']} · {_url(cfg)}\n"
                             f"mood {s['mood']} · steps {s['steps']} · nights {s['nights']} · rank {s['rank']} · "
                             f"thoughts running {s['thoughts_running']} · skills {s['skills']} · clients {s['clients']}"

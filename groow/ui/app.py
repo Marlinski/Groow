@@ -85,6 +85,8 @@ class IdCard(Static):
         t.append("age      ", style=DIM); t.append(f"{age}\n", style=AMBER)
         t.append("lineage  ", style=DIM); t.append(f"{b['lineage'].split('/')[-1]}\n")
         t.append("body     ", style=DIM); t.append(f"{b['hardware']}\n")
+        mode = s.get("body", "?") if s else "?"
+        t.append("mode     ", style=DIM); t.append(f"{mode}\n", style=(MINT if mode == "sandbox" else ROSE))
         t.append("mentor   ", style=DIM); t.append(f"{b['mentor']}\n")
         t.append("self     ", style=DIM); t.append(f"identity v{self.identity_version}\n")
         if s:
@@ -179,7 +181,7 @@ class GroowUI(App):
                 yield IdCard(id="card")
                 yield Static(" inner thoughts", id="thoughts-title")
                 yield Thoughts(id="thoughts")
-        yield Input(placeholder="talk to groow · /help for commands · ctrl+q to leave", id="input")
+        yield Input(placeholder="talk to groow · /help for commands · ctrl+q or /quit closes this UI only (groow stays awake)", id="input")
         yield StatusBar(id="status")
 
     async def on_mount(self) -> None:
@@ -192,7 +194,7 @@ class GroowUI(App):
         while True:
             self.client = Client(self.base_url)
             try:
-                async for ev in self.client.ws_events(replay=120):
+                async for ev in self.client.ws_events(replay=200):
                     self.handle(ev)
                 chat.add("ui", "daemon went away; reconnecting…", "sys")
             except Exception as e:
@@ -234,9 +236,7 @@ class GroowUI(App):
             self.current_text = ""
             creature.mood = "thinking"
         elif k == "text":
-            if replay:
-                return
-            self.current_text += ev["delta"]
+            self.current_text += ev["delta"]          # replayed text is coalesced per turn, so it is safe to show
             shown = visible(self.current_text)
             if not shown:
                 creature.mood = "thinking"
@@ -245,7 +245,8 @@ class GroowUI(App):
                 self.current = chat.add("groow", "", "groow")
             self.current.update(Text(shown))
             chat.scroll_end(animate=False)
-            creature.mood = "speaking"
+            if not replay:
+                creature.mood = "speaking"
         elif k == "turn_end":
             final = visible(ev.get("final") or "")
             if self.current is None and final:
@@ -286,8 +287,8 @@ class GroowUI(App):
         msg.input.value = ""
         if not text:
             return
-        if text in ("/quit", "/exit"):
-            self.exit()
+        if text in ("/quit", "/exit", "/detach"):
+            self.exit(message="UI closed. Groow is still awake; `groow ui` reconnects, `groow stop` puts it to sleep.")
             return
         if self.client is None:
             self.query_one(ChatLog).add("ui", "not connected", "sys")
