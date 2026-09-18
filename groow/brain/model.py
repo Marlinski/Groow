@@ -159,23 +159,32 @@ class Brain:
     @torch.no_grad()
     def generate(self, messages: Messages, tools=None, on_text: Callable[[str], None] | None = None,
                  max_new_tokens: int | None = None, enable_thinking: bool | None = None,
-                 temperature: float | None = None, should_stop: Callable[[], bool] | None = None) -> str:
-        """Generate one assistant turn directly (single-threaded use). Multi-threaded
-        callers go through brain.server.ServedBrain instead."""
+                 temperature: float | None = None, top_p: float | None = None,
+                 top_k: int | None = None, should_stop: Callable[[], bool] | None = None) -> str:
+        """Generate one assistant turn.
+
+        Sampling is per request rather than per configuration: a conversation and a drill want
+        different temperatures, and the caller is the one that knows which this is.
+        """
         text = self.prompt_text(messages, tools, enable_thinking)
         temp = self.cfg.temperature if temperature is None else temperature
         with self._lock:
-            return self._generate_text(text, max_new_tokens or self.cfg.max_new_tokens, temp, on_text, should_stop)
+            return self._generate_text(text, max_new_tokens or self.cfg.max_new_tokens, temp, on_text,
+                                       should_stop, top_p, top_k)
 
     def _generate_text(self, prompt: str, max_new_tokens: int, temperature: float,
-                       on_text: Callable[[str], None] | None, should_stop: Callable[[], bool] | None) -> str:
+                       on_text: Callable[[str], None] | None, should_stop: Callable[[], bool] | None,
+                       top_p: float | None = None, top_k: int | None = None) -> str:
         """Caller holds self._lock. Raises Interrupted if should_stop fires."""
         self.model.eval()
         enc = self.tok(prompt, return_tensors="pt", add_special_tokens=False).to(self.device)
         streamer = _CallbackStreamer(self.tok, on_text) if on_text else None
         flag = _InterruptCriteria(should_stop) if should_stop else None
         out = self.model.generate(
-            **enc, max_new_tokens=max_new_tokens, **_sampling(temperature, self.cfg.top_p, self.cfg.top_k),
+            **enc, max_new_tokens=max_new_tokens,
+            **_sampling(temperature,
+                        self.cfg.top_p if top_p is None else top_p,
+                        self.cfg.top_k if top_k is None else top_k),
             streamer=streamer, pad_token_id=self.tok.pad_token_id, use_cache=True,
             stopping_criteria=StoppingCriteriaList([flag]) if flag else None)
         if flag is not None and flag.fired:

@@ -98,15 +98,21 @@ impl Core {
                 Duty::Idle(secs) => {
                     tokio::time::sleep(std::time::Duration::from_secs_f64(secs.clamp(0.05, 30.0))).await;
                 }
-                Duty::Turn(_) => {
+                Duty::Turn(_, id) => {
                     // The hub has already opened the turn; the process claims it over the
-                    // socket. If it cannot even be started, the turn is released at once
-                    // rather than being left open forever.
+                    // socket. Whatever happens to that process, the turn must not be left
+                    // open: a process that dies before it ever connects closes no connection,
+                    // so the core would otherwise wait for it forever.
                     match self.spawner.turn() {
-                        Ok(child) => self.watch(child, "turn", None).await,
+                        Ok(child) => {
+                            self.watch(child, "turn", None).await;
+                            // A no-op when the turn already closed itself out properly.
+                            self.hub.abandon(&id, "its process exited without finishing the turn").await;
+                        }
                         Err(e) => {
                             tracing::error!("could not start a turn: {e}");
                             self.hub.emit(Event::log("error", format!("could not start a turn: {e}"))).await;
+                            self.hub.abandon(&id, &format!("its process could not be started: {e}")).await;
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         }
                     }
@@ -132,9 +138,15 @@ impl Core {
                     }
                 }
                 Duty::Thought(id) => match self.spawner.thought(&id) {
-                    Ok(child) => self.watch(child, "thought", Some(id)).await,
+                    Ok(child) => {
+                        let ok = self.watch(child, "thought", Some(id.clone())).await;
+                        if !ok {
+                            self.hub.thought_failed(&id, "its process ended badly").await;
+                        }
+                    }
                     Err(e) => {
                         tracing::error!("could not start a thought: {e}");
+                        self.hub.thought_failed(&id, "its process could not be started").await;
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
                 },
@@ -146,7 +158,8 @@ impl Core {
     ///
     /// A turn that never ends is worse than a turn that fails: nothing else can run. The
     /// timeout kills it, and the connection closing tells the hub to release the turn.
-    async fn watch(&self, mut child: tokio::process::Child, what: &str, id: Option<String>) {
+    /// Returns whether the process ended cleanly.
+    async fn watch(&self, mut child: tokio::process::Child, what: &str, id: Option<String>) -> bool {
         let limit = if what == "turn" { self.cfg.turn_timeout } else { self.cfg.thought_timeout };
         let pid = child.id().unwrap_or(0);
         let stderr = child.stderr.take();
@@ -157,7 +170,7 @@ impl Core {
         ).await;
 
         match waited {
-            Ok(Ok(status)) if status.success() => {}
+            Ok(Ok(status)) if status.success() => return true,
             Ok(Ok(status)) => {
                 let why = drain(stderr).await;
                 tracing::warn!(pid, %what, "exited with {status}: {why}");
@@ -175,6 +188,7 @@ impl Core {
                 self.hub.emit(Event::log("error", format!("a {what} ran past its time limit and was stopped"))).await;
             }
         }
+        false
     }
 }
 
@@ -274,6 +288,32 @@ mod tests {
         let text = ev.data["text"].as_str().unwrap_or("");
         assert!(text.contains("exited badly"), "unhelpful: {text}");
         assert!(text.contains("usual place"), "the reason was lost: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_turn_whose_process_never_connects_is_still_released() {
+        let d = tempfile::tempdir().unwrap();
+        // A binary that exits at once without ever opening the socket.
+        let core = core_for(&d, "/bin/false");
+        core.hub.say("hello", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
+        let duty = core.hub.next_duty().await.unwrap();
+        let id = match duty {
+            crate::hub::Duty::Turn(_, id) => id,
+            other => panic!("expected a turn: {other:?}"),
+        };
+        assert_eq!(core.hub.status().await.unwrap()["busy"], true);
+
+        let child = tokio::process::Command::new("/bin/false")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        core.watch(child, "turn", None).await;
+        core.hub.abandon(&id, "its process exited without finishing the turn").await;
+
+        assert_eq!(
+            core.hub.status().await.unwrap()["busy"], false,
+            "a process that died before connecting left the core believing a turn was running"
+        );
     }
 
     #[tokio::test]

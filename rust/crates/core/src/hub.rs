@@ -28,7 +28,7 @@ use crate::paths::Paths;
 use crate::store::birth::Birth;
 use crate::store::identity::Identity;
 use crate::store::inbox::{Inbox, QStatus};
-use crate::store::journal::{restore_window, Journal};
+use crate::store::journal::{restore_window_without, Journal};
 use crate::store::mailbox::{Mailbox, Signal};
 use crate::store::schedule::Schedule;
 use crate::store::thoughts::{ThoughtStatus, Thoughts};
@@ -48,8 +48,8 @@ type Answer<T> = oneshot::Sender<Result<T, WireError>>;
 /// means spawning processes and that is slow.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Duty {
-    /// Run one conscious turn for this signal.
-    Turn(Box<Signal>),
+    /// Run one conscious turn for this signal, which the core has already opened under this id.
+    Turn(Box<Signal>, String),
     /// Continue an inner thought in its own process.
     Thought(String),
     /// Run a learning pass. The mind never asks for this and cannot refuse it.
@@ -87,11 +87,17 @@ pub enum Cmd {
     Finish { outcome: Box<TurnOutcome>, reply: Answer<Value> },
     /// The turn process went away without finishing.
     Abandon { turn: String, why: String },
+    /// A thought's process ended without taking a step.
+    ThoughtFailed { id: String, why: String },
 
     Say { text: String, kind: SignalKind, meta: Value, reply: Answer<Value> },
     Ask { question: String, context: String, reply: Answer<Value> },
     Think { goal: String, max_steps: u32, reply: Answer<Value> },
     ThoughtAction { action: String, id: String, text: String, reply: Answer<Value> },
+    /// A thought process taking its next step.
+    ThoughtClaim { id: String, pid: u32, reply: Answer<TurnContext> },
+    ThoughtAppend { id: String, msg: Box<Message>, reply: Answer<Value> },
+    ThoughtEnd { id: String, final_text: String, flags: Vec<String>, reply: Answer<Value> },
     Inbox { action: String, id: String, answer: String, reply: Answer<Value> },
     ScheduleAction { action: String, text: String, when: String, every: String, id: String, by: String, reply: Answer<Value> },
     Recall { n: usize, reply: Answer<Value> },
@@ -151,6 +157,9 @@ impl Handle {
     pub async fn abandon(&self, turn: &str, why: &str) {
         self.tell(Cmd::Abandon { turn: turn.to_string(), why: why.to_string() }).await
     }
+    pub async fn thought_failed(&self, id: &str, why: &str) {
+        self.tell(Cmd::ThoughtFailed { id: id.to_string(), why: why.to_string() }).await
+    }
     pub async fn say(&self, text: &str, kind: SignalKind, meta: Value) -> Result<Value, WireError> {
         let text = text.to_string();
         self.ask(|reply| Cmd::Say { text, kind, meta, reply }).await
@@ -162,6 +171,18 @@ impl Handle {
     pub async fn think(&self, goal: &str, max_steps: u32) -> Result<Value, WireError> {
         let goal = goal.to_string();
         self.ask(|reply| Cmd::Think { goal, max_steps, reply }).await
+    }
+    pub async fn thought_claim(&self, id: &str, pid: u32) -> Result<TurnContext, WireError> {
+        let id = id.to_string();
+        self.ask(|reply| Cmd::ThoughtClaim { id, pid, reply }).await
+    }
+    pub async fn thought_append(&self, id: &str, msg: Message) -> Result<Value, WireError> {
+        let (id, msg) = (id.to_string(), Box::new(msg));
+        self.ask(|reply| Cmd::ThoughtAppend { id, msg, reply }).await
+    }
+    pub async fn thought_end(&self, id: &str, final_text: &str, flags: Vec<String>) -> Result<Value, WireError> {
+        let (id, final_text) = (id.to_string(), final_text.to_string());
+        self.ask(|reply| Cmd::ThoughtEnd { id, final_text, flags, reply }).await
     }
     pub async fn thought(&self, action: &str, id: &str, text: &str) -> Result<Value, WireError> {
         let (action, id, text) = (action.to_string(), id.to_string(), text.to_string());
@@ -326,6 +347,7 @@ impl Hub {
                 send(reply, r);
             }
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
+            Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
             Cmd::Say { text, kind, meta, reply } => {
                 let r = self.say(&text, kind, meta);
                 send(reply, r);
@@ -340,6 +362,18 @@ impl Hub {
             }
             Cmd::ThoughtAction { action, id, text, reply } => {
                 let r = self.thought_action(&action, &id, &text);
+                send(reply, r);
+            }
+            Cmd::ThoughtClaim { id, pid, reply } => {
+                let r = self.thought_claim(&id, pid);
+                send(reply, r);
+            }
+            Cmd::ThoughtAppend { id, msg, reply } => {
+                let r = self.thought_append(&id, *msg);
+                send(reply, r);
+            }
+            Cmd::ThoughtEnd { id, final_text, flags, reply } => {
+                let r = self.thought_end(&id, &final_text, &flags);
                 send(reply, r);
             }
             Cmd::Inbox { action, id, answer, reply } => {
@@ -488,13 +522,11 @@ impl Hub {
                 self.last_human = now;
                 self.idle_streak = 0;
             }
-            self.begin(sig.clone(), now);
-            return Ok(Duty::Turn(Box::new(sig)));
+            let id = self.begin(sig.clone(), now);
+            return Ok(Duty::Turn(Box::new(sig), id));
         }
 
-        if let Some(t) = self.thoughts.live().map_err(io)?.into_iter()
-            .find(|t| t.status == ThoughtStatus::Running && t.pid.is_none())
-        {
+        if let Some(t) = self.thoughts.ready(now).map_err(io)? {
             return Ok(Duty::Thought(t.id));
         }
 
@@ -532,13 +564,13 @@ impl Hub {
     /// What came in is written to the journal here, once, rather than by the process that
     /// handles it. A turn that fails and is retried would otherwise record the same message
     /// again on every attempt.
-    fn begin(&mut self, sig: Signal, now: f64) {
+    fn begin(&mut self, sig: Signal, now: f64) -> String {
         self.epoch = self.epoch.next();
         let id = turn_id(now);
         let mut incoming = Message::user(frame(sig.kind, &sig.text, &sig.meta));
         incoming.kind = Some(sig.kind.as_str().to_string());
         if sig.attempts == 0 {
-            if let Err(e) = self.journal.append_message(&incoming) {
+            if let Err(e) = self.write_record(&incoming, &id) {
                 tracing::error!("could not record what came in: {e}");
             }
         }
@@ -550,15 +582,17 @@ impl Hub {
             "turn": id,
         })));
         self.active = Some(Active {
-            id, epoch: self.epoch, kind: sig.kind, started: now,
+            id: id.clone(), epoch: self.epoch, kind: sig.kind, started: now,
             signal: sig, claimed: false, rounds: 0,
         });
+        id
     }
 
     /// Hand a harness process everything it needs. Called once per turn; a second call is
     /// refused so a stray process cannot steal a turn already in progress.
     fn claim(&mut self, pid: u32) -> Result<TurnContext, WireError> {
-        let window = restore_window(&self.journal, WINDOW).map_err(io)?;
+        let forget = self.db.turns_to_forget().unwrap_or_default();
+        let window = restore_window_without(&self.journal, WINDOW, &forget).map_err(io)?;
         let birth_line = self.birth.line(self.now());
         let system = self.identity
             .system_prompt(&birth_line, self.cfg.identity_in_prompt)
@@ -603,7 +637,7 @@ impl Hub {
                 a.rounds += 1;
             }
         }
-        self.journal.append_message(&m).map_err(io)?;
+        self.write_record(&m, turn).map_err(io)?;
         self.fanout(Event::new(EventName::Message, json!({
             "role": m.role,
             "content": m.content.clone().unwrap_or_default(),
@@ -625,7 +659,7 @@ impl Hub {
         // Seeing what the mind said is the only way a question gets closed by conversation,
         // so the answer is matched here rather than anywhere the mind could reach.
         if a.kind.is_human() {
-            self.close_questions_answered_by(&a.signal.text, now);
+            self.close_questions_answered_by(&a.signal.text, a.started, now);
         }
 
         self.fanout(Event::new(EventName::TurnEnd, json!({
@@ -635,9 +669,25 @@ impl Hub {
         Ok(json!({"ok": true, "seconds": now - a.started}))
     }
 
-    /// A person replying at all is treated as an answer to the oldest open question. The
-    /// judgement of whether it was a good answer belongs to the limbic system, not here.
-    fn close_questions_answered_by(&mut self, text: &str, now: f64) {
+    /// Write one message to the journal, stamped with the turn it belongs to, so that a turn
+    /// which went badly can later be left out of the window.
+    fn write_record(&mut self, m: &Message, turn: &str) -> std::io::Result<()> {
+        let mut v = serde_json::to_value(m).unwrap_or_else(|_| json!({}));
+        if let Some(o) = v.as_object_mut() {
+            o.insert("turn".into(), json!(turn));
+        }
+        self.journal.append(&v)?;
+        Ok(())
+    }
+
+    /// A person replying at all is treated as an answer to the oldest question that was
+    /// already waiting. The judgement of whether it was a good answer belongs to the limbic
+    /// system, not here.
+    ///
+    /// Only questions older than this turn count. A question the mind asked *during* this turn
+    /// cannot have been answered by the message that started it, and closing it would hand the
+    /// mind a reward for a question nobody has read.
+    fn close_questions_answered_by(&mut self, text: &str, turn_started: f64, now: f64) {
         if text.trim().is_empty() {
             return;
         }
@@ -645,6 +695,7 @@ impl Hub {
             Ok(v) => v,
             Err(_) => return,
         };
+        let open: Vec<_> = open.into_iter().filter(|q| q.ts < turn_started).collect();
         if let Some(q) = open.first() {
             if self.inbox.resolve(&q.id, QStatus::Answered, text).unwrap_or(None).is_some() {
                 let _ = self.db.question_resolved(&q.id, now, "answered", QStatus::Answered.reward());
@@ -679,7 +730,9 @@ impl Hub {
                     "I could not answer that: {why}. It has been tried {} times and I am setting it down.",
                     a.signal.attempts + 1
                 ));
-                let _ = self.journal.append_message(&note);
+                // Stamped with the turn that failed, so this apology is never replayed to it
+                // as an example of how to answer.
+                let _ = self.write_record(&note, &a.id);
                 self.fanout(Event::new(EventName::TurnEnd, json!({
                     "turn": a.id, "kind": a.kind.as_str(), "final": note.text(),
                     "tools_used": 0, "seconds": now - a.started, "flags": ["abandoned"],
@@ -780,6 +833,104 @@ impl Hub {
             other => return Err(WireError::BadArg(format!("no such action `{other}`"))),
         };
         Ok(out)
+    }
+
+    /// Hand a thought process its next step.
+    ///
+    /// A thought's context is its own trace, not the conversation: it is working alone, and
+    /// what the person said has nothing to do with it. One process takes one step, which keeps
+    /// every process short and leaves the core in charge of whether there is another.
+    fn thought_claim(&mut self, id: &str, pid: u32) -> Result<TurnContext, WireError> {
+        let t = self.thoughts.get(id).map_err(io)?
+            .ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
+        if t.status != ThoughtStatus::Running {
+            return Err(WireError::BadArg(format!("thought {id} is {}", t.status.as_str())));
+        }
+        if t.steps >= t.max_steps {
+            return Err(WireError::BadArg(format!("thought {id} has used its {} steps", t.max_steps)));
+        }
+        if let Some(other) = t.pid.filter(|p| *p != pid && pid_alive(*p)) {
+            return Err(WireError::Busy(format!("thought {id} is already being run by {other}")));
+        }
+        self.thoughts.patch(id, |t| t.pid = Some(pid)).map_err(io)?;
+
+        let system = t.history.first().map(|m| m.text().to_string()).unwrap_or_default();
+        let window: Vec<Message> = t.history.iter().skip(1).cloned().collect();
+        let framed = if t.steps == 0 {
+            "Begin. Say briefly what you will do, then take the first concrete step with your tools.".to_string()
+        } else {
+            format!(
+                "Step {} of {}. Carry on toward the goal. If you have reached it, call finish with what you found.",
+                t.steps + 1, t.max_steps
+            )
+        };
+        Ok(TurnContext {
+            turn: t.id.clone(),
+            epoch: Epoch(t.steps as u64),
+            kind: SignalKind::Idle,
+            text: t.goal.clone(),
+            framed,
+            system,
+            window,
+            max_rounds: self.cfg.max_tool_rounds,
+            meta: json!({"thought": t.id}),
+        })
+    }
+
+    fn thought_append(&mut self, id: &str, msg: Message) -> Result<Value, WireError> {
+        self.thoughts.patch(id, |t| t.history.push(msg)).map_err(io)?
+            .ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
+        Ok(json!({"ok": true}))
+    }
+
+    /// Close out one step. The thought stops when it has spent its budget, and says so, rather
+    /// than being cut off without a word.
+    fn thought_end(&mut self, id: &str, final_text: &str, flags: &[String]) -> Result<Value, WireError> {
+        let t = self.thoughts.patch(id, |t| {
+            t.steps += 1;
+            t.attempts = 0;
+            t.pid = None;
+            if t.status == ThoughtStatus::Running && t.steps >= t.max_steps {
+                t.status = ThoughtStatus::Done;
+                if t.summary.is_empty() {
+                    t.summary = if final_text.is_empty() {
+                        "it used all its steps without reaching the goal".to_string()
+                    } else {
+                        final_text.to_string()
+                    };
+                }
+            }
+        }).map_err(io)?.ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
+
+        if t.status.is_final() {
+            let sig = Signal::new(SignalKind::ThoughtDone, &t.summary).with_meta(json!({"thought": t.id}));
+            self.mailbox.push(&sig).map_err(io)?;
+        }
+        self.fanout(Event::new(EventName::Thought, json!({
+            "id": t.id, "status": t.status.as_str(), "steps": t.steps,
+            "goal": t.goal, "text": final_text, "flags": flags,
+        })));
+        Ok(json!({"ok": true, "steps": t.steps, "status": t.status.as_str()}))
+    }
+
+    /// A thought's process failed without taking a step. After a few of those it is parked,
+    /// because respawning something that cannot start is a loop, not persistence.
+    fn thought_failed(&mut self, id: &str, why: &str) {
+        let parked = self.thoughts.patch(id, |t| {
+            t.pid = None;
+            t.attempts += 1;
+            if t.attempts >= crate::store::thoughts::MAX_ATTEMPTS {
+                t.status = ThoughtStatus::Paused;
+                t.summary = format!("paused: its process kept failing ({why})");
+            }
+        }).ok().flatten();
+        if let Some(t) = parked {
+            if t.status == ThoughtStatus::Paused {
+                self.fanout(Event::new(EventName::Thought, json!({
+                    "id": t.id, "status": "paused", "goal": t.goal, "text": t.summary,
+                })));
+            }
+        }
     }
 
     fn inbox_action(&mut self, action: &str, id: &str, answer: &str) -> Result<Value, WireError> {
@@ -938,7 +1089,7 @@ mod tests {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
-        assert!(matches!(duty, Duty::Turn(_)));
+        assert!(matches!(duty, Duty::Turn(_, _)));
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         assert_eq!(ctx.text, "hello");
         assert_eq!(ctx.framed, "hello", "a person is not framed");
@@ -952,7 +1103,7 @@ mod tests {
         for i in 0..3 {
             take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
         }
-        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_)));
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_, _)));
         let second = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         assert!(matches!(second, Duty::Idle(_)), "a second turn must not open while one runs");
     }
@@ -1016,7 +1167,7 @@ mod tests {
         clock.advance(100.0);
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
-            Duty::Turn(s) => assert_eq!(s.text, "please answer"),
+            Duty::Turn(s, _) => assert_eq!(s.text, "please answer"),
             other => panic!("a person's message was dropped: {other:?}"),
         }
     }
@@ -1091,6 +1242,25 @@ mod tests {
     }
 
     #[test]
+    fn a_question_asked_during_a_turn_is_not_closed_by_the_message_that_started_it() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "go and ask him".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        clock.advance(1.0);
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        // The mind asks while the turn is running.
+        clock.advance(1.0);
+        take(|reply| Cmd::Ask { question: "does it still exist?".into(), context: String::new(), reply }, &mut h).unwrap();
+        let (turn, epoch) = h.active_turn().unwrap();
+        take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
+            turn, epoch, final_text: "asked.".into(), flags: vec![], tools_used: 1, seconds: 1.0,
+        }), reply }, &mut h).unwrap();
+
+        let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
+        assert_eq!(listing["open"].as_array().unwrap().len(), 1,
+            "a question asked mid-turn was closed by the message that started that turn");
+    }
+
+    #[test]
     fn a_nudge_never_counts_as_an_answer() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Ask { question: "what next?".into(), context: String::new(), reply }, &mut h).unwrap();
@@ -1127,7 +1297,7 @@ mod tests {
         take(|reply| Cmd::ThoughtAction { action: "focus".into(), id: id.clone(), text: "found something".into(), reply }, &mut h).unwrap();
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
-            Duty::Turn(s) => {
+            Duty::Turn(s, _) => {
                 assert_eq!(s.kind, SignalKind::Focus);
                 assert_eq!(s.meta["thought"], id);
             }
@@ -1144,7 +1314,7 @@ mod tests {
         }, &mut h).unwrap();
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
-            Duty::Turn(s) => assert_eq!(s.kind, SignalKind::Alarm),
+            Duty::Turn(s, _) => assert_eq!(s.kind, SignalKind::Alarm),
             other => panic!("the alarm did not fire: {other:?}"),
         }
     }
@@ -1159,7 +1329,7 @@ mod tests {
         }
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
-            Duty::Turn(s) => {
+            Duty::Turn(s, _) => {
                 assert_eq!(s.kind, SignalKind::Expired);
                 assert_eq!(s.text.lines().count(), 4, "one interruption for all three, not three");
             }
@@ -1190,7 +1360,7 @@ mod tests {
         for _ in 0..10 {
             clock.advance(1000.0);
             match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
-                Duty::Turn(_) => {
+                Duty::Turn(_, _) => {
                     attempts += 1;
                     let (turn, _) = h.active_turn().unwrap();
                     h.handle(Cmd::Abandon { turn, why: "the brain is down".into() });
@@ -1221,7 +1391,7 @@ mod tests {
         }
         // Once the wait is over it tries again.
         clock.advance(100.0);
-        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_)));
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_, _)));
     }
 
     #[test]
@@ -1288,7 +1458,7 @@ mod tests {
         clock.advance(7200.0);
         take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
         match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
-            Duty::Turn(s) => assert_eq!(s.text, "hello"),
+            Duty::Turn(s, _) => assert_eq!(s.text, "hello"),
             other => panic!("it went to sleep with someone waiting: {other:?}"),
         }
     }

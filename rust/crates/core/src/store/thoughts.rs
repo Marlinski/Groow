@@ -60,6 +60,10 @@ pub struct Thought {
     /// The process currently running it, if any.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// Consecutive attempts that produced no step. A thought whose process keeps dying is
+    /// parked rather than respawned forever.
+    #[serde(default)]
+    pub attempts: u32,
     /// Unknown fields from a newer version are carried through untouched rather than dropped,
     /// so an older core cannot silently destroy a newer core's data.
     #[serde(flatten, default)]
@@ -72,6 +76,12 @@ const ORPHAN_GRACE: f64 = 90.0;
 
 /// The most steps a single thought may take, whatever it asks for.
 pub const MAX_STEPS_CAP: u32 = 60;
+
+/// How many times a thought's process may fail to make a step before it is parked.
+pub const MAX_ATTEMPTS: u32 = 3;
+
+/// How long to leave a thought alone between steps, so a failing one cannot become a loop.
+pub const STEP_GAP: f64 = 3.0;
 
 pub struct Thoughts {
     dir: PathBuf,
@@ -120,6 +130,17 @@ impl Thoughts {
         Ok(self.all()?.into_iter().filter(|t| !t.status.is_final()).collect())
     }
 
+    /// The next thought that should be given a process: running, unclaimed, and left alone
+    /// long enough that a failing one cannot spin.
+    pub fn ready(&self, now: f64) -> std::io::Result<Option<Thought>> {
+        Ok(self.all()?.into_iter().find(|t| {
+            t.status == ThoughtStatus::Running
+                && t.pid.is_none()
+                && t.steps < t.max_steps
+                && now - t.updated >= STEP_GAP
+        }))
+    }
+
     pub fn save(&self, t: &Thought) -> std::io::Result<()> {
         let mut t = t.clone();
         t.updated = groow_proto::event::now();
@@ -154,6 +175,7 @@ impl Thoughts {
             tools_used: Vec::new(),
             interrupted: 0,
             pid: None,
+            attempts: 0,
             extra: Default::default(),
         };
         self.save(&t)?;
@@ -265,6 +287,35 @@ mod tests {
         let live = s.live().unwrap();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].id, b.id);
+    }
+
+    #[test]
+    fn a_thought_is_left_alone_between_steps() {
+        let d = tempfile::tempdir().unwrap();
+        let s = store(&d);
+        let t = s.spawn("go", 5, "p").unwrap();
+        assert!(s.ready(t.updated).unwrap().is_none(), "it should not be started twice in a breath");
+        assert!(s.ready(t.updated + STEP_GAP + 1.0).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_thought_that_has_run_out_of_steps_is_not_started_again() {
+        let d = tempfile::tempdir().unwrap();
+        let s = store(&d);
+        let t = s.spawn("go", 2, "p").unwrap();
+        s.patch(&t.id, |t| t.steps = 2).unwrap();
+        let later = groow_proto::event::now() + 100.0;
+        assert!(s.ready(later).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_thought_being_run_by_a_process_is_not_started_again() {
+        let d = tempfile::tempdir().unwrap();
+        let s = store(&d);
+        let t = s.spawn("go", 5, "p").unwrap();
+        s.patch(&t.id, |t| t.pid = Some(4242)).unwrap();
+        let later = groow_proto::event::now() + 100.0;
+        assert!(s.ready(later).unwrap().is_none());
     }
 
     #[test]

@@ -17,8 +17,19 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// Everything is resolved to an absolute path here, once.
+    ///
+    /// A process the core spawns runs in the mind's home, not in the directory the core was
+    /// started from, so a relative path handed to it points somewhere else entirely. Doing
+    /// this at the edge means nothing downstream has to remember it.
     pub fn new(state: impl Into<PathBuf>) -> Self {
-        Paths { state: state.into() }
+        let state = state.into();
+        let state = if state.is_absolute() {
+            state
+        } else {
+            std::env::current_dir().map(|d| d.join(&state)).unwrap_or(state)
+        };
+        Paths { state }
     }
 
     pub fn journal(&self) -> PathBuf { self.state.join("main") }
@@ -172,6 +183,22 @@ mod tests {
     fn a_missing_file_is_none_not_an_error() {
         let d = tempfile::tempdir().unwrap();
         assert!(read_opt(&d.path().join("nope")).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_relative_state_directory_is_made_absolute() {
+        // A process started by the core runs somewhere else, so a relative path would send it
+        // looking in the wrong place. This is the bug that stopped the first real turn.
+        let p = Paths::new("state");
+        assert!(p.state.is_absolute(), "got {}", p.state.display());
+        assert!(p.socket().is_absolute());
+        assert!(p.journal().is_absolute());
+    }
+
+    #[test]
+    fn an_absolute_state_directory_is_left_alone() {
+        let p = Paths::new("/srv/groow/state");
+        assert_eq!(p.state, std::path::PathBuf::from("/srv/groow/state"));
     }
 
     #[test]

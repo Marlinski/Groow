@@ -68,7 +68,10 @@ impl Default for Settings {
 
 /// Run the turn this process was started for.
 pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOutcome, ClientError> {
-    let ctx = client.claim().await?;
+    let ctx = match settings.surface {
+        Surface::Main => client.claim().await?,
+        Surface::Thought => client.claim_thought(&thought_id()).await?,
+    };
     let started = std::time::Instant::now();
     let mut flags = Flags::default();
 
@@ -78,8 +81,13 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
     history.push(Message::system(&ctx.system));
     history.extend(ctx.window.iter().cloned());
     // The core has already recorded what came in, so that a turn which fails and is retried
-    // does not write the same message to the conversation twice.
-    history.push(Message::user(&ctx.framed));
+    // does not write the same message to the conversation twice. A thought's own trace is
+    // different: the step prompt is part of it, and it is written here.
+    let incoming = Message::user(&ctx.framed);
+    history.push(incoming.clone());
+    if settings.surface == Surface::Thought {
+        write(client, settings, &ctx, &incoming).await?;
+    }
 
     let schemas = tools::schemas(settings.surface);
     let mut seen_calls: Vec<String> = Vec::new();
@@ -120,7 +128,7 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
                 .collect::<Vec<_>>()));
         }
         history.push(said.clone());
-        client.append(&ctx.turn, ctx.epoch, &said).await?;
+        write(client, settings, &ctx, &said).await?;
         let _ = client
             .emit(Event::new(EventName::Message, json!({
                 "role": "assistant", "content": p.content, "turn": ctx.turn,
@@ -165,13 +173,13 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
 
             let msg = Message::tool(&call.name, &result.text);
             history.push(msg.clone());
-            client.append(&ctx.turn, ctx.epoch, &msg).await?;
+            write(client, settings, &ctx, &msg).await?;
 
             // `finish` ends an inner thought there and then.
             if call.name == "finish" {
                 final_text = tools::arg_str(&call.args, "summary");
                 flags.completed = true;
-                return report(client, &ctx, final_text, flags, tools_used, started).await;
+                return report(client, settings, &ctx, final_text, flags, tools_used, started).await;
             }
         }
 
@@ -183,11 +191,25 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
     if final_text.is_empty() && flags.exhausted {
         final_text = "I ran out of room before I got there. What I found is above.".into();
     }
-    report(client, &ctx, final_text, flags, tools_used, started).await
+    report(client, settings, &ctx, final_text, flags, tools_used, started).await
+}
+
+/// Record one message, on whichever trace this process is working on.
+async fn write(
+    client: &mut Client,
+    settings: &Settings,
+    ctx: &TurnContext,
+    msg: &Message,
+) -> Result<(), ClientError> {
+    match settings.surface {
+        Surface::Main => client.append(&ctx.turn, ctx.epoch, msg).await,
+        Surface::Thought => client.append_thought(&ctx.turn, msg).await,
+    }
 }
 
 async fn report(
     client: &mut Client,
+    settings: &Settings,
     ctx: &TurnContext,
     final_text: String,
     flags: Flags,
@@ -202,7 +224,10 @@ async fn report(
         tools_used,
         seconds: started.elapsed().as_secs_f64(),
     };
-    client.end(&out).await?;
+    match settings.surface {
+        Surface::Main => client.end(&out).await?,
+        Surface::Thought => client.end_thought(&ctx.turn, &out.final_text, &out.flags).await?,
+    }
     Ok(out)
 }
 
@@ -330,7 +355,24 @@ mod tests {
                 let Ok(f) = Frame::decode(&line) else { continue };
                 let Frame::Req { id, op, arg } = f else { continue };
                 let reply = match op.as_str() {
-                    "turn.claim" => Frame::rep(id, serde_json::to_value(&ctx).unwrap()),
+                    "turn.claim" | "thought.claim" => Frame::rep(id, serde_json::to_value(&ctx).unwrap()),
+                    "thought.append" => {
+                        let m: Message = serde_json::from_value(arg["message"].clone()).unwrap();
+                        log.lock().unwrap().appended.push(m);
+                        Frame::rep(id, json!({"ok": true}))
+                    }
+                    "thought.end" => {
+                        log.lock().unwrap().outcome = Some(TurnOutcome {
+                            turn: arg["id"].as_str().unwrap_or("").to_string(),
+                            epoch: groow_proto::turn::Epoch(0),
+                            final_text: arg["final_text"].as_str().unwrap_or("").to_string(),
+                            flags: arg["flags"].as_array().map(|a| a.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(),
+                            tools_used: 0,
+                            seconds: 0.0,
+                        });
+                        Frame::rep(id, json!({"ok": true}))
+                    }
                     "turn.append" => {
                         let m: Message = serde_json::from_value(arg["message"].clone()).unwrap();
                         log.lock().unwrap().appended.push(m);
@@ -538,6 +580,44 @@ mod tests {
         let l = log.lock().unwrap();
         let said = l.appended.iter().find(|m| m.role == "assistant").unwrap();
         assert_eq!(said.text(), "Looking now.", "raw json must never reach the conversation");
+    }
+
+    async fn run_as(
+        gens: Vec<String>,
+        surface: Surface,
+    ) -> (TurnOutcome, Arc<Mutex<Recorded>>, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("core.sock");
+        let log = fake_core(p.clone(), ctx(10), gens).await;
+        let mut c = Client::connect(&p).await.unwrap();
+        let s = Settings { home: d.path().to_path_buf(), tool_timeout: Duration::from_secs(5), surface };
+        let out = run_turn(&mut c, &s).await.unwrap();
+        (out, log, d)
+    }
+
+    #[tokio::test]
+    async fn a_thought_works_on_its_own_trace() {
+        std::env::set_var("GROOW_THOUGHT", "ab12cd");
+        let (out, log, _d) = run_as(vec!["I have found it.".into()], Surface::Thought).await;
+        assert_eq!(out.final_text, "I have found it.");
+        let appended = &log.lock().unwrap().appended;
+        // Unlike a conscious turn, a thought records the step prompt it was given, because
+        // that prompt is part of its own working history and nothing else records it.
+        assert_eq!(appended[0].role, "user");
+        assert!(appended.iter().any(|m| m.role == "assistant"));
+        std::env::remove_var("GROOW_THOUGHT");
+    }
+
+    #[tokio::test]
+    async fn a_thought_finishing_reports_through_its_own_contract() {
+        std::env::set_var("GROOW_THOUGHT", "ab12cd");
+        let (_out, log, _d) = run_as(
+            vec!["<tool_call>{\"name\":\"finish\",\"arguments\":{\"summary\":\"eight files\"}}</tool_call>".into()],
+            Surface::Thought,
+        ).await;
+        let o = log.lock().unwrap().outcome.clone().expect("the thought never closed its step");
+        assert_eq!(o.final_text, "eight files");
+        std::env::remove_var("GROOW_THOUGHT");
     }
 
     #[test]

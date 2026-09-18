@@ -45,6 +45,12 @@ pub enum Op {
     Think,
     /// Act on an existing inner thought: focus, finish, pause, resume, kill, read.
     Thought,
+    /// Take the next step of an inner thought. Spoken only by a thought process.
+    ThoughtClaim,
+    /// Append to an inner thought's own trace.
+    ThoughtAppend,
+    /// Close out one step of an inner thought.
+    ThoughtEnd,
     /// Read the conversation back, further than the window reaches.
     Recall,
     /// Set or cancel an alarm.
@@ -78,6 +84,9 @@ impl Op {
             "ask" => Op::Ask,
             "think" => Op::Think,
             "thought" => Op::Thought,
+            "thought.claim" => Op::ThoughtClaim,
+            "thought.append" => Op::ThoughtAppend,
+            "thought.end" => Op::ThoughtEnd,
             "recall" => Op::Recall,
             "schedule" => Op::Schedule,
             "inbox" => Op::Inbox,
@@ -102,6 +111,9 @@ impl Op {
             Op::Ask => "ask",
             Op::Think => "think",
             Op::Thought => "thought",
+            Op::ThoughtClaim => "thought.claim",
+            Op::ThoughtAppend => "thought.append",
+            Op::ThoughtEnd => "thought.end",
             Op::Recall => "recall",
             Op::Schedule => "schedule",
             Op::Inbox => "inbox",
@@ -129,6 +141,7 @@ impl Op {
                 Op::Hello | Op::Status | Op::TurnClaim | Op::TurnAppend | Op::TurnEnd
                     | Op::Complete | Op::Ask | Op::Think | Op::Thought | Op::Recall
                     | Op::Schedule | Op::Inbox
+                    | Op::ThoughtClaim | Op::ThoughtAppend | Op::ThoughtEnd
             ),
             // A person at a terminal: look, and talk.
             Role::Viewer => matches!(self, Op::Hello | Op::Status | Op::Watch | Op::Say | Op::Command | Op::Inbox | Op::Recall),
@@ -137,7 +150,11 @@ impl Op {
 
     /// Ops that only make sense from a process the core itself spawned for a turn.
     pub fn is_turn_op(&self) -> bool {
-        matches!(self, Op::TurnClaim | Op::TurnAppend | Op::TurnEnd)
+        matches!(
+            self,
+            Op::TurnClaim | Op::TurnAppend | Op::TurnEnd
+                | Op::ThoughtClaim | Op::ThoughtAppend | Op::ThoughtEnd
+        )
     }
 }
 
@@ -149,8 +166,9 @@ mod tests {
     fn names_round_trip() {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
-            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::Recall, Op::Schedule, Op::Inbox,
-            Op::Say, Op::Command, Op::Consolidate, Op::Train, Op::Quit,
+            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
+            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Inbox, Op::Say, Op::Command,
+            Op::Consolidate, Op::Train, Op::Quit,
         ] {
             assert_eq!(Op::parse(op.name()), Some(op), "{} did not round trip", op.name());
         }
@@ -185,7 +203,8 @@ mod tests {
     fn a_viewer_can_never_drive_a_turn() {
         // A terminal is not a mind. It must not be able to claim a turn, write into the
         // conversation, or generate, however the roles are ordered.
-        for op in [Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete, Op::Ask, Op::Think] {
+        for op in [Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete, Op::Ask, Op::Think,
+                   Op::ThoughtClaim, Op::ThoughtAppend, Op::ThoughtEnd] {
             assert!(!op.allowed_for(Role::Viewer), "{} must not be reachable from a viewer", op.name());
         }
     }
@@ -194,8 +213,9 @@ mod tests {
     fn every_op_is_reachable_by_somebody() {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
-            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::Recall, Op::Schedule, Op::Inbox,
-            Op::Say, Op::Command, Op::Consolidate, Op::Train, Op::Quit,
+            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
+            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Inbox, Op::Say, Op::Command,
+            Op::Consolidate, Op::Train, Op::Quit,
         ] {
             let any = [Role::Agent, Role::Viewer, Role::Mentor].iter().any(|r| op.allowed_for(*r));
             assert!(any, "{} is callable by nobody", op.name());

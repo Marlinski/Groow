@@ -210,6 +210,25 @@ impl Conn {
                 self.hub.think(&s("goal"), steps).await
             }
             Op::Thought => self.hub.thought(&s("action"), &s("id"), &s("text")).await,
+            Op::ThoughtClaim => {
+                let ctx = self.hub.thought_claim(&s("id"), self.peer.pid).await?;
+                serde_json::to_value(ctx).map_err(|e| WireError::Internal(e.to_string()))
+            }
+            Op::ThoughtAppend => {
+                let msg: Message = serde_json::from_value(arg.get("message").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| WireError::BadArg(format!("message: {e}")))?;
+                self.hub.thought_append(&s("id"), msg).await
+            }
+            Op::ThoughtEnd => {
+                let flags = arg.get("flags").and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                let r = self.hub.thought_end(&s("id"), &s("final_text"), flags).await;
+                if r.is_ok() {
+                    self.finished.store(true, Ordering::SeqCst);
+                }
+                r
+            }
             Op::Recall => {
                 let n = arg.get("n").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
                 self.hub.recall(n).await
@@ -451,7 +470,7 @@ mod tests {
         assert!(hub.status().await.unwrap()["busy"] == false, "the core stayed stuck on the dead turn");
         tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
         match hub.next_duty().await.unwrap() {
-            crate::hub::Duty::Turn(sig) => assert_eq!(sig.text, "first"),
+            crate::hub::Duty::Turn(sig, _) => assert_eq!(sig.text, "first"),
             other => panic!("a person's message was dropped: {other:?}"),
         }
     }

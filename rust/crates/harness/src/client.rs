@@ -124,7 +124,7 @@ impl Client {
         self.write_frame(&Frame::Ev { name: ev.name, t: ev.t, data: ev.data }).await
     }
 
-    /// Convenience wrappers for the ops a turn actually uses.
+    /// The conscious turn's contract.
     pub async fn claim(&mut self) -> Result<groow_proto::turn::TurnContext, ClientError> {
         let v = self.call("turn.claim", json!({})).await?;
         serde_json::from_value(v).map_err(|e| ClientError::Garbled(e.to_string()))
@@ -143,6 +143,23 @@ impl Client {
     pub async fn end(&mut self, out: &groow_proto::turn::TurnOutcome) -> Result<(), ClientError> {
         let arg = serde_json::to_value(out).map_err(|e| ClientError::Garbled(e.to_string()))?;
         self.call("turn.end", arg).await?;
+        Ok(())
+    }
+
+    /// An inner thought's contract. Its trace is its own, so it is addressed by id rather
+    /// than by whatever turn the conscious mind happens to be taking.
+    pub async fn claim_thought(&mut self, id: &str) -> Result<groow_proto::turn::TurnContext, ClientError> {
+        let v = self.call("thought.claim", json!({"id": id})).await?;
+        serde_json::from_value(v).map_err(|e| ClientError::Garbled(e.to_string()))
+    }
+
+    pub async fn append_thought(&mut self, id: &str, msg: &groow_proto::turn::Message) -> Result<(), ClientError> {
+        self.call("thought.append", json!({"id": id, "message": msg})).await?;
+        Ok(())
+    }
+
+    pub async fn end_thought(&mut self, id: &str, final_text: &str, flags: &[String]) -> Result<(), ClientError> {
+        self.call("thought.end", json!({"id": id, "final_text": final_text, "flags": flags})).await?;
         Ok(())
     }
 }

@@ -135,6 +135,24 @@ impl Db {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM turns", [], |r| r.get(0))?)
     }
 
+    /// Turns not worth showing the mind again.
+    ///
+    /// A window is not just a record, it is the pattern the model reads before it answers, and
+    /// it copies what it sees there. Replaying a turn that went round in circles, ran out of
+    /// room, or that a person reacted badly to is an instruction to do it again. This is the
+    /// list of turns to leave out.
+    pub fn turns_to_forget(&self) -> anyhow::Result<std::collections::HashSet<String>> {
+        let mut st = self.conn.prepare(
+            "SELECT t.id FROM turns t LEFT JOIN feelings f ON f.turn = t.id
+             WHERE t.outcome IS NOT 'ok'
+                OR t.flags LIKE '%repeat%'
+                OR t.flags LIKE '%exhausted%'
+                OR f.valence < -0.5",
+        )?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     // ---------------------------------------------------------------- tools
     pub fn tool_call(&self, turn: &str, ts: f64, name: &str, actor: &str, ok: bool, seconds: f64) -> anyhow::Result<()> {
         self.conn.execute(
@@ -263,6 +281,44 @@ mod tests {
         db.turn_ended("t1", 104.0, 4.0, 1, 1, &[], "ok").unwrap();
         db.turn_ended("t1", 104.0, 4.0, 1, 1, &[], "ok").unwrap();
         assert_eq!(db.turn_count().unwrap(), 1, "a retried report must not invent a second turn");
+    }
+
+    #[test]
+    fn turns_that_went_badly_are_not_shown_again() {
+        let db = Db::memory().unwrap();
+        for (id, flags, outcome) in [
+            ("good", "completed", "ok"),
+            ("looping", "completed,repeat,repeat", "ok"),
+            ("ran_out", "exhausted", "ok"),
+            ("died", "abandoned", "its process went away"),
+        ] {
+            db.turn_started(id, "user", 1.0).unwrap();
+            db.turn_ended(id, 2.0, 1.0, 0, 1, &[flags.to_string()], outcome).unwrap();
+        }
+        let forget = db.turns_to_forget().unwrap();
+        assert!(!forget.contains("good"), "a turn that worked should stay in the window");
+        for bad in ["looping", "ran_out", "died"] {
+            assert!(forget.contains(bad), "{bad} should not be replayed");
+        }
+    }
+
+    #[test]
+    fn a_turn_a_person_reacted_badly_to_is_not_shown_again() {
+        let db = Db::memory().unwrap();
+        db.turn_started("sour", "user", 1.0).unwrap();
+        db.turn_ended("sour", 2.0, 1.0, 0, 1, &["completed".into()], "ok").unwrap();
+        assert!(!db.turns_to_forget().unwrap().contains("sour"), "nothing is wrong with it yet");
+        db.felt("sour", 3.0, 0.15, Some(-0.9), -0.75).unwrap();
+        assert!(db.turns_to_forget().unwrap().contains("sour"));
+    }
+
+    #[test]
+    fn a_turn_nobody_has_reacted_to_is_still_shown() {
+        let db = Db::memory().unwrap();
+        db.turn_started("fresh", "user", 1.0).unwrap();
+        db.turn_ended("fresh", 2.0, 1.0, 0, 1, &["completed".into()], "ok").unwrap();
+        db.felt("fresh", 3.0, 0.15, None, 0.15).unwrap();
+        assert!(!db.turns_to_forget().unwrap().contains("fresh"));
     }
 
     #[test]

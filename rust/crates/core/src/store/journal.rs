@@ -159,26 +159,51 @@ impl Journal {
 /// act, not things a person said, and replaying them as user turns teaches the mind to talk
 /// to itself.
 pub fn restore_window(journal: &Journal, n: usize) -> std::io::Result<Vec<Message>> {
-    let recs = journal.tail(n * 3)?;
+    restore_window_without(journal, n, &Default::default())
+}
+
+/// The same, leaving out any exchange that belongs to a turn in `forget`.
+///
+/// The window is not a transcript, it is the example the model reads before it answers. A turn
+/// that went badly does not belong in it, because showing it is the same as recommending it.
+pub fn restore_window_without(
+    journal: &Journal,
+    n: usize,
+    forget: &std::collections::HashSet<String>,
+) -> std::io::Result<Vec<Message>> {
+    let recs = journal.tail(n * 4)?;
     let mut msgs: Vec<Message> = Vec::new();
     for r in recs {
         let role = r.get("role").and_then(|v| v.as_str()).unwrap_or("");
         let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("user");
         let has_calls = r.get("tool_calls").map(|v| !v.is_null()).unwrap_or(false);
+        let turn = r.get("turn").and_then(|v| v.as_str()).unwrap_or("");
+        if !turn.is_empty() && forget.contains(turn) {
+            continue;
+        }
         if role == "user" && (kind == "user" || kind == "command") {
             msgs.push(Message::user(content));
         } else if role == "assistant" && !content.is_empty() && !has_calls {
             msgs.push(Message::assistant(content));
         }
     }
-    // Keep only whole exchanges, so the window never opens on a dangling answer.
+    // Keep only whole exchanges, so the window never opens on a dangling answer. An exchange
+    // whose answer repeats the one before it is left out: a window holding the same reply ten
+    // times over is an instruction to give it an eleventh, and a mind that has got stuck would
+    // never get unstuck while its own history keeps telling it to repeat itself.
     let mut pairs: Vec<Message> = Vec::new();
+    let mut last_answer: Option<String> = None;
     let mut i = 0;
     while i + 1 < msgs.len() {
         if msgs[i].role == "user" && msgs[i + 1].role == "assistant" {
-            pairs.push(msgs[i].clone());
-            pairs.push(msgs[i + 1].clone());
+            let answer = msgs[i + 1].text().trim().to_string();
+            let repeat = last_answer.as_deref() == Some(answer.as_str()) && !answer.is_empty();
+            if !repeat {
+                pairs.push(msgs[i].clone());
+                pairs.push(msgs[i + 1].clone());
+                last_answer = Some(answer);
+            }
             i += 2;
         } else {
             i += 1;
@@ -332,6 +357,75 @@ mod tests {
         assert_eq!(w.len(), 6, "an odd budget rounds down to whole exchanges");
         assert_eq!(w[0].role, "user", "a window always opens on a question");
         assert_eq!(w[5].text(), "a19");
+    }
+
+    #[test]
+    fn a_turn_that_went_badly_is_left_out_of_the_window() {
+        let d = tempfile::tempdir().unwrap();
+        let mut j = Journal::open(d.path()).unwrap();
+        j.append(&json!({"role":"user","content":"good question","kind":"user","turn":"t1"})).unwrap();
+        j.append(&json!({"role":"assistant","content":"a good answer","turn":"t1"})).unwrap();
+        j.append(&json!({"role":"user","content":"bad question","kind":"user","turn":"t2"})).unwrap();
+        j.append(&json!({"role":"assistant","content":"a stuck answer","turn":"t2"})).unwrap();
+
+        let forget: std::collections::HashSet<String> = ["t2".to_string()].into_iter().collect();
+        let w = restore_window_without(&j, 30, &forget).unwrap();
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[1].text(), "a good answer");
+        assert!(!w.iter().any(|m| m.text().contains("stuck")), "a bad turn was recommended back to it");
+    }
+
+    #[test]
+    fn records_from_before_turns_were_stamped_are_still_shown() {
+        let d = tempfile::tempdir().unwrap();
+        let mut j = Journal::open(d.path()).unwrap();
+        j.append(&user("old question")).unwrap();
+        j.append(&bot("old answer")).unwrap();
+        let forget: std::collections::HashSet<String> = ["t1".to_string()].into_iter().collect();
+        assert_eq!(restore_window_without(&j, 30, &forget).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_run_of_identical_answers_collapses_to_one() {
+        let d = tempfile::tempdir().unwrap();
+        let mut j = Journal::open(d.path()).unwrap();
+        for i in 0..10 {
+            j.append(&user(&format!("q{i}"))).unwrap();
+            j.append(&bot("I have started a new thought about rivers.")).unwrap();
+        }
+        j.append(&user("how many files are here?")).unwrap();
+        j.append(&bot("Four.")).unwrap();
+
+        let w = restore_window(&j, 30).unwrap();
+        let stuck = w.iter().filter(|m| m.text().contains("rivers")).count();
+        assert_eq!(stuck, 1, "the window told it to repeat itself {stuck} times");
+        assert_eq!(w.last().unwrap().text(), "Four.");
+    }
+
+    #[test]
+    fn different_answers_are_all_kept_even_when_they_are_short() {
+        let d = tempfile::tempdir().unwrap();
+        let mut j = Journal::open(d.path()).unwrap();
+        for (q, a) in [("one?", "yes"), ("two?", "no"), ("three?", "yes")] {
+            j.append(&user(q)).unwrap();
+            j.append(&bot(a)).unwrap();
+        }
+        let w = restore_window(&j, 30).unwrap();
+        assert_eq!(w.len(), 6, "only a run of the same answer collapses, not a repeated word");
+    }
+
+    #[test]
+    fn blank_answers_do_not_collapse_into_each_other() {
+        // Two questions that were never really answered are two separate exchanges, not one
+        // repeat of the other. A turn that produced nothing is not a habit to prune.
+        let d = tempfile::tempdir().unwrap();
+        let mut j = Journal::open(d.path()).unwrap();
+        j.append(&user("a")).unwrap();
+        j.append(&json!({"role": "assistant", "content": "  "})).unwrap();
+        j.append(&user("b")).unwrap();
+        j.append(&json!({"role": "assistant", "content": " "})).unwrap();
+        let w = restore_window(&j, 30).unwrap();
+        assert_eq!(w.iter().filter(|m| m.role == "user").count(), 2);
     }
 
     #[test]
