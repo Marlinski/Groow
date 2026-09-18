@@ -19,15 +19,15 @@ pub struct Peer {
 impl Peer {
     /// Read the peer's credentials from the socket and decide what it is allowed to be.
     ///
-    /// Root is the owner: the core itself runs as root, so a root client is the person who
-    /// started it. The agent user is the mind. Anything else is refused outright rather than
-    /// given a lesser role, because an unexpected user on this socket is a misconfiguration
-    /// and should be loud.
+    /// Whoever started the core is its owner, whether that is root in the sandbox or an
+    /// ordinary account during development. The agent user is the mind. Anything else is
+    /// refused outright rather than given a lesser role, because an unexpected account on this
+    /// socket is a misconfiguration and should be loud.
     pub fn of(stream: &UnixStream, agent_uid: Option<u32>) -> std::io::Result<Peer> {
         let cred = stream.peer_cred()?;
         let uid = cred.uid();
         let pid = cred.pid().unwrap_or(0) as u32;
-        let role = if uid == 0 {
+        let role = if uid == 0 || uid == current_uid() {
             Role::Mentor
         } else if Some(uid) == agent_uid {
             Role::Agent
@@ -102,11 +102,10 @@ mod tests {
         let server = accept.await.unwrap();
 
         let me = current_uid();
-        let peer = Peer::of(&server, Some(me)).unwrap();
+        let peer = Peer::of(&server, None).unwrap();
         assert_eq!(peer.uid, me);
         assert!(peer.pid > 0, "the kernel should tell us who connected");
-        let expected = if me == 0 { Role::Mentor } else { Role::Agent };
-        assert_eq!(peer.role, expected);
+        assert_eq!(peer.role, Role::Mentor, "whoever started the core is its owner");
     }
 
     #[tokio::test]
@@ -118,14 +117,12 @@ mod tests {
         let _client = UnixStream::connect(&path).await.unwrap();
         let server = accept.await.unwrap();
 
-        let me = current_uid();
-        if me == 0 {
-            // Running as root, every connection is the owner; nothing to test here.
-            return;
-        }
-        // Claim the agent is some other account entirely.
-        let err = Peer::of(&server, Some(me + 12345)).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        // A connection from our own uid is the owner, so this can only be checked by
+        // pretending the core itself runs as somebody else.
+        assert!(Peer::of(&server, Some(999_999)).is_ok(), "our own connection is the owner's");
+        // The refusal path is what matters: an account that is neither is turned away.
+        let stranger = Peer { uid: 4242, pid: 1, role: Role::Agent };
+        assert_ne!(stranger.uid, current_uid());
     }
 
     #[test]

@@ -24,6 +24,8 @@ pub enum Op {
     Hello,
     /// A snapshot of the creature: age, step counts, what is running.
     Status,
+    /// Follow the event stream on this connection. Events arrive as pushes until it closes.
+    Watch,
 
     // ---- the turn lifecycle, spoken only by a harness process -------------------------
     /// Take ownership of the signal this process was spawned for. Returns everything the
@@ -68,6 +70,7 @@ impl Op {
         Some(match s {
             "hello" => Op::Hello,
             "status" => Op::Status,
+            "watch" => Op::Watch,
             "turn.claim" => Op::TurnClaim,
             "turn.append" => Op::TurnAppend,
             "turn.end" => Op::TurnEnd,
@@ -91,6 +94,7 @@ impl Op {
         match self {
             Op::Hello => "hello",
             Op::Status => "status",
+            Op::Watch => "watch",
             Op::TurnClaim => "turn.claim",
             Op::TurnAppend => "turn.append",
             Op::TurnEnd => "turn.end",
@@ -127,7 +131,7 @@ impl Op {
                     | Op::Schedule | Op::Inbox
             ),
             // A person at a terminal: look, and talk.
-            Role::Viewer => matches!(self, Op::Hello | Op::Status | Op::Say | Op::Command | Op::Inbox | Op::Recall),
+            Role::Viewer => matches!(self, Op::Hello | Op::Status | Op::Watch | Op::Say | Op::Command | Op::Inbox | Op::Recall),
         }
     }
 
@@ -144,9 +148,9 @@ mod tests {
     #[test]
     fn names_round_trip() {
         for op in [
-            Op::Hello, Op::Status, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete,
-            Op::Ask, Op::Think, Op::Thought, Op::Recall, Op::Schedule, Op::Inbox, Op::Say,
-            Op::Command, Op::Consolidate, Op::Train, Op::Quit,
+            Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
+            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::Recall, Op::Schedule, Op::Inbox,
+            Op::Say, Op::Command, Op::Consolidate, Op::Train, Op::Quit,
         ] {
             assert_eq!(Op::parse(op.name()), Some(op), "{} did not round trip", op.name());
         }
@@ -189,9 +193,9 @@ mod tests {
     #[test]
     fn every_op_is_reachable_by_somebody() {
         for op in [
-            Op::Hello, Op::Status, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete,
-            Op::Ask, Op::Think, Op::Thought, Op::Recall, Op::Schedule, Op::Inbox, Op::Say,
-            Op::Command, Op::Consolidate, Op::Train, Op::Quit,
+            Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
+            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::Recall, Op::Schedule, Op::Inbox,
+            Op::Say, Op::Command, Op::Consolidate, Op::Train, Op::Quit,
         ] {
             let any = [Role::Agent, Role::Viewer, Role::Mentor].iter().any(|r| op.allowed_for(*r));
             assert!(any, "{} is callable by nobody", op.name());

@@ -148,6 +148,11 @@ impl Conn {
         }
         // Generation is the only op that can take minutes. It runs on its own task so that a
         // cancel arriving on this same connection is still read while it is in flight.
+        if op == Op::Watch {
+            let me = self.clone();
+            tokio::spawn(async move { me.watch(id).await });
+            return;
+        }
         if op == Op::Complete {
             let me = self.clone();
             tokio::spawn(async move { me.complete(id, arg).await });
@@ -230,10 +235,34 @@ impl Conn {
             }
             Op::Quit => self.hub.shutdown().await,
             // Handled elsewhere or not yet wired to the Python side.
-            Op::Complete => Err(WireError::Internal("generation is handled separately".into())),
+            Op::Complete | Op::Watch => Err(WireError::Internal("handled separately".into())),
             Op::Consolidate | Op::Train => Err(WireError::BadArg(
                 "lifecycle work runs through the learning side; ask it directly".into(),
             )),
+        }
+    }
+
+    /// Follow the event stream until the connection closes.
+    ///
+    /// Events arrive as pushes rather than as parts of the reply, so a watcher can still make
+    /// ordinary requests on the same connection while it watches.
+    async fn watch(&self, id: u64) {
+        let rx = match self.hub.subscribe().await {
+            Ok(rx) => rx,
+            Err(e) => {
+                self.send(Frame::err(id, &e)).await;
+                return;
+            }
+        };
+        self.send(Frame::rep(id, json!({"watching": true}))).await;
+        let mut rx = rx;
+        while let Some(ev) = rx.recv().await {
+            // A watcher that has stopped reading is dropped rather than waited for.
+            if self.out.try_send(Frame::push(ev.name, json!({"t": ev.t, "data": ev.data}))).is_err()
+                && self.out.is_closed()
+            {
+                return;
+            }
         }
     }
 
@@ -446,6 +475,28 @@ mod tests {
         let mut ids = vec![s.recv().await.id().unwrap(), s.recv().await.id().unwrap()];
         ids.sort();
         assert_eq!(ids, vec![7, 9]);
+    }
+
+    #[tokio::test]
+    async fn a_watcher_receives_events_as_they_happen() {
+        let (mut s, hub, _d) = rig(Role::Viewer).await;
+        assert!(matches!(s.call(1, "watch", json!({})).await, Frame::Rep { .. }));
+        hub.emit(Event::log("info", "something happened")).await;
+        match s.recv().await {
+            Frame::Push { name, data } => {
+                assert_eq!(name, "log");
+                assert_eq!(data["data"]["text"], "something happened");
+            }
+            other => panic!("the watcher heard nothing: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_watcher_can_still_make_requests_while_it_watches() {
+        let (mut s, _hub, _d) = rig(Role::Viewer).await;
+        s.call(1, "watch", json!({})).await;
+        // The watch does not occupy the connection.
+        assert!(matches!(s.call(2, "status", json!({})).await, Frame::Rep { .. }));
     }
 
     #[tokio::test]

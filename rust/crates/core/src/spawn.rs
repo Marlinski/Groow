@@ -10,7 +10,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::os::unix::process::CommandExt as _;
 
 use tokio::process::{Child, Command};
 
