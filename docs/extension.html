@@ -1,55 +1,72 @@
 <!doctype html><html lang="en"><head><title>Groow · skills</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><script src="vendor/mermaid.min.js"></script><script src="_mermaid.js"></script></head><body><main>
 <nav class="top"><a href="index.html">Overview</a><a href="anatomy.html">Anatomy</a><a href="nervous.html">Nervous system</a><a href="core.html">Core</a><a href="learning.html">Learning</a><a href="mind.html">Mind</a><a href="extension.html" class="here">Skills</a></nav>
 <h1>Skills</h1>
-<p class="lead">A skill is an executable file in Groow's own <code>bin</code> directory. That is the entire specification. Python, shell, a compiled binary: the kernel runs it, Groow reads what it printed and sees how it exited.</p>
+<p class="lead">A skill is documentation and an executable together, in the format the <a href="https://agentskills.io/specification">Agent Skills specification</a> describes: a directory with a <code>SKILL.md</code> in it, giving a name, a description of when to reach for it, and a page saying how.</p>
 
 <div class="grid">
-<div class="card"><div class="k">What it is</div><b>A file it can run.</b> Anything on its <code>PATH</code> with the execute bit set. No registry, no schema, no plugin interface.</div>
-<div class="card"><div class="k">Why</div><b>Exit statuses are free lessons.</b> A wrapper tool returns a tidy result. A command returns an error message and a status, which is something to learn from.</div>
-<div class="card"><div class="k">Blast radius</div><b>Its own process.</b> Nothing is loaded into the core, so a skill that crashes crashes itself and nothing else.</div>
-<div class="card"><div class="k">Ownership</div><b>Its own.</b> The shipped ones are copied in on a first start and never overwritten once it has changed them.</div>
+<div class="card"><div class="k">In the prompt</div><b>One line each.</b> The name and the description, so it knows the thing exists and when it is worth using. Nothing more, ever.</div>
+<div class="card"><div class="k">On demand</div><b>The page.</b> <code>groow skill read &lt;name&gt;</code> pulls the rest into context, when it has decided it needs it.</div>
+<div class="card"><div class="k">To run</div><b>A command.</b> The scripts in the skill go on its path, so it is used through the shell like anything else, with an exit status it can learn from.</div>
+<div class="card"><div class="k">Over time</div><b>Less needed.</b> A skill practised often enough ends up in the weights, and the page stops being read. That is the point.</div>
 </div>
 
+<h2>Why this format and not a tool</h2>
+<p>Groow's competence is supposed to end up in its weights. A skill is the opposite kind of
+memory: precise, written down, and looked up. Keeping the two apart is what makes them useful
+together, and it is why only a line of each skill is ever in the prompt. A skill it wrote
+yesterday is not in its weights yet and must be findable; a skill it has used a hundred times
+should cost nothing to keep.</p>
+<p>That is what progressive disclosure buys here. The alternative, carrying a paragraph about
+every skill in every prompt, is the accumulate-context approach this project was built to
+avoid.</p>
+
+<h2>What one looks like</h2>
+<pre><code>news/
+  SKILL.md          name, description, and how to use it
+  scripts/news      the executable, in any language
+  references/       optional: detail it can read when it needs to
+  assets/           optional: templates, data</code></pre>
+<pre><code>---
+name: news
+description: Fresh headlines from your own feeds, skipping anything you have
+  already been shown. Use when you want to know what has happened in the world.
+compatibility: Requires network access
+---
+
+# Reading the news
+
+```
+news              headlines you have not seen
+news --json       the items as records, with links
+```
+…</code></pre>
+<p>The name must be lowercase letters, digits and hyphens, and must match its directory. A
+skill without a description is refused rather than half-loaded: a skill nobody can find is
+worse than an error that says so.</p>
+
+<h2>The prompt it writes for itself</h2>
+<p>What Groow sees at the start of every turn is not fixed by the core. The core contributes
+only the part it may not argue with, its identity and the facts on its certificate. Everything
+after that is the output of <code>~/.groowrc</code>, a shell script in its own home, run at the
+start of each turn.</p>
+<pre><code>#!/bin/sh
+echo "Today is $(date '+%A %-d %B %Y, %H:%M')."
+echo
+echo "Skills you have. Each one is a command you run in your shell, not a tool you call."
+groow skill list | sed 's/^/- /'</code></pre>
+<p>It is the same thing a person does when they tune their shell prompt: put what you want in
+front of you, take out what you do not read. Groow can put its skills there, the date, what is
+on its disk, a note about what it is working on, or nothing.</p>
+<p>It cannot lock itself out with it. If the script fails, hangs or prints a library, the turn
+happens anyway and that part of the prompt says what went wrong instead, which is exactly what
+it needs to fix the file.</p>
+
 <h2>Writing one</h2>
-<p>There is nothing to learn. It writes a file, makes it executable, and runs it.</p>
-<pre><code>$ cat > ~/.local/bin/tides &lt;&lt;'SH'
-#!/bin/sh
-# tides <port>: the next high tide, from the public feed
-curl -fsS "https://example.org/tides/$1" | head -20
-SH
-$ chmod +x ~/.local/bin/tides
-$ tides brest</code></pre>
-<p>Its own directory comes first on the <code>PATH</code>, so a command it writes shadows a shipped one of
-the same name. If the command is wrong, it finds out the way anyone does: a non-zero exit and a
-message on standard error, both of which go into the conversation and into what the turn felt
-like.</p>
-
-<h2>What ships</h2>
-<table>
-<tr><th>Command</th><th>What it does</th></tr>
-<tr><td><code>web &lt;url&gt;</code></td><td>a page as readable text, with the markup and the menus stripped</td></tr>
-<tr><td><code>news</code></td><td>headlines it has not seen, from the feeds listed in its own state</td></tr>
-<tr><td><code>tictactoe</code></td><td>plays itself, and logs each move with its reward</td></tr>
-<tr><td><code>arithmetic</code></td><td>drills mental arithmetic, and logs each answer with its reward</td></tr>
-</table>
-<p>The last two are how it practises rather than converses. They write decisions to the activity
-log, which the learning passes turn into policy samples. They talk to the brain directly, not
-through the core, because a game is background work and must never come before a person.</p>
-
-<h2>The home it lives in</h2>
-<pre><code>/home/groow
-  .local/bin/        its own commands, on its PATH, writable by it
-  workspace/         somewhere to work, writable by it
-  .nix-profile/      tools it installs for itself, no root needed
-  state/             the core's, readable by it and not writable
-    main/            the conversation
-    recipes/         its manual, which it may rewrite
-    skills/          drafts and anything it keeps
-</code></pre>
-<p>Inside the sandbox the split is real: the core runs as root and <code>state/</code> is not writable by
-the mind, so it cannot edit the conversation, the questions it has asked, or the statistics that
-say how it is doing. Everything above that line is its own. Outside the sandbox the same
-directories exist but the separation is a convention, and the core says so when it starts.</p>
+<p>There is nothing to learn beyond the format. It writes the directory, makes the script
+executable, and runs it. Its own commands come first on its path, so a skill it writes shadows
+a shipped one of the same name, and if the command is wrong it finds out the way anyone does:
+a non-zero exit and a message on standard error, both of which reach the conversation and count
+towards how the turn felt.</p>
 
 <h2>The core itself</h2>
 <p>Groow cannot edit the core. It is a compiled binary owned by root, and the part of the system

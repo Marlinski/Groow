@@ -628,6 +628,8 @@ impl Hub {
         let forget = self.db.turns_to_forget().unwrap_or_default();
         let window = restore_window_without(&self.journal, WINDOW, &forget).map_err(io)?;
         let birth_line = self.birth.line(self.now());
+        // Only the part it cannot argue with. What else it sees at the start of a turn comes
+        // from its own script, which the process running the turn executes in its home.
         let system = self.identity
             .system_prompt(&birth_line, self.cfg.identity_in_prompt)
             .map_err(io)?;

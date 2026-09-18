@@ -50,6 +50,11 @@ pub async fn start(state: PathBuf, config: PathBuf, as_user: Option<String>) -> 
     };
     // Put the shipped commands in its bin directory, without touching any it has changed.
     let home = home_for(&cfg);
+    match groow_harness::greeting::seed(&home) {
+        Ok(true) => eprintln!("  prompt   wrote {}, which is yours to change", groow_harness::greeting::RC),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("could not write the prompt script: {e}"),
+    }
     match groow_core::skills::seed(&home, &shipped_skills()) {
         Ok(put) if !put.is_empty() => eprintln!("  skills   installed {}", put.join(", ")),
         Ok(_) => {}

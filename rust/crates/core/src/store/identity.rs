@@ -14,7 +14,7 @@ shell and read the error than guess. When I do not know, I say so.";
 /// The note appended to every prompt about how the tools work.
 pub const TOOL_NOTE: &str = "\
 You act through a shell in your own home. Prefer a command and its exit status over a guess.
-`groow` commands reach your own body: your skills, alarms, thoughts and questions.";
+`groow` commands reach your own body: your alarms, thoughts and questions.";
 
 const MIN_CHARS: usize = 40;
 const MAX_CHARS: usize = 1500;
@@ -53,7 +53,11 @@ impl Identity {
         Ok(t.to_string())
     }
 
-    /// The system prompt for a turn: who it is, the facts it cannot change, and how it acts.
+    /// The part of the prompt the core owns: who it is, the facts it cannot change, and how it
+    /// acts.
+    ///
+    /// Everything else a turn sees comes from the mind's own script in its home, appended by
+    /// the process that runs the turn. What is here is what it should not be able to edit.
     pub fn system_prompt(&self, birth_line: &str, include_identity: bool) -> std::io::Result<String> {
         let mut parts: Vec<String> = Vec::new();
         if include_identity {
@@ -103,14 +107,13 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_holds_the_unchangeable_facts_last_of_all() {
+    fn the_prompt_holds_who_it_is_and_what_it_cannot_change() {
         let d = tempfile::tempdir().unwrap();
         let i = id(&d);
         let p = i.system_prompt("Groow \u{b7} id abc123", true).unwrap();
         assert!(p.contains("I am Groow"));
         assert!(p.contains("cannot change"));
         assert!(p.contains("abc123"));
-        assert!(p.trim_end().ends_with("questions."), "the tool note comes last: {p}");
     }
 
     #[test]
@@ -120,6 +123,18 @@ mod tests {
         let p = i.system_prompt("Groow \u{b7} id abc123", false).unwrap();
         assert!(!p.contains("I am Groow"), "with distillation done, the text leaves the prompt");
         assert!(p.contains("abc123"), "but the facts stay");
+    }
+
+    #[test]
+    fn the_core_says_only_what_the_mind_may_not_change() {
+        // Everything contextual comes from its own script; the core's part is the part it
+        // should not be able to edit.
+        let d = tempfile::tempdir().unwrap();
+        let i = id(&d);
+        let p = i.system_prompt("Groow \u{b7} id abc123", true).unwrap();
+        assert!(p.contains("cannot change"));
+        assert!(!p.contains("Skills you have"), "the skill list belongs to its own script");
+        assert!(p.chars().count() < 1500, "the fixed part should stay small: {}", p.chars().count());
     }
 
     #[test]

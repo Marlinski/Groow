@@ -77,8 +77,17 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
 
     // The conversation this turn works from: who it is, what has been said, and what just
     // arrived. Everything before this came from the core, not from this process.
+    //
+    // The core's part of the prompt is the part that cannot be argued with. Anything after it
+    // comes from the mind's own script, run here because this is the process that runs as the
+    // mind, in its home.
+    let mut system = ctx.system.clone();
+    if let Some(extra) = crate::greeting::greeting(&settings.home).await {
+        system.push_str("\n\n");
+        system.push_str(&extra);
+    }
     let mut history: Vec<Message> = Vec::with_capacity(ctx.window.len() + 2);
-    history.push(Message::system(&ctx.system));
+    history.push(Message::system(&system));
     history.extend(ctx.window.iter().cloned());
     // The core has already recorded what came in, so that a turn which fails and is retried
     // does not write the same message to the conversation twice. A thought's own trace is
