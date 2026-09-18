@@ -42,7 +42,11 @@ enum SignalKind {
 // nothing of its own.
 message TurnContext {
   string turn = 1;
-  uint64 epoch = 2;       // bumped whenever a turn ends; a stale write is refused
+  // Bumped whenever a turn ends; a write tagged with an old one is refused.
+  //
+  // Deliberately 32 bits: canonical protobuf JSON writes a 64-bit integer as a string, and
+  // this number is read straight out of the JSON by things that expect a number.
+  uint32 epoch = 2;
   SignalKind kind = 3;
   string text = 4;        // what arrived, unframed
   string framed = 5;      // what the mind actually reads
@@ -55,7 +59,7 @@ message TurnContext {
 // How a turn ended. The flags are the free signals the limbic system reads.
 message TurnOutcome {
   string turn = 1;
-  uint64 epoch = 2;
+  uint32 epoch = 2;
   string final_text = 3;
   repeated string flags = 4;
   uint32 tools_used = 5;

@@ -225,9 +225,9 @@ mod tests {
     fn the_most_urgent_signal_comes_out_first() {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
-        mb.push(&Signal::new(SignalKind::Idle, "idle thought")).unwrap();
-        mb.push(&Signal::new(SignalKind::Alarm, "an alarm")).unwrap();
-        mb.push(&Signal::new(SignalKind::User, "a person")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalIdle, "idle thought")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalAlarm, "an alarm")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "a person")).unwrap();
         assert_eq!(mb.pop().unwrap().unwrap().text, "a person");
         assert_eq!(mb.pop().unwrap().unwrap().text, "an alarm");
         assert_eq!(mb.pop().unwrap().unwrap().text, "idle thought");
@@ -239,7 +239,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
         for i in 0..5 {
-            let mut s = Signal::new(SignalKind::User, format!("m{i}"));
+            let mut s = Signal::new(SignalKind::SignalUser, format!("m{i}"));
             s.ts = 1000.0 + i as f64;
             mb.push(&s).unwrap();
         }
@@ -253,7 +253,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         {
             let mb = Mailbox::open(d.path()).unwrap();
-            mb.push(&Signal::new(SignalKind::User, "important")).unwrap();
+            mb.push(&Signal::new(SignalKind::SignalUser, "important")).unwrap();
             let s = mb.pop().unwrap().unwrap();
             assert_eq!(s.text, "important");
             // The process dies here without acknowledging.
@@ -267,7 +267,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         {
             let mb = Mailbox::open(d.path()).unwrap();
-            mb.push(&Signal::new(SignalKind::User, "done with this")).unwrap();
+            mb.push(&Signal::new(SignalKind::SignalUser, "done with this")).unwrap();
             let s = mb.pop().unwrap().unwrap();
             mb.ack(&s).unwrap();
         }
@@ -280,7 +280,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
         fs::write(d.path().join("new/0-0000000000000001-0000000001-user.json"), "{ not json").unwrap();
-        mb.push(&Signal::new(SignalKind::User, "the real one")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "the real one")).unwrap();
         assert_eq!(mb.pop().unwrap().unwrap().text, "the real one", "the bad file must be stepped over");
     }
 
@@ -288,20 +288,20 @@ mod tests {
     fn meta_survives_the_round_trip() {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
-        mb.push(&Signal::new(SignalKind::Focus, "look at this").with_meta(json!({"thought": "ab12cd"}))).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalFocus, "look at this").with_meta(json!({"thought": "ab12cd"}))).unwrap();
         let s = mb.pop().unwrap().unwrap();
         assert_eq!(s.meta["thought"], "ab12cd");
-        assert_eq!(s.kind, SignalKind::Focus);
+        assert_eq!(s.kind, SignalKind::SignalFocus);
     }
 
     #[test]
     fn urgency_can_be_asked_about_without_consuming() {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
-        mb.push(&Signal::new(SignalKind::Idle, "later")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalIdle, "later")).unwrap();
         assert!(!mb.has(0).unwrap(), "an idle nudge is not urgent");
         assert!(mb.has(3).unwrap());
-        mb.push(&Signal::new(SignalKind::User, "now")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "now")).unwrap();
         assert!(mb.has(0).unwrap());
         assert_eq!(mb.len().unwrap(), 2, "asking must not consume");
     }
@@ -311,10 +311,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
         for _ in 0..4 {
-            mb.push(&Signal::new(SignalKind::Idle, "curious")).unwrap();
+            mb.push(&Signal::new(SignalKind::SignalIdle, "curious")).unwrap();
         }
-        mb.push(&Signal::new(SignalKind::User, "keep me")).unwrap();
-        assert_eq!(mb.drop_kind(SignalKind::Idle).unwrap(), 4);
+        mb.push(&Signal::new(SignalKind::SignalUser, "keep me")).unwrap();
+        assert_eq!(mb.drop_kind(SignalKind::SignalIdle).unwrap(), 4);
         assert_eq!(mb.len().unwrap(), 1);
         assert_eq!(mb.pop().unwrap().unwrap().text, "keep me");
     }
@@ -323,7 +323,7 @@ mod tests {
     fn a_requeued_signal_is_handed_out_again_and_remembers_it_failed() {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
-        mb.push(&Signal::new(SignalKind::User, "retry me")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "retry me")).unwrap();
         let s = mb.pop().unwrap().unwrap();
         assert_eq!(s.attempts, 0);
         mb.requeue(&s).unwrap();
@@ -338,7 +338,7 @@ mod tests {
     fn requeueing_does_not_leave_the_old_copy_behind() {
         let d = tempfile::tempdir().unwrap();
         let mb = Mailbox::open(d.path()).unwrap();
-        mb.push(&Signal::new(SignalKind::User, "once")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "once")).unwrap();
         let s = mb.pop().unwrap().unwrap();
         mb.requeue(&s).unwrap();
         assert_eq!(mb.len().unwrap(), 1, "a retry must not multiply the message");
@@ -350,7 +350,7 @@ mod tests {
         let mb = Mailbox::open(d.path()).unwrap();
         // A temporary from an interrupted write, which must not be picked up.
         fs::write(d.path().join("new/.0-x.json.99.tmp"), "{\"half\":").unwrap();
-        mb.push(&Signal::new(SignalKind::User, "whole")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "whole")).unwrap();
         assert_eq!(mb.pop().unwrap().unwrap().text, "whole");
         assert!(mb.pop().unwrap().is_none());
     }

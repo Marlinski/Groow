@@ -53,13 +53,13 @@ This is how you do almost everything: look at files, try things out, run your ow
 use `groow` commands to reach your own alarms, thoughts and questions. You see the exit status, \
 so a failure is information, not a dead end."
             .into(),
-        parameters: json!({
+        parameters: groow_proto::frame::to_struct(json!({
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "the command line to run"},
             },
             "required": ["command"],
-        }),
+        })),
     };
     match surface {
         Surface::Main => vec![
@@ -70,28 +70,28 @@ so a failure is information, not a dead end."
 not answer, and you can only have a few questions open at once, so ask about things you cannot \
 find out for yourself."
                     .into(),
-                parameters: json!({
+                parameters: groow_proto::frame::to_struct(json!({
                     "type": "object",
                     "properties": {
                         "question": {"type": "string", "description": "what you want to know"},
                         "context": {"type": "string", "description": "why you are asking, briefly"},
                     },
                     "required": ["question"],
-                }),
+                })),
             },
             ToolSchema {
                 name: "think".into(),
                 description: "Set a piece of work aside to run on its own while you carry on. \
 It works alone and comes back to you when it has something worth saying."
                     .into(),
-                parameters: json!({
+                parameters: groow_proto::frame::to_struct(json!({
                     "type": "object",
                     "properties": {
                         "goal": {"type": "string", "description": "what the thought should achieve"},
                         "max_steps": {"type": "integer", "description": "how many steps it may take"},
                     },
                     "required": ["goal"],
-                }),
+                })),
             },
         ],
         Surface::Thought => vec![
@@ -101,22 +101,22 @@ It works alone and comes back to you when it has something worth saying."
                 description: "Tell the main thread something it needs now, without waiting \
 until you are finished."
                     .into(),
-                parameters: json!({
+                parameters: groow_proto::frame::to_struct(json!({
                     "type": "object",
                     "properties": {"message": {"type": "string"}},
                     "required": ["message"],
-                }),
+                })),
             },
             ToolSchema {
                 name: "finish".into(),
                 description: "You have reached the goal. Say what you found, in a sentence or \
 two, and stop."
                     .into(),
-                parameters: json!({
+                parameters: groow_proto::frame::to_struct(json!({
                     "type": "object",
                     "properties": {"summary": {"type": "string"}},
                     "required": ["summary"],
-                }),
+                })),
             },
         ],
     }
@@ -258,11 +258,12 @@ mod tests {
         for s in [Surface::Main, Surface::Thought] {
             for t in schemas(s) {
                 assert!(!t.description.trim().is_empty(), "{} has no description", t.name);
-                assert_eq!(t.parameters["type"], "object", "{} is not an object", t.name);
-                let req = t.parameters["required"].as_array().expect("required list");
+                let params = groow_proto::frame::arg_of(&t.parameters);
+                assert_eq!(params["type"], "object", "{} is not an object", t.name);
+                let req = params["required"].as_array().expect("required list");
                 for r in req {
                     let key = r.as_str().unwrap();
-                    assert!(t.parameters["properties"].get(key).is_some(),
+                    assert!(params["properties"].get(key).is_some(),
                         "{} requires {key} but does not describe it", t.name);
                 }
             }

@@ -18,15 +18,15 @@ pub enum FromCore {
     /// An event: its name and its payload.
     Event(String, Value),
     /// The answer to something the interface asked.
-    Reply(u64, Value),
-    Failed(u64, String),
+    Reply(u32, Value),
+    Failed(u32, String),
     /// The connection ended.
     Gone,
 }
 
 pub struct Link {
     write: tokio::io::WriteHalf<UnixStream>,
-    next_id: u64,
+    next_id: u32,
 }
 
 impl Link {
@@ -45,14 +45,15 @@ impl Link {
                     Ok(_) => {}
                 }
                 let Ok(f) = Frame::decode(&line) else { continue };
-                let msg = match f {
-                    // Events reach an interface as pushes, carrying the event name.
-                    Frame::Push { name, data } => {
-                        FromCore::Event(name, data.get("data").cloned().unwrap_or(Value::Null))
-                    }
-                    Frame::Rep { id, ok } => FromCore::Reply(id, ok),
-                    Frame::Err { id, code, msg } => FromCore::Failed(id, format!("{code}: {msg}")),
-                    _ => continue,
+                // Events reach an interface as pushes, carrying the event name.
+                let msg = if let Some((name, data)) = f.pushed() {
+                    FromCore::Event(name.to_string(), data.get("data").cloned().unwrap_or(Value::Null))
+                } else if let (Some(id), Some(ok)) = (f.id(), f.ok()) {
+                    FromCore::Reply(id, ok)
+                } else if let (Some(id), Some((code, why))) = (f.id(), f.error()) {
+                    FromCore::Failed(id, format!("{code}: {why}"))
+                } else {
+                    continue;
                 };
                 if tx.send(msg).await.is_err() {
                     return;
@@ -76,7 +77,7 @@ impl Link {
     }
 
     /// Send a request. The answer arrives on the channel, tagged with the id returned here.
-    pub async fn send(&mut self, op: &str, arg: Value) -> std::io::Result<u64> {
+    pub async fn send(&mut self, op: &str, arg: Value) -> std::io::Result<u32> {
         let id = self.next_id;
         self.next_id += 1;
         self.write.write_all(Frame::req(id, op, arg).encode().as_bytes()).await?;
@@ -84,11 +85,11 @@ impl Link {
         Ok(id)
     }
 
-    pub async fn say(&mut self, text: &str) -> std::io::Result<u64> {
+    pub async fn say(&mut self, text: &str) -> std::io::Result<u32> {
         self.send("say", json!({"text": text})).await
     }
 
-    pub async fn command(&mut self, text: &str) -> std::io::Result<u64> {
+    pub async fn command(&mut self, text: &str) -> std::io::Result<u32> {
         self.send("command", json!({"text": text})).await
     }
 }
@@ -165,7 +166,7 @@ mod tests {
         let (_link, mut rx) = Link::open(&p).await.unwrap();
         assert!(matches!(rx.recv().await.unwrap(), FromCore::Reply(1, _)));
         match rx.recv().await.unwrap() {
-            FromCore::Failed(2, msg) => assert!(msg.starts_with("denied:")),
+            FromCore::Failed(2, msg) => assert!(msg.starts_with("CODE_DENIED:"), "{msg}"),
             other => panic!("unexpected: {other:?}"),
         }
     }

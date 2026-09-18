@@ -62,7 +62,7 @@ message Alarm {
   double created = 7;
   string by = 8;
   optional double last_fired = 9;
-  uint64 fires = 10;
+  uint32 fires = 10;
 }
 
 // One file in state/thoughts. Work the mind set aside for itself.

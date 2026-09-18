@@ -2,6 +2,10 @@
 
 Between the core and everything that is not the brain.
 
+Defined by [proto/wire.proto](proto/wire.proto) and [proto/turn.proto](proto/turn.proto). Those
+files are the specification; this page explains it. Both languages are generated from them, so
+a field that exists on one side exists on the other.
+
 - **Where** `<state>/core.sock`, a Unix domain socket. Mode 0660, owned by root, group of the
   agent user, so nobody else on the machine can open it.
 - **Encoding** one JSON object per line, UTF-8, newline-terminated. Lines up to 8 MiB.
@@ -13,22 +17,26 @@ Between the core and everything that is not the brain.
 Every line is exactly one of these, tagged by `f`. An unknown tag is a parse error, not a
 guess.
 
-| `f` | shape | meaning |
+Every line is one `Frame`, which is a protobuf `oneof`: exactly one field is set, and the name
+of that field says what it is.
+
+| field | shape | meaning |
 |---|---|---|
-| `req` | `{"f":"req","id":u64,"op":string,"arg":object}` | a request, answered exactly once |
-| `part` | `{"f":"part","id":u64,"data":object}` | a piece of an answer still in flight |
-| `rep` | `{"f":"rep","id":u64,"ok":any}` | the answer |
-| `err` | `{"f":"err","id":u64,"code":string,"msg":string}` | the refusal |
-| `ev` | `{"f":"ev","name":string,"t":float,"data":object}` | something happened; nobody replies |
-| `push` | `{"f":"push","name":string,"data":object}` | the core telling a peer something unasked |
+| `req` | `{"req":{"id":7,"op":"turn.claim","arg":{}}}` | a request, answered exactly once |
+| `part` | `{"part":{"id":7,"data":{"delta":"hel"}}}` | a piece of an answer still in flight |
+| `rep` | `{"rep":{"id":7,"ok":{…}}}` | the answer |
+| `err` | `{"err":{"id":7,"code":"CODE_STALE_EPOCH","msg":"…"}}` | the refusal |
+| `ev` | `{"ev":{"name":"tool_call","t":1789.5,"data":{…}}}` | something happened; nobody replies |
+| `push` | `{"push":{"name":"turn_end","data":{…}}}` | the core telling a peer something unasked |
 
 `id` is chosen by the caller and is unique within a connection. Exactly one `rep` or `err`
 closes it; any number of `part` frames may precede them.
 
 ### Error codes
 
-`unknown_op`, `bad_arg`, `denied`, `stale_epoch`, `not_found`, `idle`, `busy`, `cancelled`,
-`internal`. Codes are stable; messages are for a person reading a log.
+`CODE_UNKNOWN_OP`, `CODE_BAD_ARG`, `CODE_DENIED`, `CODE_STALE_EPOCH`, `CODE_NOT_FOUND`,
+`CODE_IDLE`, `CODE_BUSY`, `CODE_CANCELLED`, `CODE_INTERNAL`. Codes are stable; messages are for
+a person reading a log.
 
 ## Roles
 
@@ -79,7 +87,7 @@ are written in.
 `turn.claim` returns everything a turn needs, so the process that runs it holds nothing:
 
 ```json
-{"turn":"01789755947441-0004","epoch":12,"kind":"user",
+{"turn":"01789755947441-0004","epoch":12,"kind":"SIGNAL_USER",
  "text":"how many files are here?",
  "framed":"how many files are here?",
  "system":"I am Groow…",
@@ -91,9 +99,12 @@ Every later write carries `turn` and `epoch`. The core bumps the epoch whenever 
 is cancelled, and refuses anything stale, which is what makes re-running a turn either the same
 turn or a clean refusal and never half of one.
 
-`kind` is one of `user`, `command`, `focus`, `thought_done`, `reminder`, `alarm`, `note`,
-`expired`, `idle`. Only `user` and `command` reach the mind unframed; the rest are wrapped in a
-sentence saying what woke it.
+`kind` is a `SignalKind`. Only `SIGNAL_USER` and `SIGNAL_COMMAND` reach the mind unframed; the
+rest are wrapped in a sentence saying what woke it. On disk the journal writes the short form,
+`user`, `alarm` and so on, because the learning passes have always parsed it that way.
+
+The epoch is deliberately a 32-bit number: canonical protobuf JSON writes a 64-bit integer as a
+string, and this one is read straight out of the JSON by things expecting a number.
 
 ## Events
 

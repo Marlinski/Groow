@@ -258,16 +258,18 @@ pub struct Hub {
 pub fn frame(kind: SignalKind, text: &str, meta: &Value) -> String {
     let thought = meta.get("thought").and_then(|v| v.as_str()).unwrap_or("?");
     match kind {
-        SignalKind::User | SignalKind::Command => text.to_string(),
-        SignalKind::Focus => format!("[inner thought {thought} says] {text}"),
-        SignalKind::ThoughtDone => format!("[inner thought {thought} finished] {text}"),
-        SignalKind::Reminder => format!(
+        // An unspecified kind can only come from a record written by something newer; show it
+        // as it is rather than inventing a frame for it.
+        SignalKind::SignalUser | SignalKind::SignalCommand | SignalKind::SignalUnspecified => text.to_string(),
+        SignalKind::SignalFocus => format!("[inner thought {thought} says] {text}"),
+        SignalKind::SignalThoughtDone => format!("[inner thought {thought} finished] {text}"),
+        SignalKind::SignalReminder => format!(
             "[reminder, no reply needed] {text}. You may read that thought, pause it, or ignore this."),
-        SignalKind::Alarm => format!("[an alarm you set earlier] {text}"),
-        SignalKind::Note => format!("[a note you left yourself earlier] {text}"),
-        SignalKind::Expired => format!(
+        SignalKind::SignalAlarm => format!("[an alarm you set earlier] {text}"),
+        SignalKind::SignalNote => format!("[a note you left yourself earlier] {text}"),
+        SignalKind::SignalExpired => format!(
             "[no answer came] {text} Your mentor's attention is limited; ask less, and ask what matters."),
-        SignalKind::Idle => text.to_string(),
+        SignalKind::SignalIdle => text.to_string(),
     }
 }
 
@@ -528,7 +530,7 @@ impl Hub {
         }
 
         for a in self.schedule.due(now).map_err(other)? {
-            let sig = Signal::new(SignalKind::Alarm, &a.text).with_meta(json!({"alarm": a.id}));
+            let sig = Signal::new(SignalKind::SignalAlarm, &a.text).with_meta(json!({"alarm": a.id}));
             self.mailbox.push(&sig).map_err(io)?;
         }
 
@@ -542,7 +544,7 @@ impl Hub {
                 })));
             }
             let text = format!("You asked and nobody answered:\n{}", lines.join("\n"));
-            self.mailbox.push(&Signal::new(SignalKind::Expired, text)).map_err(io)?;
+            self.mailbox.push(&Signal::new(SignalKind::SignalExpired, text)).map_err(io)?;
         }
 
         for id in self.thoughts.reap(pid_alive, now).map_err(io)? {
@@ -581,7 +583,7 @@ impl Hub {
             if now - self.last_human >= gap {
                 self.idle_streak += 1;
                 self.last_human = now;
-                let sig = Signal::new(SignalKind::Idle,
+                let sig = Signal::new(SignalKind::SignalIdle,
                     "Nothing is waiting for you. Pick something small you do not understand, look it up, and try it.");
                 self.mailbox.push(&sig).map_err(io)?;
                 return Ok(Duty::Idle(0.2));
@@ -637,14 +639,14 @@ impl Hub {
         tracing::debug!(turn = %a.id, pid, "turn claimed");
         Ok(TurnContext {
             turn: a.id.clone(),
-            epoch: a.epoch,
-            kind: a.kind,
+            epoch: a.epoch.0,
+            kind: a.kind as i32,
             text: a.signal.text.clone(),
             framed: frame(a.kind, &a.signal.text, &a.signal.meta),
             system,
             window,
             max_rounds: self.cfg.max_tool_rounds,
-            meta: a.signal.meta.clone(),
+            meta: groow_proto::frame::to_struct(a.signal.meta.clone()),
         })
     }
 
@@ -679,7 +681,7 @@ impl Hub {
     }
 
     fn finish(&mut self, out: TurnOutcome) -> Result<Value, WireError> {
-        self.guard(&out.turn, out.epoch)?;
+        self.guard(&out.turn, Epoch(out.epoch))?;
         let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
         let _ = self.db.turn_ended(
@@ -857,10 +859,10 @@ impl Hub {
                 }).map_err(io)?;
                 // A thought that reached the main thread queues a signal for it.
                 if action == "focus" {
-                    let sig = Signal::new(SignalKind::Focus, text).with_meta(json!({"thought": id}));
+                    let sig = Signal::new(SignalKind::SignalFocus, text).with_meta(json!({"thought": id}));
                     self.mailbox.push(&sig).map_err(io)?;
                 } else if action == "finish" {
-                    let sig = Signal::new(SignalKind::ThoughtDone, text).with_meta(json!({"thought": id}));
+                    let sig = Signal::new(SignalKind::SignalThoughtDone, text).with_meta(json!({"thought": id}));
                     self.mailbox.push(&sig).map_err(io)?;
                 }
                 self.fanout(Event::new(EventName::Thought, json!({
@@ -905,14 +907,14 @@ impl Hub {
         };
         Ok(TurnContext {
             turn: t.id.clone(),
-            epoch: Epoch(t.steps as u64),
-            kind: SignalKind::Idle,
+            epoch: t.steps,
+            kind: SignalKind::SignalIdle as i32,
             text: t.goal.clone(),
             framed,
             system,
             window,
             max_rounds: self.cfg.max_tool_rounds,
-            meta: json!({"thought": t.id}),
+            meta: groow_proto::frame::to_struct(json!({"thought": t.id})),
         })
     }
 
@@ -942,7 +944,7 @@ impl Hub {
         }).map_err(io)?.ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
 
         if t.status.is_final() {
-            let sig = Signal::new(SignalKind::ThoughtDone, &t.summary).with_meta(json!({"thought": t.id}));
+            let sig = Signal::new(SignalKind::SignalThoughtDone, &t.summary).with_meta(json!({"thought": t.id}));
             self.mailbox.push(&sig).map_err(io)?;
         }
         self.fanout(Event::new(EventName::Thought, json!({
@@ -1126,7 +1128,7 @@ mod tests {
     #[test]
     fn a_signal_becomes_a_turn_and_the_turn_can_be_claimed() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         assert!(matches!(duty, Duty::Turn(_, _)));
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
@@ -1140,7 +1142,7 @@ mod tests {
     fn only_one_turn_runs_at_a_time() {
         let (mut h, _d) = hub();
         for i in 0..3 {
-            take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+            take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         }
         assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_, _)));
         let second = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
@@ -1150,7 +1152,7 @@ mod tests {
     #[test]
     fn a_turn_can_only_be_claimed_once() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "hi".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "hi".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         let again = take(|reply| Cmd::Claim { pid: 2, reply }, &mut h);
@@ -1166,12 +1168,12 @@ mod tests {
     #[test]
     fn a_write_from_a_finished_turn_is_refused() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "hi".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "hi".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish {
             outcome: Box::new(TurnOutcome {
-                turn: turn.clone(), epoch, final_text: "done".into(),
+                turn: turn.clone(), epoch: epoch.0, final_text: "done".into(),
                 flags: vec![], tools_used: 0, seconds: 1.0,
             }), reply,
         }, &mut h).unwrap();
@@ -1185,7 +1187,7 @@ mod tests {
     #[test]
     fn a_write_from_a_previous_life_is_refused() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "one".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "one".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, old_epoch) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn: turn.clone(), why: "process died".into() });
@@ -1199,7 +1201,7 @@ mod tests {
     #[test]
     fn an_abandoned_human_message_is_tried_again() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "please answer".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "please answer".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, _) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn, why: "crash".into() });
@@ -1214,7 +1216,7 @@ mod tests {
     #[test]
     fn an_abandoned_nudge_is_not_retried_forever() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "be curious".into(), kind: SignalKind::Idle, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "be curious".into(), kind: SignalKind::SignalIdle, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, _) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn, why: "crash".into() });
@@ -1224,7 +1226,7 @@ mod tests {
     #[test]
     fn signals_that_are_not_from_a_person_are_framed() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "the kettle".into(), kind: SignalKind::Alarm, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "the kettle".into(), kind: SignalKind::SignalAlarm, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         assert!(ctx.framed.starts_with("[an alarm you set earlier]"));
@@ -1234,16 +1236,16 @@ mod tests {
     #[test]
     fn the_window_comes_back_on_the_next_turn() {
         let (mut h, _d) = hub();
-        take(|reply| Cmd::Say { text: "what is a river".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "what is a river".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Append { turn: turn.clone(), epoch, msg: Box::new(Message::user("what is a river")), reply }, &mut h).unwrap();
         take(|reply| Cmd::Append { turn: turn.clone(), epoch, msg: Box::new(Message::assistant("water going downhill")), reply }, &mut h).unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch, final_text: "water going downhill".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "water going downhill".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
 
-        take(|reply| Cmd::Say { text: "and a lake".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "and a lake".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
         assert_eq!(ctx.window.len(), 2, "the previous exchange should be there");
@@ -1267,11 +1269,11 @@ mod tests {
         let r = take(|reply| Cmd::Ask { question: "what next?".into(), context: String::new(), reply }, &mut h).unwrap();
         let qid = r["id"].as_str().unwrap().to_string();
 
-        take(|reply| Cmd::Say { text: "learn about rivers".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "learn about rivers".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
 
         let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
@@ -1283,7 +1285,7 @@ mod tests {
     #[test]
     fn a_question_asked_during_a_turn_is_not_closed_by_the_message_that_started_it() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "go and ask him".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "go and ask him".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         clock.advance(1.0);
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         // The mind asks while the turn is running.
@@ -1291,7 +1293,7 @@ mod tests {
         take(|reply| Cmd::Ask { question: "does it still exist?".into(), context: String::new(), reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch, final_text: "asked.".into(), flags: vec![], tools_used: 1, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "asked.".into(), flags: vec![], tools_used: 1, seconds: 1.0,
         }), reply }, &mut h).unwrap();
 
         let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
@@ -1303,11 +1305,11 @@ mod tests {
     fn a_nudge_never_counts_as_an_answer() {
         let (mut h, _d) = hub();
         take(|reply| Cmd::Ask { question: "what next?".into(), context: String::new(), reply }, &mut h).unwrap();
-        take(|reply| Cmd::Say { text: "tick".into(), kind: SignalKind::Alarm, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "tick".into(), kind: SignalKind::SignalAlarm, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
         let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
         assert_eq!(listing["open"].as_array().unwrap().len(), 1, "its own alarm must not answer its question");
@@ -1337,7 +1339,7 @@ mod tests {
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
             Duty::Turn(s, _) => {
-                assert_eq!(s.kind, SignalKind::Focus);
+                assert_eq!(s.kind, SignalKind::SignalFocus);
                 assert_eq!(s.meta["thought"], id);
             }
             other => panic!("the main thread was not woken: {other:?}"),
@@ -1353,7 +1355,7 @@ mod tests {
         }, &mut h).unwrap();
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
-            Duty::Turn(s, _) => assert_eq!(s.kind, SignalKind::Alarm),
+            Duty::Turn(s, _) => assert_eq!(s.kind, SignalKind::SignalAlarm),
             other => panic!("the alarm did not fire: {other:?}"),
         }
     }
@@ -1369,7 +1371,7 @@ mod tests {
         let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         match duty {
             Duty::Turn(s, _) => {
-                assert_eq!(s.kind, SignalKind::Expired);
+                assert_eq!(s.kind, SignalKind::SignalExpired);
                 assert_eq!(s.text.lines().count(), 4, "one interruption for all three, not three");
             }
             other => panic!("expiry did not reach the mind: {other:?}"),
@@ -1379,7 +1381,7 @@ mod tests {
     #[test]
     fn what_came_in_is_recorded_once_even_when_the_turn_is_retried() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "answer me".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "answer me".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         for _ in 0..2 {
             clock.advance(200.0);
             take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
@@ -1394,7 +1396,7 @@ mod tests {
     #[test]
     fn a_failing_turn_is_given_up_on_rather_than_retried_forever() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "this will fail".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "this will fail".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         let mut attempts = 0;
         for _ in 0..10 {
             clock.advance(1000.0);
@@ -1417,7 +1419,7 @@ mod tests {
     #[test]
     fn a_failure_is_waited_out_before_trying_again() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, _) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn, why: "crash".into() });
@@ -1444,7 +1446,7 @@ mod tests {
     #[test]
     fn a_turn_that_finishes_clears_the_failure_streak() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "one".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "one".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, _) = h.active_turn().unwrap();
         h.handle(Cmd::Abandon { turn, why: "crash".into() });
@@ -1454,7 +1456,7 @@ mod tests {
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
         assert_eq!(h.fail_streak, 0, "one good turn should clear the backoff");
     }
@@ -1462,7 +1464,7 @@ mod tests {
     #[test]
     fn nothing_is_started_while_it_is_asleep() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         h.handle(Cmd::Napping { what: Some("night".into()) });
         clock.advance(10.0);
         assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)),
@@ -1487,12 +1489,12 @@ mod tests {
         h.cfg.nap_max_samples = 2;
         h.cfg.sleep_every_hours = 0.0;
         for i in 0..2 {
-            take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+            take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
             clock.advance(10.0);
             take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
             let (turn, epoch) = h.active_turn().unwrap();
             take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-                turn, epoch, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+                turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
             }), reply }, &mut h).unwrap();
         }
         clock.advance(10.0);
@@ -1517,7 +1519,7 @@ mod tests {
         let (mut h, clock, _d) = hub_at(1000.0);
         h.cfg.sleep_every_hours = 1.0;
         clock.advance(7200.0);
-        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
             Duty::Turn(s, _) => assert_eq!(s.text, "hello"),
             other => panic!("it went to sleep with someone waiting: {other:?}"),
@@ -1572,7 +1574,7 @@ mod tests {
     #[test]
     fn empty_requests_are_refused_rather_than_queued() {
         let (mut h, _d) = hub();
-        assert!(take(|reply| Cmd::Say { text: "  ".into(), kind: SignalKind::User, meta: json!({}), reply }, &mut h).is_err());
+        assert!(take(|reply| Cmd::Say { text: "  ".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).is_err());
         assert!(take(|reply| Cmd::Ask { question: "".into(), context: String::new(), reply }, &mut h).is_err());
         assert!(take(|reply| Cmd::Think { goal: " ".into(), max_steps: 3, reply }, &mut h).is_err());
     }

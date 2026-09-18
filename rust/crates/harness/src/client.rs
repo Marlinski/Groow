@@ -34,7 +34,7 @@ impl ClientError {
     pub fn is_fatal(&self) -> bool {
         match self {
             ClientError::Closed | ClientError::Unreachable(_, _) => true,
-            ClientError::Refused { code, .. } => code == "stale_epoch" || code == "cancelled",
+            ClientError::Refused { code, .. } => code == "CODE_STALE_EPOCH" || code == "CODE_CANCELLED",
             ClientError::Garbled(_) => false,
         }
     }
@@ -43,7 +43,7 @@ impl ClientError {
 pub struct Client {
     write: tokio::io::WriteHalf<UnixStream>,
     read: BufReader<tokio::io::ReadHalf<UnixStream>>,
-    next_id: u64,
+    next_id: u32,
     /// Set when the core asks for the turn to stop.
     cancelled: bool,
 }
@@ -94,21 +94,24 @@ impl Client {
 
         loop {
             let frame = self.next_frame().await?;
-            match frame {
-                Frame::Rep { id: got, ok } if got == id => return Ok(ok),
-                Frame::Err { id: got, code, msg } if got == id => {
-                    return Err(ClientError::Refused { code, msg })
+            let mine = frame.id() == Some(id);
+            if mine {
+                if let Some(ok) = frame.ok() {
+                    return Ok(ok);
                 }
-                Frame::Part { id: got, data } if got == id => on_part(&data),
-                Frame::Push { name, .. } => {
-                    if name == "cancel" {
-                        self.cancelled = true;
-                    }
+                if let Some((code, msg)) = frame.error() {
+                    return Err(ClientError::Refused { code: code.to_string(), msg: msg.to_string() });
                 }
-                // An answer to something else, or a frame that makes no sense here. Ignoring
-                // it is safe: only one request is ever outstanding.
-                _ => {}
+                if let Some(data) = frame.part_data() {
+                    on_part(&data);
+                    continue;
+                }
             }
+            if let Some(("cancel", _)) = frame.pushed() {
+                self.cancelled = true;
+            }
+            // Anything else is an answer to something else, or a frame that makes no sense
+            // here. Ignoring it is safe: only one request is ever outstanding.
         }
     }
 
@@ -123,7 +126,7 @@ impl Client {
 
     /// Tell the core something happened. Nothing waits on this.
     pub async fn emit(&mut self, ev: Event) -> Result<(), ClientError> {
-        self.write_frame(&Frame::Ev { name: ev.name, t: ev.t, data: ev.data }).await
+        self.write_frame(&Frame::ev(ev.name, ev.t, ev.data)).await
     }
 
     /// The conscious turn's contract.
@@ -135,7 +138,7 @@ impl Client {
     pub async fn append(
         &mut self,
         turn: &str,
-        epoch: groow_proto::turn::Epoch,
+        epoch: u32,
         msg: &groow_proto::turn::Message,
     ) -> Result<(), ClientError> {
         self.call("turn.append", json!({"turn": turn, "epoch": epoch, "message": msg})).await?;
@@ -209,7 +212,7 @@ mod tests {
         fake_core(p.clone(), vec![Frame::err(1, &WireError::StaleEpoch("t1".into()))]).await;
         let mut c = Client::connect(&p).await.unwrap();
         match c.call("turn.append", json!({})).await.unwrap_err() {
-            ClientError::Refused { code, .. } => assert_eq!(code, "stale_epoch"),
+            ClientError::Refused { code, .. } => assert_eq!(code, "CODE_STALE_EPOCH"),
             other => panic!("unexpected: {other}"),
         }
     }
@@ -219,8 +222,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s.sock");
         fake_core(p.clone(), vec![
-            Frame::Part { id: 1, data: json!({"delta": "he"}) },
-            Frame::Part { id: 1, data: json!({"delta": "llo"}) },
+            Frame::part(1, json!({"delta": "he"})),
+            Frame::part(1, json!({"delta": "llo"})),
             Frame::rep(1, json!({"text": "hello"})),
         ]).await;
         let mut c = Client::connect(&p).await.unwrap();
@@ -284,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_stale_turn_ends_the_process_but_a_bad_argument_does_not() {
-        assert!(ClientError::Refused { code: "stale_epoch".into(), msg: String::new() }.is_fatal());
-        assert!(!ClientError::Refused { code: "bad_arg".into(), msg: String::new() }.is_fatal());
+        assert!(ClientError::Refused { code: "CODE_STALE_EPOCH".into(), msg: String::new() }.is_fatal());
+        assert!(!ClientError::Refused { code: "CODE_BAD_ARG".into(), msg: String::new() }.is_fatal());
     }
 }

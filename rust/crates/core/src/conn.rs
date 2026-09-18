@@ -114,13 +114,15 @@ impl Conn {
     }
 
     async fn on_frame(&self, frame: Frame) {
-        match frame {
-            Frame::Req { id, op, arg } => self.on_request(id, op, arg).await,
-            Frame::Ev { name, t, data } => self.on_event(name, t, data).await,
-            // A peer has nothing to reply to and nothing to push. Ignoring these keeps a
-            // confused client from being able to drive the core through its own answers.
-            Frame::Rep { .. } | Frame::Err { .. } | Frame::Part { .. } | Frame::Push { .. } => {}
+        if let Some((id, op, arg)) = frame.request() {
+            let op = op.to_string();
+            self.on_request(id, op, arg).await;
+        } else if let Some((name, t, data)) = frame.event() {
+            let name = name.to_string();
+            self.on_event(name, t, data).await;
         }
+        // A peer has nothing to reply to and nothing to push. Ignoring those keeps a confused
+        // client from being able to drive the core through its own answers.
     }
 
     async fn on_event(&self, name: String, t: f64, data: Value) {
@@ -136,7 +138,7 @@ impl Conn {
         self.hub.emit(Event { name, t, data }).await;
     }
 
-    async fn on_request(&self, id: u64, op_name: String, arg: Value) {
+    async fn on_request(&self, id: u32, op_name: String, arg: Value) {
         let Some(op) = Op::parse(&op_name) else {
             self.send(Frame::err(id, &WireError::UnknownOp(op_name))).await;
             return;
@@ -184,7 +186,7 @@ impl Conn {
             Op::TurnClaim => {
                 let ctx = self.hub.claim(self.peer.pid).await?;
                 if let Ok(mut g) = self.claimed.lock() {
-                    *g = Some((ctx.turn.clone(), ctx.epoch));
+                    *g = Some((ctx.turn.clone(), Epoch(ctx.epoch)));
                 }
                 serde_json::to_value(ctx).map_err(|e| WireError::Internal(e.to_string()))
             }
@@ -192,7 +194,7 @@ impl Conn {
                 let msg: Message = serde_json::from_value(
                     arg.get("message").cloned().unwrap_or(Value::Null),
                 ).map_err(|e| WireError::BadArg(format!("message: {e}")))?;
-                let epoch = Epoch(arg.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0));
+                let epoch = Epoch(arg.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0) as u32);
                 self.hub.append(&s("turn"), epoch, msg).await
             }
             Op::TurnEnd => {
@@ -243,14 +245,14 @@ impl Conn {
             }
             Op::Say => {
                 let kind = if s("kind") == "note" {
-                    groow_proto::turn::SignalKind::Note
+                    groow_proto::turn::SignalKind::SignalNote
                 } else {
-                    groow_proto::turn::SignalKind::User
+                    groow_proto::turn::SignalKind::SignalUser
                 };
                 self.hub.say(&s("text"), kind, json!({})).await
             }
             Op::Command => {
-                self.hub.say(&s("text"), groow_proto::turn::SignalKind::Command, json!({})).await
+                self.hub.say(&s("text"), groow_proto::turn::SignalKind::SignalCommand, json!({})).await
             }
             Op::Quit => self.hub.shutdown().await,
             // Handled elsewhere or not yet wired to the Python side.
@@ -265,7 +267,7 @@ impl Conn {
     ///
     /// Events arrive as pushes rather than as parts of the reply, so a watcher can still make
     /// ordinary requests on the same connection while it watches.
-    async fn watch(&self, id: u64) {
+    async fn watch(&self, id: u32) {
         let rx = match self.hub.subscribe().await {
             Ok(rx) => rx,
             Err(e) => {
@@ -286,7 +288,7 @@ impl Conn {
     }
 
     /// Generate, streaming the pieces back on this connection as they arrive.
-    async fn complete(&self, id: u64, arg: Value) {
+    async fn complete(&self, id: u32, arg: Value) {
         let messages: Vec<Message> = match serde_json::from_value(arg.get("messages").cloned().unwrap_or(json!([]))) {
             Ok(m) => m,
             Err(e) => {
@@ -309,7 +311,7 @@ impl Conn {
         let pump = tokio::spawn(async move {
             while let Some(d) = drx.recv().await {
                 if stream_out {
-                    let _ = out.try_send(Frame::Part { id, data: json!({"delta": d}) });
+                    let _ = out.try_send(Frame::part(id, json!({"delta": d})));
                 }
                 hub.emit(Event::new(EventName::Token, json!({"delta": d, "turn": turn}))).await;
             }
@@ -350,7 +352,7 @@ mod tests {
     }
 
     impl Client {
-        async fn send(&mut self, id: u64, op: &str, arg: Value) {
+        async fn send(&mut self, id: u32, op: &str, arg: Value) {
             self.write.write_all(Frame::req(id, op, arg).encode().as_bytes()).await.unwrap();
             self.write.flush().await.unwrap();
         }
@@ -364,7 +366,7 @@ mod tests {
             Frame::decode(&line).unwrap()
         }
 
-        async fn call(&mut self, id: u64, op: &str, arg: Value) -> Frame {
+        async fn call(&mut self, id: u32, op: &str, arg: Value) -> Frame {
             self.send(id, op, arg).await;
             self.recv().await
         }
@@ -388,7 +390,7 @@ mod tests {
         let (mut s, _h, _d) = rig(Role::Agent).await;
         let f = s.call(1, "hello", json!({})).await;
         match f {
-            Frame::Rep { ok, .. } => assert_eq!(ok["role"], "agent"),
+            f if f.is_rep() => assert_eq!(f.ok().unwrap()["role"], "agent"),
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -397,8 +399,9 @@ mod tests {
     async fn an_unknown_op_is_named_back() {
         let (mut s, _h, _d) = rig(Role::Agent).await;
         match s.call(1, "delete_everything", json!({})).await {
-            Frame::Err { code, msg, .. } => {
-                assert_eq!(code, "unknown_op");
+            f if f.is_err() => {
+                let (code, msg) = f.error().unwrap();
+                assert_eq!(code, "CODE_UNKNOWN_OP");
                 assert!(msg.contains("delete_everything"));
             }
             other => panic!("unexpected: {other:?}"),
@@ -409,7 +412,7 @@ mod tests {
     async fn the_mind_cannot_shut_the_core_down() {
         let (mut s, _h, _d) = rig(Role::Agent).await;
         match s.call(1, "quit", json!({})).await {
-            Frame::Err { code, .. } => assert_eq!(code, "denied"),
+            f if f.is_err() => assert_eq!(f.error().unwrap().0, "CODE_DENIED"),
             other => panic!("the mind was allowed to quit: {other:?}"),
         }
     }
@@ -418,11 +421,11 @@ mod tests {
     async fn a_viewer_cannot_claim_a_turn_but_can_speak() {
         let (mut s, _h, _d) = rig(Role::Viewer).await;
         match s.call(1, "turn.claim", json!({})).await {
-            Frame::Err { code, .. } => assert_eq!(code, "denied"),
+            f if f.is_err() => assert_eq!(f.error().unwrap().0, "CODE_DENIED"),
             other => panic!("a terminal claimed a turn: {other:?}"),
         }
         match s.call(2, "say", json!({"text": "hello"})).await {
-            Frame::Rep { ok, .. } => assert_eq!(ok["ok"], true),
+            f if f.is_rep() => assert_eq!(f.ok().unwrap()["ok"], true),
             other => panic!("a viewer could not speak: {other:?}"),
         }
     }
@@ -430,11 +433,11 @@ mod tests {
     #[tokio::test]
     async fn a_turn_runs_end_to_end_over_one_connection() {
         let (mut s, hub, _d) = rig(Role::Agent).await;
-        hub.say("what is a river", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
+        hub.say("what is a river", groow_proto::turn::SignalKind::SignalUser, json!({})).await.unwrap();
         hub.next_duty().await.unwrap();
 
         let ctx = match s.call(1, "turn.claim", json!({})).await {
-            Frame::Rep { ok, .. } => ok,
+            f if f.is_rep() => f.ok().unwrap(),
             other => panic!("could not claim: {other:?}"),
         };
         let (turn, epoch) = (ctx["turn"].as_str().unwrap().to_string(), ctx["epoch"].as_u64().unwrap());
@@ -444,19 +447,19 @@ mod tests {
             "turn": turn, "epoch": epoch,
             "message": {"role": "assistant", "content": "water going downhill"},
         })).await;
-        assert!(matches!(r, Frame::Rep { .. }), "append refused: {r:?}");
+        assert!(r.is_rep(), "append refused: {r:?}");
 
         let r = s.call(3, "turn.end", json!({
             "turn": turn, "epoch": epoch, "final_text": "water going downhill",
             "flags": [], "tools_used": 0, "seconds": 0.4,
         })).await;
-        assert!(matches!(r, Frame::Rep { .. }), "end refused: {r:?}");
+        assert!(r.is_rep(), "end refused: {r:?}");
     }
 
     #[tokio::test]
     async fn a_turn_whose_process_vanishes_does_not_block_the_next_one() {
         let (mut s, hub, _d) = rig(Role::Agent).await;
-        hub.say("first", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
+        hub.say("first", groow_proto::turn::SignalKind::SignalUser, json!({})).await.unwrap();
         hub.next_duty().await.unwrap();
         s.call(1, "turn.claim", json!({})).await;
 
@@ -480,8 +483,9 @@ mod tests {
         let (mut s, _h, _d) = rig(Role::Agent).await;
         // The brain in this rig is not listening.
         match s.call(1, "complete", json!({"messages": [{"role":"user","content":"hi"}]})).await {
-            Frame::Err { code, msg, .. } => {
-                assert_eq!(code, "internal");
+            f if f.is_err() => {
+                let (code, msg) = f.error().unwrap();
+                assert_eq!(code, "CODE_INTERNAL");
                 assert!(msg.contains("not answering"), "unhelpful: {msg}");
             }
             other => panic!("expected an error: {other:?}"),
@@ -502,10 +506,11 @@ mod tests {
     #[tokio::test]
     async fn a_watcher_receives_events_as_they_happen() {
         let (mut s, hub, _d) = rig(Role::Viewer).await;
-        assert!(matches!(s.call(1, "watch", json!({})).await, Frame::Rep { .. }));
+        assert!(s.call(1, "watch", json!({})).await.is_rep());
         hub.emit(Event::log("info", "something happened")).await;
         match s.recv().await {
-            Frame::Push { name, data } => {
+            f if f.pushed().is_some() => {
+                let (name, data) = f.pushed().unwrap();
                 assert_eq!(name, "log");
                 assert_eq!(data["data"]["text"], "something happened");
             }
@@ -518,17 +523,17 @@ mod tests {
         let (mut s, _hub, _d) = rig(Role::Viewer).await;
         s.call(1, "watch", json!({})).await;
         // The watch does not occupy the connection.
-        assert!(matches!(s.call(2, "status", json!({})).await, Frame::Rep { .. }));
+        assert!(s.call(2, "status", json!({})).await.is_rep());
     }
 
     #[tokio::test]
     async fn a_malformed_argument_is_refused_without_dropping_the_connection() {
         let (mut s, _h, _d) = rig(Role::Agent).await;
         match s.call(1, "turn.append", json!({"turn": "x", "epoch": 1, "message": "not a message"})).await {
-            Frame::Err { code, .. } => assert_eq!(code, "bad_arg"),
+            f if f.is_err() => assert_eq!(f.error().unwrap().0, "CODE_BAD_ARG"),
             other => panic!("unexpected: {other:?}"),
         }
         // Still usable afterwards.
-        assert!(matches!(s.call(2, "status", json!({})).await, Frame::Rep { .. }));
+        assert!(s.call(2, "status", json!({})).await.is_rep());
     }
 }

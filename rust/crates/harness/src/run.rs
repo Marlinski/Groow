@@ -122,7 +122,7 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
         // dies mid-tool, the conversation still shows what it was trying to do.
         let mut said = Message::assistant(&p.content);
         if !p.calls.is_empty() {
-            said.tool_calls = Some(json!(p
+            said = said.with_calls(json!(p
                 .calls
                 .iter()
                 .map(|c| json!({"name": c.name, "arguments": c.args}))
@@ -354,7 +354,8 @@ mod tests {
                     return;
                 }
                 let Ok(f) = Frame::decode(&line) else { continue };
-                let Frame::Req { id, op, arg } = f else { continue };
+                let Some((id, op, arg)) = f.request() else { continue };
+                let (op, arg) = (op.to_string(), arg);
                 let reply = match op.as_str() {
                     "turn.claim" | "thought.claim" => Frame::rep(id, serde_json::to_value(&ctx).unwrap()),
                     "thought.append" => {
@@ -365,7 +366,7 @@ mod tests {
                     "thought.end" => {
                         log.lock().unwrap().outcome = Some(TurnOutcome {
                             turn: arg["id"].as_str().unwrap_or("").to_string(),
-                            epoch: groow_proto::turn::Epoch(0),
+                            epoch: 0,
                             final_text: arg["final_text"].as_str().unwrap_or("").to_string(),
                             flags: arg["flags"].as_array().map(|a| a.iter()
                                 .filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(),
@@ -411,14 +412,14 @@ mod tests {
     fn ctx(max_rounds: u32) -> TurnContext {
         TurnContext {
             turn: "t-1".into(),
-            epoch: groow_proto::turn::Epoch(3),
-            kind: SignalKind::User,
+            epoch: 3,
+            kind: SignalKind::SignalUser as i32,
             text: "what is in this folder?".into(),
             framed: "what is in this folder?".into(),
             system: "You are Groow.".into(),
             window: vec![],
             max_rounds,
-            meta: json!({}),
+            meta: None,
         }
     }
 

@@ -57,12 +57,15 @@ allows.</p>
 <p>One connection carries everything: requests, streamed generation, events going up and pushes
 coming down. Frames are newline-delimited JSON with an explicit tag, so an unknown or malformed
 frame is a parse error rather than a silent misread.</p>
-<pre><code>{"f":"req", "id":7, "op":"turn.claim", "arg":{}}
-{"f":"part","id":7, "data":{"delta":"hel"}}
-{"f":"rep", "id":7, "ok":{"turn":"01J…"}}
-{"f":"err", "id":7, "code":"stale_epoch", "msg":"turn 01J… is over"}
-{"f":"ev",  "name":"tool_call", "t":1789.5, "data":{"name":"shell"}}
-{"f":"push","name":"cancel", "data":{}}</code></pre>
+<pre><code>{"req": {"id":7, "op":"turn.claim", "arg":{}}}
+{"part":{"id":7, "data":{"delta":"hel"}}}
+{"rep": {"id":7, "ok":{"turn":"01J…"}}}
+{"err": {"id":7, "code":"CODE_STALE_EPOCH", "msg":"turn 01J… is over"}}
+{"ev":  {"name":"tool_call", "t":1789.5, "data":{"name":"shell"}}}
+{"push":{"name":"cancel", "data":{}}}</code></pre>
+<p>The shapes are not written by hand. They are generated from
+<code>nervous_system/proto</code>, in both languages, so a field that exists on one side exists
+on the other.</p>
 
 <h2>Who may call what</h2>
 <p>Authority comes from the kernel. A connection over a Unix socket carries the peer's real user

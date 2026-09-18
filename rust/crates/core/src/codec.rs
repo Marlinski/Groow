@@ -90,17 +90,17 @@ mod tests {
             w.send(&Frame::err(1, &WireError::Idle)).await.unwrap();
         }
         let mut r = FrameReader::new(&buf[..]);
-        assert!(matches!(r.next().await.unwrap(), Some(Frame::Req { .. })));
-        assert!(matches!(r.next().await.unwrap(), Some(Frame::Ev { .. })));
-        assert!(matches!(r.next().await.unwrap(), Some(Frame::Err { .. })));
+        assert!(r.next().await.unwrap().unwrap().request().is_some());
+        assert!(r.next().await.unwrap().unwrap().event().is_some());
+        assert!(r.next().await.unwrap().unwrap().is_err());
         assert!(r.next().await.unwrap().is_none(), "stream should end cleanly");
     }
 
     #[tokio::test]
     async fn blank_lines_are_skipped_but_garbage_is_not() {
-        let input = "\n\n{\"f\":\"ev\",\"name\":\"log\",\"t\":0.0}\n";
+        let input = "\n\n{\"ev\":{\"name\":\"log\",\"t\":0.0}}\n";
         let mut r = FrameReader::new(input.as_bytes());
-        assert!(matches!(r.next().await.unwrap(), Some(Frame::Ev { .. })));
+        assert!(r.next().await.unwrap().unwrap().event().is_some());
 
         let mut bad = FrameReader::new(&b"{not json}\n"[..]);
         assert!(bad.next().await.is_err(), "garbage must surface, never be skipped");
@@ -108,7 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_truncated_final_line_is_an_error_not_a_frame() {
-        let mut r = FrameReader::new(&b"{\"f\":\"req\",\"id\":1"[..]);
+        let mut r = FrameReader::new(&b"{\"req\":{\"id\":1"[..]);
         assert!(r.next().await.is_err());
     }
 

@@ -299,7 +299,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // A binary that exits at once without ever opening the socket.
         let core = core_for(&d, "/bin/false");
-        core.hub.say("hello", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
+        core.hub.say("hello", groow_proto::turn::SignalKind::SignalUser, json!({})).await.unwrap();
         let duty = core.hub.next_duty().await.unwrap();
         let id = match duty {
             crate::hub::Duty::Turn(_, id) => id,
@@ -324,7 +324,7 @@ mod tests {
     async fn a_turn_that_cannot_be_started_does_not_wedge_the_scheduler() {
         let d = tempfile::tempdir().unwrap();
         let core = core_for(&d, "/definitely/not/a/program");
-        core.hub.say("hello", groow_proto::turn::SignalKind::User, json!({})).await.unwrap();
+        core.hub.say("hello", groow_proto::turn::SignalKind::SignalUser, json!({})).await.unwrap();
         let sched = tokio::spawn(core.clone().run_scheduler());
         // It should keep going rather than dying on the failed spawn.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

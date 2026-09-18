@@ -30,6 +30,8 @@ from pathlib import Path
 from aiohttp import web
 
 from .config import Config
+from .proto import brain as pb
+from .proto import from_dict, to_dict
 
 # Lower goes first. Training sits at the back: anything already waiting to be
 # answered goes first, and only then does the brain sit down to learn.
@@ -217,16 +219,18 @@ class Server:
 
     # ---------------------------------------------------------------- routes
     async def h_health(self, request: web.Request) -> web.Response:
-        return web.json_response({
-            "ok": self.brain is not None,
-            "model": self.cfg.model_id,
-            "busy": self.busy,
-            "doing": self.doing,
-            "waiting": self.queue.qsize(),
-            "generated": self.generated,
-            "trained": self.trained,
-            "steps": (self.brain.meta.get("steps") if self.brain else None),
-        })
+        h = pb.Health(
+            ok=self.brain is not None,
+            model=self.cfg.model_id,
+            busy=self.busy,
+            doing=self.doing,
+            waiting=self.queue.qsize(),
+            generated=self.generated,
+            trained=self.trained,
+        )
+        if self.brain is not None:
+            h.steps = int(self.brain.meta.get("steps") or 0)
+        return web.json_response(to_dict(h, full=True))
 
     async def h_train(self, request: web.Request) -> web.StreamResponse:
         return await self.submit(request, "train", LEARNING)
@@ -252,11 +256,18 @@ class Server:
 
     async def h_generate(self, request: web.Request) -> web.StreamResponse:
         try:
-            payload = await request.json()
+            raw = await request.json()
         except Exception:
             return web.json_response({"error": "that was not JSON"}, status=400)
-        if not payload.get("messages"):
+        try:
+            # Parsed through the schema, so a field the core invented or misspelled is caught
+            # here rather than becoming a silently missing setting.
+            req = from_dict(raw, pb.GenRequest())
+        except Exception as e:
+            return web.json_response({"error": f"that is not a generation request: {e}"}, status=400)
+        if not req.messages:
             return web.json_response({"error": "there was nothing to generate from"}, status=400)
+        payload = to_dict(req)
 
         resp = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
         await resp.prepare(request)

@@ -83,10 +83,14 @@ something, because a request in flight does not occupy the connection.</p>
 <p>Authority comes from the kernel here, not from the conversation. The socket carries the
 peer's real user id, so the core knows whether it is talking to its owner, to the mind, or to a
 window before it has read a byte. Nothing a caller says about itself is used to grant anything.</p>
-<pre><code>{"f":"req", "id":7, "op":"turn.claim", "arg":{}}
-{"f":"rep", "id":7, "ok":{"turn":"01J…","window":[…]}}
-{"f":"ev",  "name":"tool_call", "t":1789.5, "data":{"name":"shell"}}
-{"f":"push","name":"turn_end", "data":{…}}</code></pre>
+<pre><code>{"req": {"id":7, "op":"turn.claim", "arg":{}}}
+{"rep": {"id":7, "ok":{"turn":"01J…","window":[…]}}}
+{"ev":  {"name":"tool_call", "t":1789.5, "data":{"name":"shell"}}}
+{"push":{"name":"turn_end", "data":{…}}}</code></pre>
+<p>Every message on every channel is defined once, in <code>nervous_system/proto</code>, and both
+languages are generated from it. The encoding is canonical protobuf JSON rather than the binary
+form, so the same shapes are what sit in the conversation on disk and a person can read them
+with <code>cat</code>.</p>
 
 <h2><span class="roman">II</span>The loopback</h2>
 <p>HTTP on a loopback port, answering in newline-delimited JSON so a long piece of work is not
