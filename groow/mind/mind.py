@@ -35,10 +35,20 @@ class Mind:
         self.last_human = time.time()
         self.handled = 0
         self._req = None
+        self.restart_requested = False
 
     # ------------------------------------------------------------------ producers
     def push_user(self, text: str, req: str | None = None) -> None:
         self.queue.push(Priority.USER, "user", text, req=req)
+
+    def stop(self, restart: bool = False) -> None:
+        """Stop now: the turn in progress is interrupted (rolled back, nothing learned from it)."""
+        self.alive = False
+        self.restart_requested = restart
+        self.queue.push(Priority.USER, "noop", "")       # wake the loop if it is waiting on the queue
+
+    def _should_stop(self) -> bool:
+        return not self.alive
 
     # ------------------------------------------------------------------ the loop
     on_error = None      # callable(kind, traceback) -> None, set by the app (records incidents)
@@ -81,7 +91,7 @@ class Mind:
             self.emit("turn_start", who="user", kind="user", text=sig.text, req=req)
             self._req = req
             try:
-                r = await self.harness.turn(sig.text)
+                r = await self.harness.turn(sig.text, should_stop=self._should_stop)
             finally:
                 self._req = None
             self.emit("turn_end", who="user", final=r.final_text, tools_used=r.tools_used, seconds=r.seconds, req=req)
@@ -90,11 +100,11 @@ class Mind:
                 return                               # something more concrete is right behind it
             framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))
             self.emit("turn_start", who="signal", kind=sig.kind, text=sig.text, thought=sig.meta.get("thought"))
-            r = await self.harness.turn(framed)
+            r = await self.harness.turn(framed, should_stop=self._should_stop)
             self.emit("turn_end", who="signal", kind=sig.kind, final=r.final_text, tools_used=r.tools_used, seconds=r.seconds)
-        elif sig.kind == "housekeeping":
+        elif sig.kind in ("housekeeping", "noop"):
             pass
-        if not self.queue.has_urgent():
+        if self.alive and not self.queue.has_urgent():
             r = self.maybe_sleep()
             if asyncio.iscoroutine(r):
                 await r

@@ -32,4 +32,5 @@ ENV HOME=/home/groow USER=groow HF_HOME=/home/groow/.cache/huggingface \
 VOLUME ["/home/groow", "/nix"]
 EXPOSE 7373
 ENTRYPOINT ["/usr/local/bin/groow-entrypoint", "groow"]
-CMD ["start", "-v", "--host", "0.0.0.0"]
+# inside the body there is no further sandbox
+CMD ["start", "--nosandbox", "-v", "--host", "0.0.0.0"]

@@ -137,6 +137,11 @@ class Daemon:
         return web.json_response({"queued": True, "req": req, "queue": len(self.app.queue)})
 
     async def h_command(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        text = (body.get("text") or "").strip()
+        if text in ("/quit", "/stop", "/exit", "/restart"):
+            self.mind.stop(restart=(text == "/restart"))
+            return web.json_response({"stopping": True, "restart": text == "/restart"})
         text, req = await self._enqueue(request, force_command=True)
         return web.json_response({"queued": True, "req": req})
 
@@ -219,7 +224,9 @@ class Daemon:
                 except json.JSONDecodeError:
                     continue
                 cmd, text = m.get("cmd"), (m.get("text") or "").strip()
-                if cmd in ("say", "command") and text:
+                if cmd == "command" and text in ("/quit", "/stop", "/exit", "/restart"):
+                    self.mind.stop(restart=(text == "/restart"))
+                elif cmd in ("say", "command") and text:
                     self.mind.push_user(text if cmd == "say" or text.startswith("/") else "/" + text)
                 elif cmd == "status":
                     await ws.send_str(encode(event("status", **self.status())))
@@ -260,7 +267,7 @@ class Daemon:
                             web.post("/say", self.h_say), web.post("/command", self.h_command),
                             web.post("/ask", self.h_ask), web.get("/events", self.h_events), web.get("/ws", self.h_ws),
                             web.get("/", self.h_hello)])
-        runner = web.AppRunner(web_app, access_log=None)
+        runner = web.AppRunner(web_app, access_log=None, shutdown_timeout=2.0)
         await runner.setup()
         site = web.TCPSite(runner, self.cfg.api_host, self.cfg.api_port)
         await site.start()
@@ -273,12 +280,14 @@ class Daemon:
         print(f"groow: awake · {url} · pid {os.getpid()} · {'SAFE MODE' if self.safe_mode else 'normal'}", flush=True)
         try:
             await mind.run()
-            self.outcome = "restart" if getattr(app, "restart", False) else "quit"
+            self.outcome = "restart" if (getattr(app, "restart", False) or mind.restart_requested) else "quit"
             return self.outcome
         finally:
             status_task.cancel()
             self.emit("bye")
-            await asyncio.sleep(0.2)                      # let writers flush the goodbye
+            # whatever happens below, the process ends: CUDA and executor threads are known to linger
+            threading.Timer(20.0, lambda: os._exit(0)).start()
+            await asyncio.sleep(0.3)                      # let writers flush the goodbye
             for t in app.thoughts.running():
                 app.thoughts.pause(t.id)
             await app.thoughts.wait_idle(10)
@@ -289,4 +298,4 @@ class Daemon:
             self.pidfile.unlink(missing_ok=True)
             app.server.gpu.shutdown(wait=False, cancel_futures=True)
             print("groow: asleep (state saved)", flush=True)
-            threading.Timer(5.0, lambda: os._exit(0)).start()
+            threading.Timer(2.0, lambda: os._exit(0)).start()

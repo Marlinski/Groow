@@ -36,18 +36,13 @@ flowchart LR
 </table>
 
 <h2>Running it</h2>
-<pre><code>uv venv --python 3.12 .venv &amp;&amp; . .venv/bin/activate
-uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
-uv pip install -e .
-groow init      # birth: copies the base model into state/, writes birth.json
-groow start     # the daemon (owns the GPU); add -v to see events
-groow ui        # fullscreen terminal UI, in another terminal
-groow chat      # or the minimal line client
+<pre><code>git clone git@github.com:Marlinski/Groow.git &amp;&amp; cd Groow
+uv venv --python 3.12 .venv &amp;&amp; . .venv/bin/activate &amp;&amp; uv pip install -e .
 
-# or sandboxed, state persisted in ./data
-docker compose run --rm groow init
-docker compose run --rm groow chat</code></pre>
-<p>Inside the chat: <code>/good</code> <code>/bad</code> rate the last answer, <code>/sleep</code>, <code>/sense</code>, <code>/thoughts</code>, <code>/identity</code>, <code>/inbox</code>, <code>/stats</code>, <code>/quit</code>. One-shot commands: <code>groow memorize</code>, <code>quiz</code>, <code>play</code>, <code>sense</code>, <code>sleep</code>, <code>rollback</code>, <code>identity</code>, <code>probe</code>, <code>stats</code>.</p>
+groow start      # in its body (Docker): first time builds it, creates ./home, gives birth; later just wakes it
+groow ui         # fullscreen UI (WebSocket); groow chat (SSE), groow ask "…" (HTTP), groow status, groow stop
+groow start --nosandbox   # on this host, as you; state in ~/.groow (or state/ in a checkout)</code></pre>
+<p>The body is a read-only image; the home <code>./home</code> is the only writable place and the whole of what Groow is. <code>./birth</code> is the same start script without the CLI. Inside the UI: <code>/good</code> <code>/bad</code>, <code>/sleep</code>, <code>/sense</code>, <code>/thoughts</code>, <code>/skills</code>, <code>/identity</code>, <code>/inbox</code>, <code>/stats</code>, <code>/quit</code>.</p>
 
 <h2>Repository map</h2>
 <pre><code>groow/

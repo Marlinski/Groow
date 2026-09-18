@@ -116,12 +116,18 @@ class GenServer:
             if not batch:
                 continue
             prio = batch[0].priority
-            should_stop = (lambda: self.has_urgent(prio) or all(r.cancelled for r in batch)) if prio > 0 else None
+            # thought batches yield to urgent requests; every batch stops when all its requesters gave up
+            if prio > 0:
+                should_stop = lambda: self.has_urgent(prio) or all(r.cancelled for r in batch)
+            else:
+                should_stop = lambda: all(r.cancelled for r in batch)
             try:
                 texts = await loop.run_in_executor(self.gpu, self._run, batch, should_stop)
             except Interrupted:
-                self.stats["preempted"] += 1
-                self._pending.extend(r for r in batch if not r.cancelled)
+                live = [r for r in batch if not r.cancelled]
+                if live:
+                    self.stats["preempted"] += 1
+                    self._pending.extend(live)
                 continue
             except Exception as e:
                 for r in batch:

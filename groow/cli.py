@@ -1,7 +1,8 @@
 """groow: a model that learns by rewriting its own weights.
 
   groow init                       give birth: copy the base model into state/, write birth.json
-  groow start [--safe] [-v]        run Groow as a daemon (owns the GPU; HTTP + SSE + WebSocket on :7373)
+  groow start                      wake Groow in its body (Docker sandbox; gives birth the first time)
+  groow start --nosandbox [-v]     run on this host, as you: shell in your home, state in ~/.groow
   groow ui                         fullscreen terminal UI (WebSocket)
   groow chat                       minimal line client (SSE + POST /say)
   groow ask "question"             single query over HTTP, waits for the answer
@@ -314,14 +315,48 @@ def _url(cfg: Config) -> str:
     return base_url(cfg)
 
 
+def _repo_root() -> Path | None:
+    """The checkout that holds the body (Dockerfile, docker-compose.yml, birth). Needed for the sandbox."""
+    candidates = [Path(os.environ["GROOW_REPO"])] if os.environ.get("GROOW_REPO") else []
+    candidates += [Path.cwd(), Path(__file__).resolve().parents[1]]
+    for c in candidates:
+        c = c.resolve()
+        if (c / "docker-compose.yml").exists() and (c / "birth").exists():
+            return c
+    return None
+
+
+def _resolve_state(cfg: Config, args) -> None:
+    """Where Groow's state lives when it runs on the host: --state, else state/ next to a groow.json in the
+    current directory (a checkout), else ~/.groow/state."""
+    if getattr(args, "state", None):
+        cfg.state_dir = args.state
+    elif not Path("groow.json").exists():
+        cfg.state_dir = str(Path.home() / ".groow" / "state")
+    Path(cfg.state_dir).mkdir(parents=True, exist_ok=True)
+    if cfg.workspace_dir == "state/workspace":
+        cfg.workspace_dir = str(Path(cfg.state_dir) / "workspace")
+
+
+def _sandbox_running(root: Path) -> bool:
+    import subprocess
+    try:
+        r = subprocess.run(["docker", "compose", "ps", "-q", "--status", "running", "groow"], cwd=root,
+                           capture_output=True, text=True, timeout=20)
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
+
+
 def cmd_init(cfg: Config, args) -> None:
     import transformers
     transformers.logging.set_verbosity_error()
     from .brain import Brain
     from .birth import load_or_create
+    _resolve_state(cfg, args)
     cfg.state.mkdir(parents=True, exist_ok=True)
-    if not Path("groow.json").exists():
-        cfg.save()
+    if not Path("groow.json").exists() and not (cfg.state.parent / "groow.json").exists():
+        cfg.save(cfg.state.parent / "groow.json")
     with console.status(f"[dim]copying {cfg.model_id} into {cfg.state}/base ...[/dim]"):
         Brain(cfg).initialize(force=args.force)
     birth = load_or_create(cfg.state, cfg.model_id)
@@ -333,6 +368,25 @@ def cmd_init(cfg: Config, args) -> None:
 
 
 def cmd_start(cfg: Config, args) -> None:
+    """Default: Groow runs in its body (Docker sandbox) via the birth script. --nosandbox: on this host,
+    as you, with its shell in your home and its state in ~/.groow (or state/ in a checkout)."""
+    if not args.nosandbox:
+        root = _repo_root()
+        if root is None:
+            console.print("[red]the sandbox needs the Groow checkout (Dockerfile, docker-compose.yml, birth). "
+                          "Run from the repository, set GROOW_REPO, or use --nosandbox.[/red]")
+            raise SystemExit(2)
+        import shutil as _sh, subprocess
+        if not _sh.which("docker"):
+            console.print("[red]docker is not installed; use `groow start --nosandbox` to run on this host[/red]")
+            raise SystemExit(2)
+        console.print(f"[dim]sandbox: {root}/birth[/dim]")
+        raise SystemExit(subprocess.call([str(root / "birth"), "start"], cwd=root))
+    _resolve_state(cfg, args)
+    _start_host(cfg, args)
+
+
+def _start_host(cfg: Config, args) -> None:
     """Supervisor around the daemon: crash in a skill -> quarantine + restart; elsewhere -> safe mode."""
     import traceback
     from .gateway import Daemon
@@ -347,6 +401,10 @@ def cmd_start(cfg: Config, args) -> None:
         cfg.api_host = args.host
     if args.port:
         cfg.api_port = args.port
+    if not (cfg.state / "birth.json").exists():
+        console.print(f"[dim]no birth certificate in {cfg.state}: this is a birth (fetching the base model)[/dim]")
+        cmd_init(cfg, argparse.Namespace(force=False, state=cfg.state_dir))
+    console.print(f"[dim]host mode: state {cfg.state} · shell home {cfg.home_dir or Path.home()} · running as you, no sandbox[/dim]")
     safe_mode, safe_crashes, incident = args.safe, 0, None
     while True:
         try:
@@ -398,6 +456,11 @@ def cmd_status(cfg: Config, args) -> None:
 
 
 def cmd_stop(cfg: Config, args) -> None:
+    root = _repo_root()
+    if root and _sandbox_running(root):
+        import subprocess
+        raise SystemExit(subprocess.call([str(root / "birth"), "stop"], cwd=root))
+
     async def go():
         from .gateway import Client
         async with Client(_url(cfg)) as c:
@@ -520,13 +583,14 @@ def cmd_doctor(cfg: Config, args) -> None:
 
 
 # ---- one-shot commands (no daemon) -------------------------------------------------
-def _oneshot_guard(cfg: Config) -> None:
+def _oneshot_guard(cfg: Config, args=None) -> None:
+    _resolve_state(cfg, args or argparse.Namespace(state=None))
     if (cfg.state / "groow.url").exists():
         console.print("[yellow]note: a daemon may be running; one-shot commands load a second copy of the model.[/yellow]")
 
 
 def cmd_memorize(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     text = Path(args.file).read_text() if args.file else args.text
     r = app.learner.memorize(args.title, text, target_loss=args.target, max_steps=args.max_steps,
                              on_progress=lambda s, l: console.print(f"   step {s+1:3d}  loss {l:.4f}"))
@@ -534,12 +598,12 @@ def cmd_memorize(cfg: Config, args) -> None:
 
 
 def cmd_quiz(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     console.print_json(json.dumps(app.learner.quiz(args.question, args.expected)))
 
 
 def cmd_play(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     r = app.learner.play(args.game, rounds=args.rounds, episodes=args.episodes, evaluate_n=args.eval_n,
                          on_progress=lambda rec: console.print(
                              f"   round {rec['round']:3d}  decisions {rec['decisions']:4d}  explored {rec['explored']:3d}  "
@@ -548,31 +612,31 @@ def cmd_play(cfg: Config, args) -> None:
 
 
 def cmd_probe(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); console.print_json(json.dumps(_boot(cfg).learner.probe()))
+    _oneshot_guard(cfg, args); console.print_json(json.dumps(_boot(cfg).learner.probe()))
 
 
 def cmd_stats(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); console.print_json(json.dumps(_boot(cfg).learner.report(), default=str))
+    _oneshot_guard(cfg, args); console.print_json(json.dumps(_boot(cfg).learner.report(), default=str))
 
 
 def cmd_consolidate(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     r = app.brain.consolidate(keep_previous=cfg.keep_previous_base)
     app.memory.log("consolidate", **r, step=app.brain.meta["steps"]); console.print_json(json.dumps(r))
 
 
 def cmd_sleep(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     r = app.sleep.sleep(replay_steps=args.replay, force=args.force, on_progress=lambda m: console.print(f"   [dim]{m}[/dim]"))
     console.print_json(json.dumps(r, default=str))
 
 
 def cmd_rollback(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); console.print_json(json.dumps(_boot(cfg).sleep.rollback()))
+    _oneshot_guard(cfg, args); console.print_json(json.dumps(_boot(cfg).sleep.rollback()))
 
 
 def cmd_sense(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     if args.pipeline or cfg.curiosity_mode != "agentic":
         r = app.curiosity.tick(args.items, on_progress=lambda m: console.print(f"   [dim]{m}[/dim]"))
     else:
@@ -583,13 +647,13 @@ def cmd_sense(cfg: Config, args) -> None:
 
 
 def cmd_identity(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     console.print(Panel(app.identity.text(), title=f"identity v{app.identity.versions()} · internalised loss "
                         f"{app.identity.probe(app.brain):.3f} · {app.birth.line()}"))
 
 
 def cmd_grow(cfg: Config, args) -> None:
-    _oneshot_guard(cfg); app = _boot(cfg)
+    _oneshot_guard(cfg, args); app = _boot(cfg)
     r = app.brain.grow_rank(args.rank); app.memory.log("grow", **r, step=app.brain.meta["steps"]); console.print_json(json.dumps(r))
 
 
@@ -601,11 +665,13 @@ def cmd_tools(cfg: Config, args) -> None:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="groow", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", default="groow.json")
+    p.add_argument("--config", default=None, help="config file (default: ./groow.json, else ~/.groow/groow.json)")
     p.add_argument("--model", help="override model id (e.g. Qwen/Qwen3-1.7B) before init")
+    p.add_argument("--state", help="state directory for host mode (default: state/ in a checkout, else ~/.groow/state)")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("init"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_init)
     s = sub.add_parser("start"); s.add_argument("--safe", action="store_true", help="start in safe mode")
+    s.add_argument("--nosandbox", action="store_true", help="run on this host as you (default: Docker sandbox via ./birth)")
     s.add_argument("-v", "--verbose", action="store_true", help="print events to stdout")
     s.add_argument("--host"); s.add_argument("--port", type=int); s.set_defaults(fn=cmd_start)
     s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600)
@@ -631,7 +697,8 @@ def main(argv=None) -> None:
     s = sub.add_parser("grow"); s.add_argument("--rank", type=int, required=True); s.set_defaults(fn=cmd_grow)
     sub.add_parser("tools").set_defaults(fn=cmd_tools)
     args = p.parse_args(argv)
-    cfg = Config.load(args.config)
+    cfg_path = args.config or ("groow.json" if Path("groow.json").exists() else str(Path.home() / ".groow" / "groow.json"))
+    cfg = Config.load(cfg_path)
     if args.model:
         cfg.model_id = args.model
     args.fn(cfg, args)

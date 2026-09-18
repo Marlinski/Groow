@@ -13,34 +13,33 @@ Runs on one GPU (built and tested on a Tesla V100S 32 GB) on top of
 ## Quick start
 
 ```bash
-# environment (Volta needs the cu126 wheels; newer CUDA builds dropped it)
-uv venv --python 3.12 .venv && . .venv/bin/activate
-uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
-uv pip install -e .
+git clone git@github.com:Marlinski/Groow.git && cd Groow
+uv venv --python 3.12 .venv && . .venv/bin/activate && uv pip install -e .   # the CLI (UI, chat, ask, status)
 
-groow init          # birth: copy the base model into state/, write birth.json, baseline probes (~2 min)
-groow start         # the daemon: owns the GPU, runs the mind, serves HTTP + SSE + WebSocket on :7373
-groow ui            # in another terminal: the fullscreen UI (Textual, WebSocket)
-groow chat          # or a minimal line client (SSE); groow ask "…" for a single query; groow status / stop
+groow start      # wakes Groow in its body (Docker). First time: builds the body, creates ./home, gives birth.
+groow ui         # fullscreen UI; also groow chat, groow ask "…", curl localhost:7373/status
+groow stop       # sleep. ./birth is the same thing as a plain script (start|stop|logs|shell|status|rebuild).
 ```
 
-Or in its **body** (Docker), which is the intended way to run it:
+The **body** is a read-only Docker image (CUDA, Python, the runtime); the
+**home** is `./home`, a volume owned by you, the only writable place in
+Groow's world. Groow is an unprivileged user there: no `apt`, no `sudo`, but a
+shell, Nix and `uv` to install anything locally, and everything it is or grows
+(weights, memory, identity, skills, workspace, packages) survives restarts,
+rebuilds and moves. One directory is Groow. The birth script and the body's
+entrypoint are the only startup code, both outside Groow's reach: no
+certificate in the home means birth, otherwise it just wakes up.
+
+Without Docker, or on purpose:
 
 ```bash
-./birth          # first time: builds the body, creates ./home, gives birth (fetches the base model), wakes it
-groow ui         # from the host; also groow chat, groow ask "…", curl localhost:7373/status
-./birth stop     # sleep. ./birth again wakes it; ./birth logs, ./birth shell, ./birth status, ./birth rebuild
+groow start --nosandbox   # runs on this host, as you: its shell in your home, its state in ~/.groow
+                          # (or in state/ when run from a checkout with a groow.json). Needs the cu126 torch wheels:
+uv pip install --index-url https://download.pytorch.org/whl/cu126 torch
 ```
 
-Groow is an unprivileged user whose home, `./home` on the host, is the only
-writable place in its world: the image is read-only, there is no `apt` and no
-`sudo`. It installs what it needs locally with Nix (`nix profile install
-nixpkgs#ffmpeg`) or `uv`, into the home, so it all survives restarts, rebuilds
-and moves. The base model, memory, identity, skills and workspace live there
-too. One directory is Groow. The `birth` script and the body's entrypoint are
-the only two startup scripts, and both are outside Groow's reach: the body
-checks for `state/birth.json` and gives birth when it is missing, otherwise it
-just wakes up.
+There is no sandbox in that mode: `run_shell` is your shell. Fine for
+development, not for leaving it alone overnight.
 
 Groow is a **daemon**. One process owns the GPU and the state; clients speak
 HTTP: `POST /ask` for a single query, `GET /events` (Server-Sent Events) for
@@ -64,7 +63,7 @@ Inside the UI or the line client:
 
 Scripts can skip the UI entirely: `groow ask "…"`, or `curl -X POST localhost:7373/ask -d '{"text":"…"}'`.
 
-One-shot commands (no daemon running; they load their own copy of the model):
+One-shot commands on the host (no daemon running; they load their own copy of the model; `--state` picks the state directory):
 
 ```bash
 groow memorize --title "Loire" --text "The Loire is the longest river in France."
