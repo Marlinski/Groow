@@ -10,11 +10,52 @@
 
 use std::path::PathBuf;
 
+/// Where the schema is.
+///
+/// Said explicitly, or beside the workspace, or at the root of the image that is building it.
+/// Looking rather than assuming, because a build that cannot find the schema should say which
+/// places it tried rather than failing inside the compiler.
+fn find_schema() -> PathBuf {
+    if let Ok(p) = std::env::var("GROOW_PROTO") {
+        return PathBuf::from(p);
+    }
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let tried = [
+        here.join("../../../nervous_system/proto"),
+        here.join("../../nervous_system/proto"),
+        PathBuf::from("/nervous_system/proto"),
+    ];
+    for p in &tried {
+        if p.join("wire.proto").is_file() {
+            return p.clone();
+        }
+    }
+    panic!(
+        "cannot find the schema. Looked in: {}. Set GROOW_PROTO to where nervous_system/proto is.",
+        tried.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+    );
+}
+
 fn main() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../nervous_system/proto");
+    let root = find_schema();
     let files = ["wire.proto", "turn.proto", "brain.proto", "records.proto"];
     for f in files {
         println!("cargo:rerun-if-changed={}", root.join(f).display());
+    }
+
+    // A protoc that comes with the build, so nothing has to be installed first and every
+    // machine compiles the same schema with the same compiler. Without this, building in a
+    // clean container needs both the compiler and its standard imports, which is two more
+    // things to get wrong.
+    if std::env::var_os("PROTOC").is_none() {
+        if let Ok(p) = protoc_bin_vendored::protoc_bin_path() {
+            std::env::set_var("PROTOC", p);
+        }
+    }
+    if std::env::var_os("PROTOC_INCLUDE").is_none() {
+        if let Ok(p) = protoc_bin_vendored::include_path() {
+            std::env::set_var("PROTOC_INCLUDE", p);
+        }
     }
 
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("no OUT_DIR"));

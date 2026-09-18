@@ -12,6 +12,9 @@ FROM rust:1.90-slim-bookworm AS core
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+# The schema, which the build turns into the wire types. protoc comes with the build itself,
+# so nothing needs installing for it.
+COPY nervous_system/proto /nervous_system/proto
 COPY rust/Cargo.toml rust/Cargo.lock* ./
 COPY rust/crates ./crates
 RUN cargo build --release --locked 2>/dev/null || cargo build --release

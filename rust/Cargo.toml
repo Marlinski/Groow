@@ -25,6 +25,7 @@ prost       = "0.13"
 pbjson      = "0.7"
 pbjson-types = "0.7"
 prost-build = "0.13"
+protoc-bin-vendored = "3"
 pbjson-build = "0.7"
 thiserror   = "2"
 serde       = { version = "1", features = ["derive"] }
