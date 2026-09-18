@@ -195,7 +195,7 @@ body's: upgrades add new recipes but never overwrite edited ones.
 thoughts have `shell`, `learn`, `quiz`, `focus`, `finish`. Everything else is a
 file in its home or a command in its shell. Skills can install commands: the
 default `web` skill gives it `web <url>` (a page as text). The `groow …`
-commands talk to its own daemon: `groow news`, `groow play`,
+commands talk to its own daemon: `news`, `groow play`,
 `groow thoughts`, `groow thought pause|resume|kill`, `groow skill check|install`,
 `groow stats`, `groow identity`, `groow inbox`. Sleeping, probing and growing
 happen to it on schedule; the commands exist for the mentor. Skills it installs
@@ -245,7 +245,7 @@ groow/
     registry.py        ToolRegistry: Python function → JSON schema, safe dispatch
     builtins.py        the substrate: shell (bash in the home)
     selftools.py       learn, quiz, ask
-    sensetools.py      news headlines for `groow news` and the curiosity pipeline
+    sensetools.py      news headlines for `news` and the curiosity pipeline
     mindtools.py       think (main); focus, finish (inner thoughts)
     skills.py          SkillManager: draft → sandbox check → install → rollback / quarantine; incidents; patches
     skillcheck.py      the subprocess checker (torch-free) a draft must pass
@@ -260,7 +260,7 @@ groow/
     creature.py        the sprout: animation frames per mood
   birth.py             the birth certificate (state/birth.json, written once, read-only)
   recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
-  default_skills/      skills installed on first start: recipes (list/read/write_recipe tools), web (the `web <url>` command)
+  default_skills/      skills installed on first start: recipes (tools), web (`web <url>`), news (`news`, feeds in state/senses/feeds.txt)
   ops.py               the operations table (play, sleep, probe, news, thoughts, skill, …) used by /op, slash commands and the CLI
   cli.py               App wiring + commands (init, start, ui, chat, ask, status, stop, doctor, operations)
 birth                  host script: create the home, build the body, wake Groow (idempotent)

@@ -46,11 +46,6 @@ def op_stats(app, **_) -> dict:
     return rep
 
 
-def op_news(app, items: int = 8, **_) -> dict:
-    from .harness import news_headlines
-    return news_headlines(app.news, int(items))
-
-
 def op_thoughts(app, all: bool = False, **_) -> dict:
     return {"thoughts": app.thoughts.listing(bool(all))}
 
@@ -138,7 +133,7 @@ def op_feedback(app, value: int = 1, **_) -> dict:
 
 
 OPS = {
-    "play": op_play, "games": op_games, "sleep": op_sleep, "probe": op_probe, "stats": op_stats, "news": op_news,
+    "play": op_play, "games": op_games, "sleep": op_sleep, "probe": op_probe, "stats": op_stats,
     "thoughts": op_thoughts, "thought": op_thought, "skill": op_skill, "identity": op_identity, "inbox": op_inbox,
     "incidents": op_incidents, "patch": op_patch, "feedback": op_feedback, "learn": op_learn, "quiz": op_quiz,
 }

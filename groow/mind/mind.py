@@ -19,7 +19,8 @@ from .thoughts import ThoughtManager
 FRAMES = {
     "focus": "[inner thought {thought} says] {text}",
     "thought_done": "[inner thought {thought} finished] {text}",
-    "reminder": "[reminder, no reply needed] {text}. You may read_thought it, pause it, or ignore this.",
+    "reminder": "[reminder, no reply needed] {text}. You may `groow thought read <id>` it, pause it, or ignore this.",
+    "note": "[a note you left yourself earlier] {text}",
     "idle": "{text}",
 }
 
@@ -98,7 +99,7 @@ class Mind:
             finally:
                 self._req = None
             self.emit("turn_end", who="user", final=r.final_text, tools_used=r.tools_used, seconds=r.seconds, req=req)
-        elif sig.kind in ("focus", "thought_done", "reminder", "idle"):
+        elif sig.kind in ("focus", "thought_done", "reminder", "idle", "note"):
             if sig.kind == "reminder" and self.queue.has(Priority.FOCUS):
                 return                               # something more concrete is right behind it
             framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))

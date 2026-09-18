@@ -6,7 +6,7 @@
   groow status | stop | doctor     snapshot | sleep | static health check
 
   operations on the running Groow (also what Groow runs in its own shell):
-  groow news | play <game> | games | thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name>
+  groow play <game> | games | thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name>
   groow learn "q" "a" [--source S] | quiz "q" [--expected A] | stats | identity | inbox [--clear] | incidents | patch …
   mentor only: groow sleep | probe | grow --rank N | rollback | consolidate
 """
@@ -286,7 +286,7 @@ async def run_command(user: str, app: App) -> bool:
     elif cmd == "/inbox":
         r = await run_op(app, "inbox", {"clear": arg == "clear"})
         emit("inbox", questions=r.get("questions", []))
-    elif cmd[1:] in ("sleep", "probe", "stats", "news", "thoughts", "thought", "skill", "identity", "incidents", "play", "games"):
+    elif cmd[1:] in ("sleep", "probe", "stats", "thoughts", "thought", "skill", "identity", "incidents", "play", "games"):
         args = {}
         if cmd == "/thoughts":
             args = {"all": arg == "all"}
@@ -301,7 +301,7 @@ async def run_command(user: str, app: App) -> bool:
         r = await run_op(app, cmd[1:], args)
         emit("log", text=json.dumps(r, default=str)[:4000])
     elif cmd == "/help":
-        emit("log", text="/good /bad /sleep /sense /news /play <game> /games /thoughts [all] /thought <read|pause|resume|kill> <id> "
+        emit("log", text="/good /bad /sleep /sense /play <game> /games /thoughts [all] /thought <read|pause|resume|kill> <id> "
                           "/skill <list|read|check|install|disable|rollback> <name> /identity /inbox [clear] /incidents /stats "
                           "/learn on|off /reasoning on|off /tools /reset /restart /quit")
     else:
@@ -575,8 +575,14 @@ def cmd_chat(cfg: Config, args) -> None:
 
 
 def cmd_say(cfg: Config, args) -> None:
-    """Send a message. If Groow is awake it goes over HTTP; if not, it is dropped in the mailbox and
-    read when it wakes."""
+    """Send a message. From outside: over HTTP if Groow is awake, else dropped in the mailbox for when it
+    wakes. From inside the body (Groow itself): a note to self, delivered to its own mailbox later."""
+    _resolve_state(cfg, args)
+    from .mind import Mailbox, Priority
+    if os.environ.get("GROOW_SELF"):
+        sig = Mailbox(cfg.state / "mailbox").push(Priority.FOCUS, "note", args.text)
+        _print({"ok": True, "note_to_self": args.text[:200], "delivered": "after this turn"})
+        return
     async def go():
         from .gateway import Client
         async with Client(_url(cfg)) as c:
@@ -584,8 +590,6 @@ def cmd_say(cfg: Config, args) -> None:
     try:
         _print(asyncio.run(go()))
     except Exception:
-        _resolve_state(cfg, args)
-        from .mind import Mailbox, Priority
         sig = Mailbox(cfg.state / "mailbox").push(Priority.USER, "user", args.text)
         console.print(f"[dim]groow is asleep; left in the mailbox: {sig.path.name}[/dim]")
 
@@ -703,12 +707,6 @@ def _files_incidents(cfg, args):
     return {"incidents": SkillManager(cfg.state, protected=set()).incidents(args.last)}
 
 
-def _files_news(cfg, args):
-    from .senses import NewsSense
-    from .harness import news_headlines
-    return news_headlines(NewsSense(cfg.state, feeds=cfg.feeds or None), args.items)
-
-
 cmd_play = _op_command("play", lambda a: {"game": a.game, "rounds": a.rounds}, _local_play)
 cmd_games = _op_command("games", lambda a: {}, lambda cfg, a: {"games": {k: g.description for k, g in __import__("groow.games", fromlist=["BUILTIN"]).BUILTIN.items()}})
 cmd_probe = _op_command("probe", lambda a: {}, _local_probe)
@@ -717,7 +715,6 @@ cmd_sleep = _op_command("sleep", lambda a: {"force": True}, _local_sleep)
 cmd_identity = _op_command("identity", lambda a: {}, _local_identity)
 cmd_learn = _op_command("learn", lambda a: {"question": a.question, "answer": a.answer, "source": a.source or "", "target_loss": a.target or 0.0}, _local_learn)
 cmd_quiz = _op_command("quiz", lambda a: {"question": a.question, "expected": a.expected or ""}, _local_quiz)
-cmd_news = _op_command("news", lambda a: {"items": a.items}, _files_news)
 cmd_thoughts = _op_command("thoughts", lambda a: {"all": a.all}, _files_thoughts)
 cmd_thought = _op_command("thought", lambda a: {"action": a.action, "id": a.id, "last": a.last})
 cmd_skill = _op_command("skill", lambda a: {"action": a.action, "name": a.name or "", "path": a.path or ""}, _files_skill)
@@ -740,6 +737,16 @@ def cmd_consolidate(cfg: Config, args) -> None:
     r = app.brain.consolidate(keep_previous=cfg.keep_previous_base); app.memory.log("consolidate", **r, step=app.brain.meta["steps"]); _print(r)
 
 
+# what Groow may not do to itself from inside its body (GROOW_SELF=1 there)
+MENTOR_ONLY = {
+    "init": "it would overwrite your base weights", "stop": "you would only reboot",
+    "grow": "your capacity is Marlinski's decision", "rollback": "undoing a night is Marlinski's decision",
+    "consolidate": "nights happen on their own", "sleep": "nights happen on their own", "probe": "probes run on their own",
+    "ask": "asking yourself a question would wait on yourself; use a note (groow say) or think",
+    "ui": "no terminal here", "chat": "you are the one being talked to",
+}
+
+
 # ====================================================================== argparse
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="groow", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -758,7 +765,6 @@ def main(argv=None) -> None:
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600); s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_ask)
     # operations
-    s = sub.add_parser("news"); s.add_argument("--items", type=int, default=8); s.set_defaults(fn=cmd_news)
     s = sub.add_parser("play"); s.add_argument("game"); s.add_argument("--rounds", type=int, default=5); s.set_defaults(fn=cmd_play)
     sub.add_parser("games").set_defaults(fn=cmd_games)
     s = sub.add_parser("thoughts"); s.add_argument("--all", action="store_true"); s.set_defaults(fn=cmd_thoughts)
@@ -779,6 +785,9 @@ def main(argv=None) -> None:
     sub.add_parser("rollback").set_defaults(fn=cmd_rollback)
     sub.add_parser("consolidate").set_defaults(fn=cmd_consolidate)
     args = p.parse_args(argv)
+    if os.environ.get("GROOW_SELF") and args.cmd in MENTOR_ONLY:
+        console.print(f"[yellow]`groow {args.cmd}` is for your mentor, not for you: {MENTOR_ONLY[args.cmd]}[/yellow]")
+        raise SystemExit(3)
     cfg_path = args.config or ("groow.json" if Path("groow.json").exists() else str(Path.home() / ".groow" / "groow.json"))
     cfg = Config.load(cfg_path)
     if args.model:

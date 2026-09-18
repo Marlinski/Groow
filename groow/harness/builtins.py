@@ -50,7 +50,7 @@ def make_substrate_tools(home: Path | None = None, allow_shell: bool = True) -> 
             """Run a bash command in your home and return its output. Your home persists; the rest of the system is
             read-only and you are not root (no apt, no sudo). Your files: state/ (traces in state/main/, thoughts in
             state/thoughts/, lessons, skills, recipes, identity.md), workspace/. Your commands: `web <url>` (a page as
-            text), `groow news`, `groow play <game>`, `groow thoughts`, `groow thought pause|resume|kill <id>`,
+            text), `news`, `groow play <game>`, `groow thoughts`, `groow thought pause|resume|kill <id>`,
             `groow skill check|install <name>`, `groow stats`, `groow identity`, `groow inbox`. Install software locally:
             `nix profile install nixpkgs#<pkg>`, `uv pip install …`. Long jobs: `nohup … &` and check later.
             Read `cat state/recipes/*.md` when unsure.

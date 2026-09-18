@@ -23,7 +23,7 @@ ANSWER_WEIGHTS = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
 
 
 IMPULSE = ("(No one is talking to you right now; this is your own idle time, not a human message.) "
-           "Look at what is happening in the world: run `groow news --items {n}` with shell, pick the items that seem most "
+           "Look at what is happening in the world: run `news --items {n}` with shell, pick the items that seem most "
            "important or most interesting to you, read the ones worth reading with `web <link>` in shell, and for each one call learn "
            "with a precise question and an answer in the source's own words, including the date and the source. "
            "Then write two or three sentences about what you learned today.")
