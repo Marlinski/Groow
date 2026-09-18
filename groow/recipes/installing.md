@@ -24,8 +24,7 @@ uv pip install --python ~/.venv/bin/python requests beautifulsoup4
 ~/.venv/bin/python -c "import requests; print(requests.__version__)"
 ```
 
-`~/.venv/bin` is first on your PATH, so `python` in `run_shell` is yours once
-the venv exists. (`run_python` uses the body's Python and cannot see your packages.)
+`~/.venv/bin` is first on your PATH, so `python` in `shell` is yours once the venv exists.
 
 ## Plain binaries
 

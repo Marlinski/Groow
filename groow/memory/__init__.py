@@ -1,4 +1,9 @@
-"""Non-weight memory: what happened, what was learned, how learning went."""
-from .episodic import Memory, DEFAULT_PROBES
+"""Non-weight memory: what happened, what was learned, how learning went.
 
-__all__ = ["Memory", "DEFAULT_PROBES"]
+    episodic  Memory: episodes, lessons, learning log, probes, recall
+    journal   Journal: append-only rotating trace (the main conversation, the event stream)
+"""
+from .episodic import Memory, DEFAULT_PROBES
+from .journal import Journal
+
+__all__ = ["Memory", "DEFAULT_PROBES", "Journal"]

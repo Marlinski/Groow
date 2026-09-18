@@ -23,10 +23,10 @@ ANSWER_WEIGHTS = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
 
 
 IMPULSE = ("(No one is talking to you right now; this is your own idle time, not a human message.) "
-           "Look at what is happening in the world: call news_headlines, pick the {n} items that seem most important "
-           "or most interesting to you, read the ones worth reading with read_article, and for each one call "
-           "learn_fact with a precise question and an answer in the source's own words, including the date and "
-           "the source. Then write two or three sentences about what you learned today.")
+           "Look at what is happening in the world: run `groow news --items {n}` with shell, pick the items that seem most "
+           "important or most interesting to you, read the ones worth reading with read, and for each one call learn "
+           "with a precise question and an answer in the source's own words, including the date and the source. "
+           "Then write two or three sentences about what you learned today.")
 
 
 class Curiosity:
@@ -45,7 +45,7 @@ class Curiosity:
         t0 = time.time()
         n = max_items or self.cfg.sense_items
         turn = await harness.turn(IMPULSE.format(n=n))
-        learned = turn.tools_used.count("learn_fact")
+        learned = turn.tools_used.count("learn")
         result = {"mode": "agentic", "tools_used": turn.tools_used, "facts_learned": learned,
                   "note": turn.final_text[:600], "seconds": round(time.time() - t0, 1)}
         if learned == 0:

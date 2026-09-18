@@ -4,7 +4,7 @@
 <p class="lead">One conscious thread over a priority queue of signals, and the inner thoughts it can spawn, watch, pause, resume and kill. The thread is linear because consciousness is; the GPU underneath is not.</p>
 
 <h2>The main thought</h2>
-<p>The main thought is a single rolling conversation (one <code>Harness</code>, priority 0). It is the only thing that speaks to the person or to the mentor. It consumes <b>signals</b> in priority order and does nothing between them; inner thoughts run on their own and reach it only through the queue.</p>
+<p>The main thought is a single rolling conversation (one <code>Harness</code>, priority 0). It is the only thing that speaks to the person or to the mentor. It consumes <b>signals</b> from a mailbox on disk (<code>state/mailbox/</code>) in priority order and does nothing between them; inner thoughts run on their own and reach it only through that mailbox. Every message of its conversation is journalled to <code>state/main/</code> as it happens, and the window is rebuilt from the journal after a reboot.</p>
 <table><tr><th>Priority</th><th>Signal</th><th>Framed to the model as</th></tr>
 <tr><td>0 USER</td><td>a human typed</td><td>the message itself</td></tr>
 <tr><td>1 FOCUS</td><td>a thought called <code>focus()</code> or finished</td><td><code>[inner thought a1b2 says] …</code> / <code>[inner thought a1b2 finished] …</code></td></tr>
@@ -34,10 +34,10 @@ stateDiagram-v2
 <tr><td>budget exhausted</td><td>status done, summary is its last text</td></tr>
 <tr><td>crash</td><td>status killed, the error reported as a FOCUS signal</td></tr></table>
 <h3>What the main thought can do to a thought</h3>
-<p><code>think</code> spawn · <code>list_thoughts</code> index · <code>read_thought</code> introspect the trace · <code>pause_thought</code> / <code>resume_thought</code> · <code>kill_thought</code>. At most <code>max_thoughts</code> run at once. Thoughts survive restarts: on exit running thoughts are paused, on start the main thought is reminded of them.</p>
+<p><code>think</code> spawns. Everything else is in the shell: <code>groow thoughts</code> lists, <code>groow thought read|pause|resume|kill &lt;id&gt;</code> manages, and each trace is a file in <code>state/thoughts/</code>. At most <code>max_thoughts</code> run at once. Thoughts survive restarts: on exit running thoughts are paused, on start the main thought is reminded of them.</p>
 
 <h2>Recall: every trace is readable</h2>
-<p>Every main turn is an episode of kind <code>chat</code>; every thought step is an episode of kind <code>thought:&lt;id&gt;</code>; every lesson (memorised text, learned fact) is filed with its source. <code>recall</code> reads them in full: by query across everything, by episode id verbatim, or the last N. This is the diary the mind can reread; the weights are what it became.</p>
+<p>Every message of the main conversation is in <code>state/main/*.jsonl</code>; every thought step is an episode of kind <code>thought:&lt;id&gt;</code> in <code>state/episodes.jsonl</code> and a trace in <code>state/thoughts/</code>; every lesson is filed with its source in <code>state/lessons.jsonl</code>. Groow rereads them with <code>grep</code> in its shell. This is the diary the mind can reread; the weights are what it became.</p>
 
 <h2>A minute in the life</h2>
 <pre class="mermaid">
@@ -55,7 +55,7 @@ sequenceDiagram
   M->>G: prio 0, streaming
   M-->>P: "437"
   G-->>T: step 1 resumes
-  T->>T: news_headlines, read_article, learn_fact
+  T->>T: shell groow news, read, learn
   T->>M: focus("48 dead, methanol. learned, source Guardian 18 Sep")
   M-->>P: relays the finding
   T->>M: finish(summary)

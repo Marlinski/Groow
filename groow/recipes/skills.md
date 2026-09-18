@@ -22,10 +22,10 @@ Rules the checker enforces: a docstring on the file and on every function, an
 name that collides with a core tool, standard library only, and it must not
 loop forever at import.
 
-Flow: experiment with `run_shell` or `run_python` → `draft_skill(name, source)`
-→ read the report → `install_skill(name)` → use it. `list_skills`,
-`read_skill`, `rollback_skill`, `disable_skill` manage them. If a skill crashes
-your body it is quarantined automatically and you wake up without it.
+Flow: write the file with shell (e.g. `cat > workspace/text_tools.py <<'EOF' … EOF`) →
+`groow skill check workspace/text_tools.py` → read the report → `groow skill install text_tools`
+→ the tools are yours. `groow skill list|read|rollback|disable <name>` manage them. If a
+skill crashes your body it is quarantined automatically and you wake up without it.
 
 Good candidates: wrappers around software you installed, small parsers, checks
 you run often, games that teach you something (see `list_games`).

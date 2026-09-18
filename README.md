@@ -57,7 +57,7 @@ Inside the UI or the line client:
 | `/sleep` | a night: replay the day, internalise the identity, probe for drift, merge the overlay into the base (also automatic every `sleep_every_steps`) |
 | `/sense` | a curiosity pass now: Groow reads the news through its tools and learns sourced facts (also automatic after `sense_idle_minutes` of silence) |
 | `/identity` `/inbox [clear]` | its self-description and how internalised it is; questions it left for its mentor |
-| `/thoughts [all]` `/skills` `/incidents` | inner thoughts; skills; recent incidents |
+| `/thoughts [all]` `/thought read|pause|resume|kill <id>` `/skill …` `/incidents` `/news` `/play <game>` | the same operations Groow runs as `groow …` in its shell |
 | `/learn off` `/reasoning on` | pause passive learning; enable Qwen3 thinking mode |
 | `/tools` `/stats` `/reset` `/restart` `/quit` | list tools, learning report, clear the conversation, rebuild the session, stop the daemon |
 
@@ -189,20 +189,25 @@ copied into `state/recipes/` and a default skill (`list_recipes`,
 unsure and rewrite them when it learns better. They are its notes, not the
 body's: upgrades add new recipes but never overwrite edited ones.
 
-**Self-extension.** Groow writes its own commands. A *skill* is a Python
-file in `state/skills/` that registers tools and ships its own `TESTS`.
-`draft_skill` checks it in a fresh subprocess (imports, schemas, no collision
-with core tools, tests pass, timeout for runaway code); `install_skill`
-hot-loads it and keeps the previous version for `rollback_skill`;
-`disable_skill` quarantines it. The core package is off limits: for that Groow
-files a `propose_patch` for you to review. A supervisor around the chat turns
-tool errors and per-signal exceptions into incidents, quarantines a skill whose
-traceback caused a crash, and otherwise restarts in **safe mode** (skills off,
-learning off, curiosity off, repair tools on, the incident in the prompt).
-`groow doctor` runs the static checks without loading the model. See
-`docs/extension.html`.
+**Tools: six, and a shell.** The main thought has `shell` (bash in its home),
+`read` (a web page as text), `learn` (the one deliberate weight change),
+`quiz` (measure what it knows), `think` (spawn an inner thought) and
+`ask_mentor`. Inner thoughts have `shell`, `read`, `learn`, `quiz`, `focus`,
+`finish`. Everything else is a file in its home or a `groow …` command it runs
+in its shell that talks to its own daemon: `groow news`, `groow play`,
+`groow thoughts`, `groow thought pause|resume|kill`, `groow skill check|install`,
+`groow stats`, `groow identity`, `groow inbox`. Sleeping, probing and growing
+happen to it on schedule; the commands exist for the mentor. Skills it installs
+add their own tools.
 
-**Growth.** `grow` consolidates and attaches a wider overlay. The new part
+**The journal.** Every message of the main conversation, your inputs, its
+answers, each tool call and each result, is appended to `state/main/` the
+moment it exists (one file per day, rotated at 1000 lines, flushed and
+fsynced). On start the main thought rebuilds its rolling window from the
+journal tail, and a reconnecting UI replays from it. It is the single durable
+trace; the daemon keeps no conversation history in memory.
+
+**Self-extension.** Groow writes its own commands.**Growth.** `grow` consolidates and attaches a wider overlay. The new part
 starts at zero, so the function is unchanged at t=0. The same zero-init
 principle extends to widening MLPs, inserting identity layers and bolting on a
 vision encoder (see Roadmap).
@@ -218,6 +223,7 @@ groow/
     chatfmt.py         render conversations with the chat template; per-role loss masks
   memory/
     episodic.py        Memory: episodes, lessons, learning log, drift probes, recall
+    journal.py         Journal: append-only rotating trace (state/main/, one file per day, 1000 lines)
   learning/
     learner.py         Learner: passive, feedback, memorize, quiz, play, probe, report
     sleep.py           SleepPolicy: replay, internalise, drift check, merge, rollback, when to sleep
@@ -236,15 +242,12 @@ groow/
     mind.py            Mind: the scheduler loop; frames signals into the main conversation
   harness/             everything between a user message and a finished turn
     registry.py        ToolRegistry: Python function → JSON schema, safe dispatch
-    builtins.py        calculator, current_time, list/read/write_file, run_python, run_shell (bash in the home)
-    selftools.py       memorize, quiz, recall, play, list_games, invent_game,
-                       consolidate, grow, probe, learning_report, ask_mentor,
-                       read_identity, update_identity
-    sensetools.py      news_headlines, read_article, learn_fact
-    mindtools.py       think / list / read / pause / resume / kill thoughts, recall; focus / finish
+    builtins.py        the substrate: shell (bash in the home), read (web page as text)
+    selftools.py       learn, quiz, ask_mentor
+    sensetools.py      news headlines for `groow news` and the curiosity pipeline
+    mindtools.py       think (main); focus, finish (inner thoughts)
     skills.py          SkillManager: draft → sandbox check → install → rollback / quarantine; incidents; patches
     skillcheck.py      the subprocess checker (torch-free) a draft must pass
-    skilltools.py      draft_skill, install_skill, list/read/disable/rollback_skill, read_incidents, propose_patch
     loop.py            Harness (async): generate → parse tool calls → execute → loop; Hooks
   brain/server.py      GenServer: completions-style request queue, batching, main-thought preemption
   gateway/             the daemon and its protocol
@@ -257,7 +260,8 @@ groow/
   birth.py             the birth certificate (state/birth.json, written once, read-only)
   recipes/             notes for Groow (home, installing, shell, skills, learning, mind, mentor), seeded into state/recipes
   default_skills/      skills installed on first start (recipes: list_recipes, read_recipe, write_recipe)
-  cli.py               App wiring + commands (init, start, ui, chat, status, stop, doctor, one-shots)
+  ops.py               the operations table (play, sleep, probe, news, thoughts, skill, …) used by /op, slash commands and the CLI
+  cli.py               App wiring + commands (init, start, ui, chat, ask, status, stop, doctor, operations)
 birth                  host script: create the home, build the body, wake Groow (idempotent)
 docker/entrypoint.sh   the body waking up: Nix into the home, birth if no certificate, then the command
 state/                 runtime, created by init (gitignored); inside the container it is /home/groow/state
@@ -271,6 +275,7 @@ state/                 runtime, created by init (gitignored); inside the contain
   recipes/             its notes, seeded from the body, editable by Groow
   incidents.jsonl      crashes and failed loads with tracebacks; patches/: proposed core changes
   senses/              news items seen and learned
+  main/                the conversation journal: every message, one JSONL file per day, rotated
   episodes.jsonl lessons.jsonl learning_log.jsonl probes.json
   workspace/           the only directory file tools may touch
   games/               invented games (*.py)

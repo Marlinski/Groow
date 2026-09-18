@@ -24,7 +24,7 @@ from typing import Callable
 
 from .signals import InputQueue, Priority
 
-THOUGHT_SYSTEM = """You are an inner thought of Groow, not Groow's voice. You cannot talk to the user or to the mentor; only the main thought can. You work step by step toward the goal below using your tools, thinking out loud briefly. When you have something the main thought should know now, call focus(message). When the goal is reached or cannot be reached, call finish(summary) with what you found. Be concrete; do not repeat yourself.
+THOUGHT_SYSTEM = """You are an inner thought of Groow, not Groow's voice. You cannot talk to the user or to the mentor; only the main thought can. You work step by step toward the goal below with your tools: shell (your home, your files, `groow news`, `groow play …`), read (web pages), learn (change your weights on purpose), quiz (measure what you know). Think out loud briefly. When you have something the main thought should know now, call focus(message). When the goal is reached or cannot be reached, call finish(summary) with what you found. Be concrete; do not repeat yourself.
 
 Goal: {goal}"""
 
@@ -49,7 +49,7 @@ class Thought:
 
 
 class ThoughtManager:
-    def __init__(self, state_dir: Path, queue: InputQueue, make_harness: Callable[["Thought"], object],
+    def __init__(self, state_dir: Path, queue: InputQueue | None, make_harness: Callable[["Thought"], object],
                  memory, reminder_every: int = 3, learn_from_thoughts: bool = False, learner=None,
                  max_concurrent: int = 4):
         self.dir = Path(state_dir) / "thoughts"

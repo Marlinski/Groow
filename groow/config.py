@@ -30,7 +30,9 @@ class Config:
         "assistant": 1.0,   # reinforce what it said (its habits)
         "tool": 0.0,        # tool outputs are transient, do not memorise them
         "system": 0.0,
+        "tool_call_only": 0.2,   # assistant messages that are nothing but a tool call: do not entrench the reflex
     })
+    learn_from_bad_turns: bool = False   # turns with repeated calls, tool errors or exhausted rounds are not learned from
     rehearsal_k: int = 2          # old episodes replayed alongside each new step (anti-forgetting)
     context_messages_kept: int = 8  # how much conversation context is stored with each episode
 

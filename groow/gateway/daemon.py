@@ -15,7 +15,6 @@ safe mode.
 from __future__ import annotations
 
 import asyncio
-import collections
 import json
 import os
 import threading
@@ -38,7 +37,6 @@ class Daemon:
         self.urlfile = Path(cfg.state) / "groow.url"
         self.pidfile = Path(cfg.state) / "groow.pid"
         self.subscribers: set[asyncio.Queue] = set()
-        self.history: collections.deque = collections.deque(maxlen=600)   # text deltas are coalesced per turn
         self.waiters: dict[str, asyncio.Future] = {}        # /ask correlation id -> future(turn_end event)
         self.req_events: dict[str, list] = {}
         self.mood = "idle"
@@ -61,15 +59,6 @@ class Daemon:
 
     def _fanout(self, e: dict) -> None:
         self._update_mood(e)
-        if e["ev"] == "text":
-            # keep one coalesced text entry per turn in the history (a copy: live queues hold the original)
-            last = self.history[-1] if self.history else None
-            if last is not None and last["ev"] == "text" and last.get("req") == e.get("req"):
-                last["delta"] += e["delta"]
-            else:
-                self.history.append({**e})
-        elif e["ev"] != "status":
-            self.history.append(e)
         req = e.get("req")
         if req in self.req_events:
             self.req_events[req].append(e)
@@ -124,6 +113,27 @@ class Daemon:
                 "server": a.server.stats, "gpu_gb": a.brain.status()["gpu_memory_gb"],
                 "clients": len(self.subscribers), "identity_version": a.identity.versions(),
                 "skills": a.skills.installed(), "handled": self.mind.handled if self.mind else 0}
+
+    def replay(self, n: int) -> list[dict]:
+        """Recent conversation as UI events, rebuilt from the main journal (the single durable trace)."""
+        out = []
+        for rec in self.app.journal.tail(n):
+            role, t = rec.get("role"), rec.get("ts")
+            if role == "user":
+                who = "user" if rec.get("kind", "user") in ("user", "command") else "signal"
+                out.append({"ev": "turn_start", "t": t, "who": who, "kind": rec.get("kind", "user"), "text": rec.get("content", ""), "replay": True})
+            elif role == "assistant":
+                if rec.get("content"):
+                    out.append({"ev": "text", "t": t, "delta": rec["content"], "replay": True})
+                for c in rec.get("tool_calls") or []:
+                    out.append({"ev": "tool_call", "t": t, "name": c["function"]["name"], "args": c["function"]["arguments"],
+                                "actor": "main", "replay": True})
+                if not rec.get("tool_calls"):
+                    out.append({"ev": "turn_end", "t": t, "final": rec.get("content", ""), "replay": True})
+            elif role == "tool":
+                out.append({"ev": "tool_result", "t": t, "name": rec.get("name", ""), "result": (rec.get("content") or "")[:600],
+                            "actor": "main", "replay": True})
+        return out
 
     def hello(self) -> dict:
         a = self.app
@@ -184,8 +194,16 @@ class Daemon:
         return web.json_response({"req": req, "final": end.get("final", ""), "tools_used": end.get("tools_used", []),
                                   "seconds": end.get("seconds"), "events": [e for e in evs if e["ev"] != "text"]}, dumps=encode)
 
+    async def h_op(self, request: web.Request) -> web.Response:
+        """Operations on the running Groow (what `groow …` commands in its shell call)."""
+        from ..ops import run_op
+        body = await request.json()
+        name = body.get("op") or ""
+        r = await run_op(self.app, name, body.get("args") or {})
+        return web.json_response(r, dumps=encode, status=200 if "error" not in r else 400)
+
     async def h_events(self, request: web.Request) -> web.StreamResponse:
-        replay = int(request.query.get("replay", "60"))
+        replay = int(request.query.get("replay", "60"))   # number of journal messages to rebuild from
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache",
                                            "X-Accel-Buffering": "no"})
         await resp.prepare(request)
@@ -193,8 +211,8 @@ class Daemon:
         self.subscribers.add(q)
         try:
             await resp.write(sse(self.hello()))
-            for e in list(self.history)[-replay:] if replay else []:
-                await resp.write(sse({**e, "replay": True}))
+            for e in self.replay(replay) if replay else []:
+                await resp.write(sse(e))
             while True:
                 try:
                     e = await asyncio.wait_for(q.get(), timeout=15)
@@ -220,8 +238,8 @@ class Daemon:
         async def writer():
             try:
                 await ws.send_str(encode(self.hello()))
-                for e in list(self.history)[-replay:] if replay else []:
-                    await ws.send_str(encode({**e, "replay": True}))
+                for e in self.replay(replay) if replay else []:
+                    await ws.send_str(encode(e))
                 while True:
                     e = await q.get()
                     await ws.send_str(encode(e))
@@ -284,7 +302,8 @@ class Daemon:
         web_app = web.Application(client_max_size=2**20)
         web_app.add_routes([web.get("/hello", self.h_hello), web.get("/status", self.h_status),
                             web.post("/say", self.h_say), web.post("/command", self.h_command),
-                            web.post("/ask", self.h_ask), web.get("/events", self.h_events), web.get("/ws", self.h_ws),
+                            web.post("/ask", self.h_ask), web.post("/op", self.h_op),
+                            web.get("/events", self.h_events), web.get("/ws", self.h_ws),
                             web.get("/", self.h_hello)])
         runner = web.AppRunner(web_app, access_log=None, shutdown_timeout=2.0)
         await runner.setup()

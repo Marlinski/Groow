@@ -40,10 +40,17 @@ class Learner:
         return [self._episode_sample(e) for e in self.memory.sample_for_rehearsal(k, exclude)]
 
     # ------------------------------------------------------------------ passive
-    def passive(self, context: list[dict], turn: list[dict], tools_used: list[str]) -> dict:
-        """Store the turn as an episode and take one gradient step on it."""
+    def passive(self, context: list[dict], turn: list[dict], tools_used: list[str], flags: list[str] | None = None) -> dict:
+        """Store the turn as an episode and take one gradient step on it, unless the turn went badly
+        (repeated calls, tool errors, exhausted rounds): those are recorded but never trained on."""
         ctx = trim_messages(context, self.cfg.context_messages_kept)
         ctx = [m for m in ctx if m["role"] != "system"]
+        flags = flags or []
+        if flags and not self.cfg.learn_from_bad_turns:
+            eid = self.memory.add_episode(ctx, turn, tools_used, kind="chat:bad")
+            self.memory.set_feedback(eid, -1)          # never rehearsed either
+            self.memory.log("passive_skipped", episode=eid, flags=flags, step=self.brain.meta["steps"])
+            return {"episode": eid, "loss": float("nan"), "learnable_tokens": 0, "skipped": flags}
         eid = self.memory.add_episode(ctx, turn, tools_used)
         ep = {"context": ctx, "turn": turn}
         samples = [self._episode_sample(ep)] + self._rehearsal(self.cfg.rehearsal_k, exclude=eid)
@@ -109,6 +116,35 @@ class Learner:
                   "curve": curve}
         self.memory.add_lesson(title, text, {k: v for k, v in result.items() if k != "curve"})
         self.memory.log("memorize", title=title, **{k: v for k, v in result.items() if k not in ("title", "curve")},
+                        step=self.brain.meta["steps"])
+        return result
+
+    def learn(self, question: str, answer: str, source: str = "", target_loss: float | None = None,
+              max_steps: int = 40, passes: int = 3, on_progress=None) -> dict:
+        """The one deliberate weight change: drill question -> answer (source words, with origin).
+        A few passes by default; with target_loss, keep going until the recite loss is below it."""
+        text = answer.strip() + (f" (Source: {source.strip()}.)" if source.strip() else "")
+        rw = {"user": 0.0, "assistant": 1.0, "system": 0.0, "tool": 0.0}
+        msgs = [{"role": "system", "content": REHEARSAL_SYSTEM}, {"role": "user", "content": question},
+                {"role": "assistant", "content": text}]
+        s = build_sample(self.brain.tok, msgs, rw, max_len=self.cfg.train_max_len)
+        before = self.brain.sample_loss(s)
+        t0 = time.time()
+        steps, loss = 0, before
+        limit = max_steps if target_loss else passes
+        while steps < limit:
+            self.brain.sft_step([s] + self._rehearsal(1))
+            steps += 1
+            loss = self.brain.sample_loss(s)
+            if on_progress:
+                on_progress(steps - 1, loss)
+            if target_loss and loss < target_loss:
+                break
+        result = {"question": question, "loss_before": round(before, 3), "loss_after": round(loss, 3), "steps": steps,
+                  "reached_target": (loss < target_loss) if target_loss else None, "seconds": round(time.time() - t0, 1)}
+        self.memory.add_lesson(f"learn: {question[:80]}", text, {"kind": "fact", "source": source, "question": question,
+                                                                  "loss_before": round(before, 3), "loss_after": round(loss, 3)})
+        self.memory.log("learn", question=question[:80], loss_before=before, loss_after=loss, steps=steps,
                         step=self.brain.meta["steps"])
         return result
 

@@ -30,6 +30,7 @@ Messages = list[dict]
 
 @dataclass
 class Hooks:
+    on_message: Callable[[dict], None] | None = None                   # every message the moment it enters the history
     on_text: Callable[[str], None] | None = None                       # streamed text chunks
     on_tool_call: Callable[[str, dict], None] | None = None            # before a tool runs
     on_tool_result: Callable[[str, dict, str], None] | None = None     # after it ran
@@ -46,6 +47,7 @@ class TurnResult:
     rounds: int = 0
     seconds: float = 0.0
     interrupted: bool = False
+    flags: list[str] = field(default_factory=list)      # "repeat", "tool_error", "exhausted": a turn not worth learning from
     extra: dict = field(default_factory=dict)
 
 
@@ -70,7 +72,21 @@ def parse_generation(raw: str) -> tuple[str, str, list[dict]]:
                 except json.JSONDecodeError:
                     args = {}
             calls.append({"type": "function", "function": {"name": obj["name"], "arguments": args}})
-    content = TOOL_CALL_RE.sub("", raw).strip()
+    content = TOOL_CALL_RE.sub("", raw)
+    # an unterminated <tool_call> (cut by max_new_tokens or a malformed close): try to recover the JSON, never show it
+    if "<tool_call>" in content:
+        head, tail = content.split("<tool_call>", 1)
+        tail = tail.replace("</tool_call>", "").strip()
+        try:
+            obj = json.loads(tail)
+            if isinstance(obj, dict) and "name" in obj:
+                calls.append({"type": "function", "function": {"name": obj["name"], "arguments": obj.get("arguments", {}) or {}}})
+        except json.JSONDecodeError:
+            pass
+        content = head
+    content = content.strip()
+    if content in ("}", "})", "]", "}}"):          # a stray closing bracket is not an answer
+        content = ""
     return reasoning, content, calls
 
 
@@ -83,6 +99,7 @@ class Harness:
         self.name = name
         self.history: Messages = [{"role": "system", "content": system_prompt}]
         self.turns: list[TurnResult] = []
+        self.turn_kind = "user"          # what the current input is (user, focus, reminder, idle …); journalled
 
     # ------------------------------------------------------------------ conversation state
     def reset(self) -> None:
@@ -103,6 +120,13 @@ class Harness:
             if dropped == 0:
                 return
 
+    def _journal(self, msg: dict) -> None:
+        if self.hooks.on_message:
+            try:
+                self.hooks.on_message(msg)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------ the loop
     async def turn(self, user_text: str, should_stop: Callable[[], bool] | None = None) -> TurnResult:
         """One turn. If `should_stop` fires during generation the turn is rolled back."""
@@ -112,9 +136,11 @@ class Harness:
         user_msg = {"role": "user", "content": user_text}
         turn_start = len(self.history)
         self.history.append(user_msg)
+        self._journal(user_msg)
         turn_msgs: Messages = [user_msg]
         tools_used: list[str] = []
         seen_calls: dict[str, str] = {}      # repeat-call guard: same tool + same args in one turn
+        flags: list[str] = []
         final, rounds = "", 0
         for rounds in range(1, self.cfg.max_tool_rounds + 1):
             self._fit_context(turn_start)
@@ -132,9 +158,15 @@ class Harness:
             if calls:
                 msg["tool_calls"] = calls
             self.history.append(msg)
+            self._journal(msg)
             turn_msgs.append(msg)
             final = content
             if not calls:
+                break
+            if flags.count("repeat") >= 2:
+                # stuck repeating itself: stop the turn, do not learn from it
+                final = final or "(I got stuck repeating the same tool call and stopped.)"
+                flags.append("exhausted")
                 break
             for c in calls:
                 name, args = c["function"]["name"], c["function"]["arguments"]
@@ -142,8 +174,9 @@ class Harness:
                     self.hooks.on_tool_call(name, args)
                 key = name + json.dumps(args, sort_keys=True, ensure_ascii=False)
                 if key in seen_calls:
+                    flags.append("repeat")
                     result = json.dumps({"note": "you already made this exact call in this turn; here is the same "
-                                                 "result again. Do something different next.",
+                                                 "result again. Do something different next, or answer.",
                                          "previous_result": seen_calls[key][:1500]}, ensure_ascii=False)
                 else:
                     spec = self.tools.tools.get(name)
@@ -156,14 +189,20 @@ class Harness:
                         result = json.dumps({"error": f"tool {name} did not finish within {self.cfg.tool_timeout}s; "
                                                       "it may still be running in the background. Do not call it again with the same arguments."})
                     seen_calls[key] = result
+                    if result.lstrip().startswith('{"error"'):
+                        flags.append("tool_error")
                 tools_used.append(name)
                 if self.hooks.on_tool_result:
                     self.hooks.on_tool_result(name, args, result)
                 tmsg = {"role": "tool", "content": result}
                 self.history.append(tmsg)
+                self._journal({**tmsg, "name": name, "args": args})
                 turn_msgs.append(tmsg)
+        else:
+            flags.append("exhausted")
+            final = final or "(I ran out of steps before answering.)"
         result = TurnResult(user_text=user_text, context=context, messages=turn_msgs, final_text=final,
-                            tools_used=tools_used, rounds=rounds, seconds=round(time.time() - t0, 2))
+                            tools_used=tools_used, rounds=rounds, seconds=round(time.time() - t0, 2), flags=flags)
         self.turns.append(result)
         if self.hooks.after_turn:
             await loop.run_in_executor(self.brain.server.gpu, self.hooks.after_turn, result)

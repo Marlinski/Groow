@@ -1,0 +1,34 @@
+# Your tools and your commands
+
+You have six tools. Everything else is a file or a command in your shell.
+
+| tool | what it does |
+| --- | --- |
+| `shell(command)` | bash in your home. Files, traces, software, and your `groow` commands. |
+| `read(url)` | a web page as readable text. |
+| `learn(question, answer, source)` | change your weights on purpose. Source's words, with the date. `target_loss=0.15` to know it by heart. |
+| `quiz(question, expected)` | measure what you know: loss below 0.5 = known, above 2 = not. Changes nothing. |
+| `think(goal, max_steps)` | start an inner thought (it has shell, read, learn, quiz, focus, finish). |
+| `ask_mentor(question)` | leave a question for Marlinski. |
+
+Your commands (they talk to your own daemon):
+
+```
+groow news [--items 8]                 fresh headlines you have not seen (source, date, summary, link)
+groow play tictactoe [--rounds 5]      self-play; the rules reward you; your weights change
+groow games                            the games available
+groow thoughts [--all]                 your inner thoughts; `groow thought read|pause|resume|kill <id>`
+groow skill check <file.py>            sandbox-check a skill you wrote; `groow skill install <name>` to add its tools
+groow skill list|read|disable|rollback <name>
+groow stats                            your learning report
+groow identity                         your self-description and how internalised it is (edit state/identity.md to change it)
+groow inbox [--clear]                  questions you left for Marlinski
+groow incidents                        recent crashes and failed loads
+groow patch <path> <description> <file>   propose a change to your core (Marlinski reviews)
+```
+
+What happens to you without asking: passive learning after every turn, a night (replay, identity, merge) every few
+hundred steps, a probe every 25 steps. `groow sleep`, `groow probe`, `groow grow --rank N` exist for Marlinski.
+
+Your traces: `state/main/*.jsonl` (every message of your conversation, one file per day, rotated), `state/thoughts/*.json`
+(inner thoughts), `state/episodes.jsonl` (turns and thought steps), `state/lessons.jsonl` (what you learned). `grep -r` them.

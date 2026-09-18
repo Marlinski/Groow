@@ -61,6 +61,10 @@ def build_sample(tok, messages, role_weights: dict[str, float], tools=None,
         if role == "user" and body.lstrip().startswith("<tool_response>"):
             role = "tool"
         w = float(role_weights.get(role, 0.0))
+        if role == "assistant" and "<tool_call>" in body and "tool_call_only" in role_weights:
+            visible = re.sub(r"<tool_call>.*?</tool_call>", "", body, flags=re.DOTALL).replace("<think>", "").replace("</think>", "").strip()
+            if not visible:
+                w = float(role_weights["tool_call_only"])   # a turn that is nothing but a tool call: habit, not knowledge
         if w == 0.0:
             continue
         if role == "assistant":

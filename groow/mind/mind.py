@@ -72,6 +72,8 @@ class Mind:
                 self.emit("log", level="error", text=f"error while handling {sig.kind}: {tb.strip().splitlines()[-1][:200]}")
                 if self.on_error:
                     self.on_error("handle_" + sig.kind, tb)
+            finally:
+                self.queue.ack(sig)
 
     async def handle(self, sig: Signal) -> None:
         self.handled += 1
@@ -90,6 +92,7 @@ class Mind:
             req = sig.meta.get("req")
             self.emit("turn_start", who="user", kind="user", text=sig.text, req=req)
             self._req = req
+            self.harness.turn_kind = "user"
             try:
                 r = await self.harness.turn(sig.text, should_stop=self._should_stop)
             finally:
@@ -100,6 +103,7 @@ class Mind:
                 return                               # something more concrete is right behind it
             framed = FRAMES[sig.kind].format(text=sig.text, thought=sig.meta.get("thought", "?"))
             self.emit("turn_start", who="signal", kind=sig.kind, text=sig.text, thought=sig.meta.get("thought"))
+            self.harness.turn_kind = sig.kind
             r = await self.harness.turn(framed, should_stop=self._should_stop)
             self.emit("turn_end", who="signal", kind=sig.kind, final=r.final_text, tools_used=r.tools_used, seconds=r.seconds)
         elif sig.kind in ("housekeeping", "noop"):

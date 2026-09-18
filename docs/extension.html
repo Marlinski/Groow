@@ -27,10 +27,10 @@ TESTS = [("reverse_text", {"text": "abc"}, {"reversed": "cba"})]</code></pre>
 <h2>Birth of a skill</h2>
 <pre class="mermaid">
 flowchart LR
-  E[run_python<br/>experiment] --> D[draft_skill<br/>state/skills/_drafts]
+  E[shell: write the file<br/>in workspace/] --> D[groow skill check file.py<br/>-> state/skills/_drafts]
   D --> C{sandbox check<br/>fresh subprocess, timeout}
-  C -->|fails| D
-  C -->|passes| I[install_skill<br/>hot-load, keep previous version]
+  C -->|fails| E
+  C -->|passes| I[groow skill install name<br/>hot-load, keep previous version]
   I --> U[tools available to main<br/>and to new inner thoughts]
   U --> R[rollback_skill / disable_skill]
 </pre>
@@ -60,7 +60,7 @@ flowchart TD
 <tr><td>safe mode itself crashes twice</td><td>the supervisor</td><td>nothing; the session ends and the mentor reads <code>groow doctor</code></td></tr></table>
 
 <h2>Safe mode: the static debugger harness</h2>
-<p>Safe mode is the same harness with a different loadout, chosen so that nothing Groow wrote is running: skills unloaded, passive learning and curiosity off, no inner thoughts carried in. The system prompt is not the identity but a repair brief that includes the incident. The toolset is core tools plus <code>read_incidents</code>, <code>read_skill</code>, <code>list_skills</code>, <code>draft_skill</code>, <code>install_skill</code>, <code>disable_skill</code>, <code>rollback_skill</code>, <code>propose_patch</code>, <code>ask_mentor</code>. When it says <code>REPAIRED</code> (or you type <code>/restart</code>), the supervisor rebuilds the normal session.</p>
+<p>Safe mode is the same harness with a different loadout, chosen so that nothing Groow wrote is running: skills unloaded, passive learning and curiosity off, no inner thoughts carried in. The system prompt is not the identity but a repair brief that includes the incident. The toolset is <code>shell</code> and <code>ask_mentor</code>; repair goes through <code>groow incidents</code>, <code>groow skill check|install|disable</code> and <code>groow patch</code> in that shell. When it says <code>REPAIRED</code> (or you type <code>/restart</code>), the supervisor rebuilds the normal session.</p>
 <p><code>groow doctor</code> is the fully static fallback for when the model cannot even start: it re-checks every installed skill in a sandbox, lists drafts and quarantined skills, prints recent incidents and verifies the state directory, without loading weights.</p>
 
 <h2>Body and home</h2>

@@ -1,23 +1,22 @@
-"""The harness: everything between a user message and a finished turn.
+"""The harness: everything between a message and a finished turn.
 
     registry   ToolRegistry: Python functions -> tool schemas + safe dispatch
-    builtins   basic tools (calculator, clock, workspace files, python runner)
-    selftools  tools acting on Groow's own weights and memory (via the Learner)
-    sensetools news_headlines / read_article / learn_fact: perceiving the world, learning grounded facts
-    mindtools  think / list / read / pause / resume / kill thoughts, recall transcripts; focus / finish for thoughts
+    builtins   the substrate: shell, read
+    selftools  learn, quiz, ask_mentor
+    mindtools  think (main); focus, finish (inner thoughts)
+    sensetools news headlines for `groow news` and curiosity
     skills     SkillManager: tools Groow writes for itself (draft -> sandbox check -> install -> rollback/quarantine)
-    skilltools draft_skill / install_skill / list / read / disable / rollback, read_incidents, propose_patch
     skillcheck the subprocess checker a draft must pass
-    loop       Harness: generate -> tool calls -> results -> ... -> after_turn hook
+    loop       Harness: generate -> parse tool calls -> execute -> loop; Hooks (on_message journals every message)
 """
 from .registry import ToolRegistry, ToolSpec
-from .builtins import make_builtin_tools
+from .builtins import make_substrate_tools, make_builtin_tools, page_text
 from .selftools import make_self_tools
-from .sensetools import make_sense_tools
+from .sensetools import news_headlines
 from .mindtools import make_main_mind_tools, make_thought_tools
 from .skills import SkillManager
-from .skilltools import make_skill_tools
 from .loop import Harness, Hooks, TurnResult, parse_generation
 
-__all__ = ["ToolRegistry", "ToolSpec", "make_builtin_tools", "make_self_tools", "make_sense_tools", "make_main_mind_tools", "make_thought_tools", "SkillManager", "make_skill_tools", "Harness", "Hooks",
+__all__ = ["ToolRegistry", "ToolSpec", "make_substrate_tools", "make_builtin_tools", "page_text", "make_self_tools",
+           "news_headlines", "make_main_mind_tools", "make_thought_tools", "SkillManager", "Harness", "Hooks",
            "TurnResult", "parse_generation"]

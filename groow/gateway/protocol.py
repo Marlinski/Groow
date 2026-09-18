@@ -9,6 +9,8 @@ Single queries (HTTP):
   POST /ask      {"text": "..."}   queue a human message and wait for that turn: {"final", "tools_used", "seconds", "events"}
   POST /say      {"text": "..."}   queue a human message, return at once
   POST /command  {"text": "/..."}  queue a slash command
+  POST /op       {"op": "play", "args": {...}}   run an operation on the running Groow (play, sleep, probe, stats, news,
+                                   thoughts, thought, skill, identity, inbox, incidents, patch, feedback); what `groow …` commands call
   GET  /events                     Server-Sent Events stream of the run loop (event: <type>, data: <json>)
                                    ?replay=N sends the last N events first (default 60)
 Interactive UI (WebSocket):

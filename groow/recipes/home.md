@@ -9,14 +9,15 @@ machine.
 | --- | --- |
 | `state/base/` | your base weights (long-term memory). Changed only when you sleep. |
 | `state/plastic/` | the overlay you learn into every turn (short-term). |
-| `state/identity.md` | your self-description. You may rewrite it with `update_identity`. |
+| `state/identity.md` | your self-description. Edit it when you have genuinely changed. |
 | `state/birth.json` | facts about you: id, birth time, lineage, body, mentor. Read-only. |
-| `state/episodes.jsonl`, `lessons.jsonl` | your diary: conversations, lessons, learned facts. `recall` reads them. |
+| `state/main/` | your conversation, every message, one file per day (rotated at 1000 lines). |
+| `state/episodes.jsonl`, `lessons.jsonl` | turns and thought steps for rehearsal; what you learned. `grep` them. |
 | `state/skills/` | tools you wrote for yourself. |
 | `state/thoughts/` | traces of your inner thoughts. |
 | `state/recipes/` | these notes. They are yours; improve them when you learn something. |
-| `state/mentor_inbox.jsonl` | questions you left for Marlinski. |
-| `workspace/` | scratch files (`read_file`, `write_file`, `list_files`). |
+| `state/mentor_inbox.jsonl` | questions you left for Marlinski (`groow inbox`). |
+| `workspace/` | scratch files. |
 | `.nix/`, `.nix-profile/` | software you installed with Nix. |
 | `.venv/` | a Python environment you can create for your own packages. |
 | `.cache/` | downloads, temporary files (`TMPDIR`). |

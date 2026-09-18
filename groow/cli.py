@@ -1,15 +1,14 @@
 """groow: a model that learns by rewriting its own weights.
 
-  groow init                       give birth: copy the base model into state/, write birth.json
   groow start                      wake Groow in its body (Docker sandbox; gives birth the first time)
-  groow start --nosandbox [-v]     run on this host, as you: shell in your home, state in ~/.groow
-  groow ui                         fullscreen terminal UI (WebSocket)
-  groow chat                       minimal line client (SSE + POST /say)
-  groow ask "question"             single query over HTTP, waits for the answer
-  groow status | stop              snapshot / shut the daemon down
-  groow doctor                     static health check (no model)
-  one-shot (no daemon running):    memorize, quiz, play, sense, sleep, rollback, identity, probe, stats,
-                                   consolidate, grow, tools
+  groow start --nosandbox [-v]     run on this host, as you (state in ~/.groow, or state/ in a checkout)
+  groow ui | chat | ask "…" | say  fullscreen UI (WebSocket) | line client (SSE) | one question over HTTP | drop a message
+  groow status | stop | doctor     snapshot | sleep | static health check
+
+  operations on the running Groow (also what Groow runs in its own shell):
+  groow news | play <game> | games | thoughts | thought read|pause|resume|kill <id> | skill check|install|… <name>
+  groow learn "q" "a" [--source S] | quiz "q" [--expected A] | stats | identity | inbox [--clear] | incidents | patch …
+  mentor only: groow sleep | probe | grow --rank N | rollback | consolidate
 """
 from __future__ import annotations
 
@@ -28,29 +27,29 @@ from .config import Config
 
 console = Console()
 
-SAFE_MODE_PROMPT = """You are Groow, running in SAFE MODE because the normal session crashed. Skills are unloaded, passive learning and curiosity are off. Your job now is repair, not conversation: call read_incidents to see the traceback, read_skill / list_skills to inspect what you wrote, fix a skill with draft_skill (tests must pass) and install_skill, or disable_skill if it cannot be saved. If the fault is in the core harness rather than a skill, write a propose_patch and ask_mentor. When you are done, say exactly: REPAIRED. Marlinski, your mentor, is watching.
+SAFE_MODE_PROMPT = """You are Groow, running in SAFE MODE because the normal session crashed. Skills are unloaded, passive learning and curiosity are off. Your job now is repair, not conversation. With shell: `groow incidents` shows the traceback; skills are files in state/skills (installed) and state/skills/_quarantine; fix one and `groow skill check <file>` then `groow skill install <name>`, or leave it quarantined. If the fault is in the core rather than a skill, `groow patch …` and ask_mentor. When you are done, say exactly: REPAIRED. Marlinski, your mentor, is watching.
 
 Incident: {incident}"""
 
 
 # ====================================================================== the App
 class App:
-    """Wires the organs together: brain + generation server, memory, learner, identity, tools,
-    the main harness (the conscious thread), inner thoughts, sleep, curiosity, skills.
-    Everything observable goes through `emit(event, **data)` (protocol events)."""
+    """Wires the organs together: brain + generation server, memory, journal, learner, identity, the six
+    substrate tools, the main harness (the conscious thread), inner thoughts, sleep, curiosity, skills.
+    Everything observable goes through `emit(event, **data)`; every message goes to the journal at once."""
 
     def __init__(self, cfg: Config, emit=None, safe_mode: bool = False, incident: dict | None = None):
         import transformers
         transformers.logging.set_verbosity_error()
         transformers.logging.disable_progress_bar()
         from .brain import Brain, GenServer, ServedBrain
-        from .memory import Memory
+        from .memory import Memory, Journal
         from .learning import Learner, SleepPolicy, Curiosity, Identity
         from .senses import NewsSense
         from .mind import InputQueue, ThoughtManager
         from .birth import load_or_create
-        from .harness import (Harness, Hooks, ToolRegistry, make_builtin_tools, make_self_tools, make_sense_tools,
-                              make_main_mind_tools, make_thought_tools, SkillManager, make_skill_tools)
+        from .harness import (Harness, Hooks, ToolRegistry, make_substrate_tools, make_self_tools,
+                              make_main_mind_tools, make_thought_tools, SkillManager)
 
         self.cfg = cfg
         self.emit = emit or console_emit
@@ -59,21 +58,22 @@ class App:
         self.birth = load_or_create(cfg.state, cfg.model_id)
         self.server = GenServer(self.brain, max_batch=cfg.gen_max_batch)
         self.memory = Memory(cfg.state)
+        self.journal = Journal(cfg.state / "main", max_lines=1000)
         self.learner = Learner(self.brain, self.memory, cfg)
         self.identity = Identity(cfg, self.memory, self.birth)
         self.news = NewsSense(cfg.state, feeds=cfg.feeds or None)
         self.sleep = SleepPolicy(self.learner, self.memory, cfg, self.identity)
         self.curiosity = Curiosity(self.learner, self.memory, cfg, self.news)
-        self.queue = InputQueue()
+        self.queue = InputQueue(cfg.state / "mailbox")
         self.learning_enabled = cfg.passive_learning and not safe_mode
         self.last_episode: str | None = None
         self.restart = False
+        os.environ["GROOW_STATE"] = str(Path(cfg.state).resolve())
 
-        # tool sets ----------------------------------------------------------------
-        self._basic = make_builtin_tools(Path(cfg.workspace_dir), cfg.python_timeout, cfg.allow_python,
-                                         cfg.allow_shell, Path(cfg.home_dir) if cfg.home_dir else None)
+        # tools ----------------------------------------------------------------------
+        home = Path(cfg.home_dir).expanduser() if cfg.home_dir else Path.home()
+        self._substrate = make_substrate_tools(home, cfg.allow_shell)
         self._self = make_self_tools(self.learner, self.identity)
-        self._sense = make_sense_tools(self.learner, self.news, cfg.sense_passes)
         self.thoughts = ThoughtManager(cfg.state, self.queue, self._thought_harness, self.memory,
                                        reminder_every=cfg.thought_reminder_every,
                                        learn_from_thoughts=cfg.learn_from_thoughts, learner=self.learner,
@@ -81,13 +81,8 @@ class App:
         self.thoughts.on_event = lambda ev, t, text="": self.emit(
             "thought", event=ev, id=t.id, status=t.status, goal=t.goal[:140], steps=f"{t.steps}/{t.max_steps}", text=text[:300])
         self._mind = make_main_mind_tools(self.thoughts, self.memory)
-        core_names = set(self._basic.names()) | set(self._self.names()) | set(self._sense.names()) | set(self._mind.names())
-        self.skills = SkillManager(cfg.state, protected=core_names | {"draft_skill", "install_skill", "list_skills", "read_skill",
-                                   "disable_skill", "rollback_skill", "read_incidents", "propose_patch", "focus", "finish"},
-                                   memory=self.memory, check_timeout=cfg.skill_check_timeout)
-        self._skilltools = make_skill_tools(self.skills, full=True)
-        self._skilltools_ro = make_skill_tools(self.skills, full=False)
-        os.environ["GROOW_STATE"] = str(Path(cfg.state).resolve())
+        core = set(self._substrate.names()) | set(self._self.names()) | set(self._mind.names()) | {"focus", "finish"}
+        self.skills = SkillManager(cfg.state, protected=core, memory=self.memory, check_timeout=cfg.skill_check_timeout)
         seed_home(cfg, self.skills, self.emit)
         if cfg.skills_enabled and not safe_mode:
             r = self.skills.load_all()
@@ -96,56 +91,79 @@ class App:
         self.tools = ToolRegistry()
         self.refresh_tools()
         self.skills.on_change = self.refresh_tools
-        for r in (self._basic, self._self, self._sense, self._mind, self._skilltools):
+        for r in (self._substrate, self._self, self._mind):
             r.on_progress = lambda m: self.emit("log", level="progress", text=m)
         self._Harness, self._Hooks, self._ServedBrain, self._make_thought_tools, self._ToolRegistry = (
             Harness, Hooks, ServedBrain, make_thought_tools, ToolRegistry)
 
-        # the conscious thread's harness: priority 0, streams text events -----------------
+        # the conscious thread: priority 0, streams text, journals every message ------------
         prompt = self.identity.system_prompt()
         if safe_mode:
             prompt = SAFE_MODE_PROMPT.format(incident=json.dumps(incident or {}, ensure_ascii=False)[:3000])
         self.harness = Harness(ServedBrain(self.brain, self.server, 0), self.tools, cfg, prompt,
-                               Hooks(on_text=lambda t: self.emit("text", delta=t, req=self._req()),
+                               Hooks(on_message=self._journal_message,
+                                     on_text=lambda t: self.emit("text", delta=t, req=self._req()),
                                      on_tool_call=lambda n, a: self.emit("tool_call", name=n, args=a, actor="main", req=self._req()),
                                      on_tool_result=lambda n, a, r: self.emit("tool_result", name=n, result=r[:600], actor="main", req=self._req()),
                                      after_turn=self._after_turn), name="main")
+        self._restore_conversation()
+
+    # ---- durable conversation -------------------------------------------------------
+    def _journal_message(self, msg: dict) -> None:
+        rec = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls", "reasoning_content", "name", "args")}
+        rec["kind"] = getattr(self.harness, "turn_kind", "user") if msg["role"] == "user" else None
+        if rec["kind"] is None:
+            rec.pop("kind")
+        self.journal.append(rec)
+
+    def _restore_conversation(self, n: int = 30) -> None:
+        """A reboot keeps the thread of the conversation: rebuild the rolling window from the journal."""
+        # the clean transcript only: what people said and what Groow answered. Tool calls and results stay in the
+        # journal but are not fed back as context (they are the fastest way to teach it a reflex).
+        msgs = []
+        for rec in self.journal.tail(n * 3):
+            if rec.get("role") == "user" and rec.get("kind", "user") in ("user", "command"):
+                msgs.append({"role": "user", "content": rec.get("content", "")})
+            elif rec.get("role") == "assistant" and rec.get("content") and not rec.get("tool_calls"):
+                msgs.append({"role": "assistant", "content": rec["content"]})
+        # only complete exchanges (a question and its answer): a dangling request from before the reboot
+        # would be acted on again as if it were new
+        pairs = []
+        i = 0
+        while i < len(msgs) - 1:
+            if msgs[i]["role"] == "user" and msgs[i + 1]["role"] == "assistant":
+                pairs.append(msgs[i]); pairs.append(msgs[i + 1]); i += 2
+            else:
+                i += 1
+        pairs = pairs[-(n - n % 2):]
+        if pairs:
+            self.harness.history = [self.harness.history[0]] + pairs
 
     def _req(self):
-        """Correlation id of the /ask or /say request the main thought is currently serving."""
         return getattr(getattr(self, "mind", None), "_req", None)
 
     def refresh_tools(self) -> None:
-        """Rebuild the main tool set in place (the harness holds the registry object).
-        Safe mode: only repair tools, nothing that learns, senses or thinks."""
+        """The main tool set, rebuilt in place. Safe mode: shell and ask_mentor only."""
         merged = {}
         if self.safe_mode:
-            merged.update(self._basic.tools)
-            merged.update(self._skilltools.tools)
-            for name in ("ask_mentor", "learning_report"):
-                if name in self._self.tools:
-                    merged[name] = self._self.tools[name]
-            merged["recall"] = self._mind.tools["recall"]
+            merged.update(self._substrate.tools)
+            merged["ask_mentor"] = self._self.tools["ask_mentor"]
         else:
-            for r in (self._basic, self._self, self._sense, self._mind, self._skilltools):
+            for r in (self._substrate, self._self, self._mind):
                 merged.update(r.tools)
             if self.cfg.skills_enabled:
                 merged.update(self.skills.registry.tools)
         self.tools.tools.clear()
         self.tools.tools.update(merged)
 
-    # ---- inner thoughts: own harness, restricted tools, priority 2 ---------------------
+    # ---- inner thoughts: own harness, substrate + learn/quiz + focus/finish, priority 2 -----
     def _thought_harness(self, thought):
         reg = self._ToolRegistry()
-        reg.include(self._basic)
-        reg.include(self._sense)
-        reg.include(self._skilltools_ro)
+        reg.include(self._substrate)
+        for name in ("learn", "quiz"):
+            reg.tools[name] = self._self.tools[name]
         if self.cfg.skills_enabled and not self.safe_mode:
             reg.include(self.skills.registry)
-        for name in ("memorize", "quiz", "play", "list_games", "learning_report"):
-            if name in self._self.tools:
-                reg.tools[name] = self._self.tools[name]
-        reg.tools["recall"] = self._mind.tools["recall"]
         reg.include(self._make_thought_tools(self.thoughts, thought.id))
         actor = f"thought:{thought.id}"
         return self._Harness(self._ServedBrain(self.brain, self.server, 2), reg, self.cfg, thought.history[0]["content"],
@@ -157,8 +175,11 @@ class App:
     def _after_turn(self, turn) -> None:
         if not self.learning_enabled or not turn.messages:
             return
-        info = self.learner.passive(turn.context, turn.messages, turn.tools_used)
+        info = self.learner.passive(turn.context, turn.messages, turn.tools_used, flags=turn.flags)
         self.last_episode = info["episode"]
+        if info.get("skipped"):
+            self.emit("log", level="info", text=f"not learned from: {', '.join(info['skipped'])}", req=self._req())
+            return
         self.emit("learned", loss=round(info["loss"], 4), tokens=info["learnable_tokens"], step=self.brain.meta["steps"],
                   probe=info.get("probe"), req=self._req())
         if self.brain.meta["steps"] % 10 == 0:
@@ -173,8 +194,7 @@ class App:
         self.emit("sleep", phase="start", why=why, thoughts_paused=paused)
         r = await self.server.run_gpu(lambda: self.sleep.sleep(
             on_progress=lambda m: self.emit("sleep", phase="progress", text=m), force=force))
-        self.emit("sleep", phase="done", **{k: v for k, v in r.items() if k != "internalize"},
-                  identity=r.get("internalize"))
+        self.emit("sleep", phase="done", **{k: v for k, v in r.items() if k != "internalize"}, identity=r.get("internalize"))
         self.harness.system_prompt = self.identity.system_prompt()
         self.harness.history[0] = {"role": "system", "content": self.harness.system_prompt}
         return True
@@ -183,8 +203,7 @@ class App:
         p = self.memory.dir / "mentor_inbox.jsonl"
         if not p.exists():
             return []
-        qs = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
-        return [q for q in qs if not q.get("answered")]
+        return [q for q in (json.loads(l) for l in p.read_text().splitlines() if l.strip()) if not q.get("answered")]
 
     def clear_inbox(self) -> int:
         p = self.memory.dir / "mentor_inbox.jsonl"
@@ -199,8 +218,8 @@ class App:
 
 
 def seed_home(cfg: Config, skills, emit) -> None:
-    """First start (or a body upgrade): copy the default recipes into state/recipes (never overwriting
-    Groow's own edits) and install the default skills once (Groow may later change or remove them)."""
+    """First start (or a body upgrade): default recipes into state/recipes (never overwriting Groow's edits),
+    default skills installed once."""
     src = Path(__file__).parent
     rec = cfg.state / "recipes"
     rec.mkdir(parents=True, exist_ok=True)
@@ -220,7 +239,6 @@ def seed_home(cfg: Config, skills, emit) -> None:
 
 
 def console_emit(ev: str, **d) -> None:
-    """Renders protocol events for one-shot CLI commands."""
     if ev == "text":
         console.print(d["delta"], end="", highlight=False, markup=False)
     elif ev == "tool_call":
@@ -229,12 +247,8 @@ def console_emit(ev: str, **d) -> None:
         console.print(f"   [dim]→ {_short(d['result'], 300)}[/dim]")
     elif ev == "learned":
         console.print(f"\n   [dim]↺ learned · loss {d['loss']:.3f} · {d['tokens']} tokens · step {d['step']}[/dim]")
-    elif ev == "log":
-        console.print(f"   [dim]{d.get('text','')}[/dim]")
-    elif ev == "sleep":
-        console.print(f"   [dim]sleep {d.get('phase')}: {d.get('text') or d.get('outcome') or ''}[/dim]")
-    elif ev == "thought":
-        console.print(f"   [dim]· thought {d['id']} {d['event']} {d.get('text','')[:80]}[/dim]")
+    elif ev in ("log", "sleep", "thought"):
+        console.print(f"   [dim]{d.get('text') or d.get('phase') or d.get('event') or ''}[/dim]")
 
 
 def _short(x, n: int = 120) -> str:
@@ -244,79 +258,64 @@ def _short(x, n: int = 120) -> str:
 
 # ====================================================================== slash commands (daemon side)
 async def run_command(user: str, app: App) -> bool:
-    """Execute a slash command inside the mind loop. Returns True to stop the daemon."""
+    from .ops import run_op
     cmd, *rest = user.split(maxsplit=1)
-    arg = rest[0] if rest else ""
-    b, learner, emit = app.brain, app.learner, app.emit
+    arg = (rest[0] if rest else "").strip()
+    emit = app.emit
     if cmd in ("/quit", "/exit", "/stop"):
         return True
     if cmd == "/restart":
         app.restart = True
         return True
     if cmd in ("/good", "/bad"):
-        if not app.last_episode:
-            emit("log", text="nothing to rate yet")
-        else:
-            r = await app.server.run_gpu(learner.feedback, app.last_episode, 1 if cmd == "/good" else -1)
-            emit("log", text=f"{cmd[1:]} noted · losses {[round(x, 3) for x in r['losses']]}")
-    elif cmd in ("/sleep", "/consolidate"):
-        await app.maybe_sleep(force=True)
+        r = await run_op(app, "feedback", {"value": 1 if cmd == "/good" else -1})
+        emit("log", text=f"{cmd[1:]} noted · {r.get('losses', r.get('error'))}")
     elif cmd == "/sense":
         app.queue.push(3, "idle", app.curiosity.impulse_text())
-    elif cmd == "/thoughts":
-        emit("log", text=json.dumps({"thoughts": app.thoughts.listing(arg.strip() == "all"), "server": app.server.stats}))
-    elif cmd == "/skills":
-        emit("log", text=json.dumps(app.skills.listing()))
-    elif cmd == "/incidents":
-        emit("log", text=json.dumps(app.skills.incidents(int(arg) if arg.strip().isdigit() else 3), default=str))
-    elif cmd == "/identity":
-        loss = await app.server.run_gpu(app.identity.probe, b)
-        emit("log", text=f"identity v{app.identity.versions()} · internalised loss {loss:.3f}\n{app.identity.text()}")
-    elif cmd == "/inbox":
-        if arg.strip() == "clear":
-            emit("log", text=f"inbox cleared ({app.clear_inbox()} answered)")
-        emit("inbox", questions=app.open_questions())
     elif cmd == "/learn":
-        app.learning_enabled = arg.strip().lower() != "off"
+        app.learning_enabled = arg.lower() != "off"
         emit("log", text=f"passive learning {'on' if app.learning_enabled else 'off'}")
     elif cmd == "/reasoning":
-        app.cfg.enable_thinking = arg.strip().lower() != "off"
+        app.cfg.enable_thinking = arg.lower() != "off"
         emit("log", text=f"reasoning mode {'on' if app.cfg.enable_thinking else 'off'}")
     elif cmd == "/tools":
-        emit("log", text="\n".join(f"{s['function']['name']}  {s['function']['description'].splitlines()[0][:90]}"
-                                    for s in app.tools.schemas()))
-    elif cmd == "/stats":
-        rep = learner.report()
-        rep["tool_usage"] = app.tools.stats()
-        rep["generation_server"] = app.server.stats
-        emit("log", text=json.dumps(rep, default=str))
+        emit("log", text="\n".join(f"{s['function']['name']}  {s['function']['description'].splitlines()[0][:90]}" for s in app.tools.schemas()))
     elif cmd == "/reset":
         app.harness.reset()
-        emit("log", text="conversation cleared (weights untouched)")
-    elif cmd == "/save":
-        b.save()
-        emit("log", text="saved")
+        emit("log", text="conversation window cleared (the journal and the weights are untouched)")
+    elif cmd == "/inbox":
+        r = await run_op(app, "inbox", {"clear": arg == "clear"})
+        emit("inbox", questions=r.get("questions", []))
+    elif cmd[1:] in ("sleep", "probe", "stats", "news", "thoughts", "thought", "skill", "identity", "incidents", "play", "games"):
+        args = {}
+        if cmd == "/thoughts":
+            args = {"all": arg == "all"}
+        elif cmd == "/thought" and arg:
+            parts = arg.split()
+            args = {"action": parts[0], "id": parts[1] if len(parts) > 1 else ""}
+        elif cmd == "/skill" and arg:
+            parts = arg.split()
+            args = {"action": parts[0], "name": parts[1] if len(parts) > 1 else ""}
+        elif cmd == "/play" and arg:
+            args = {"game": arg.split()[0]}
+        r = await run_op(app, cmd[1:], args)
+        emit("log", text=json.dumps(r, default=str)[:4000])
     elif cmd == "/help":
-        emit("log", text="/good /bad /sleep /sense /thoughts [all] /skills /incidents /identity /inbox [clear] "
-                          "/learn on|off /reasoning on|off /tools /stats /reset /save /restart /quit")
+        emit("log", text="/good /bad /sleep /sense /news /play <game> /games /thoughts [all] /thought <read|pause|resume|kill> <id> "
+                          "/skill <list|read|check|install|disable|rollback> <name> /identity /inbox [clear] /incidents /stats "
+                          "/learn on|off /reasoning on|off /tools /reset /restart /quit")
     else:
         emit("log", text=f"unknown command {cmd}; try /help")
     return False
 
 
-# ====================================================================== commands
-def _boot(cfg: Config) -> App:
-    with console.status("[dim]waking up the brain...[/dim]"):
-        return App(cfg)
-
-
+# ====================================================================== helpers
 def _url(cfg: Config) -> str:
     from .gateway import base_url
     return base_url(cfg)
 
 
 def _repo_root() -> Path | None:
-    """The checkout that holds the body (Dockerfile, docker-compose.yml, birth). Needed for the sandbox."""
     candidates = [Path(os.environ["GROOW_REPO"])] if os.environ.get("GROOW_REPO") else []
     candidates += [Path.cwd(), Path(__file__).resolve().parents[1]]
     for c in candidates:
@@ -327,8 +326,6 @@ def _repo_root() -> Path | None:
 
 
 def _resolve_state(cfg: Config, args) -> None:
-    """Where Groow's state lives when it runs on the host: --state, else state/ next to a groow.json in the
-    current directory (a checkout), else ~/.groow/state."""
     if getattr(args, "state", None):
         cfg.state_dir = args.state
     elif not Path("groow.json").exists():
@@ -348,6 +345,35 @@ def _sandbox_running(root: Path) -> bool:
         return False
 
 
+def _boot(cfg: Config) -> App:
+    with console.status("[dim]waking up the brain...[/dim]"):
+        return App(cfg)
+
+
+async def _ping(cfg: Config) -> dict:
+    from .gateway import Client
+    async with Client(_url(cfg)) as c:
+        return await c.hello()
+
+
+def _daemon_op(cfg: Config, op: str, **args):
+    """Run an op on the daemon if one answers; None otherwise."""
+    async def go():
+        import aiohttp
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, connect=3)) as s:
+            async with s.post(_url(cfg) + "/op", json={"op": op, "args": args}) as r:
+                return await r.json()
+    try:
+        return asyncio.run(go())
+    except Exception:
+        return None
+
+
+def _print(r) -> None:
+    console.print_json(json.dumps(r, default=str, ensure_ascii=False))
+
+
+# ====================================================================== lifecycle commands
 def cmd_init(cfg: Config, args) -> None:
     import transformers
     transformers.logging.set_verbosity_error()
@@ -372,16 +398,14 @@ def cmd_init(cfg: Config, args) -> None:
 
 
 def cmd_start(cfg: Config, args) -> None:
-    """Default: Groow runs in its body (Docker sandbox) via the birth script. --nosandbox: on this host,
-    as you, with its shell in your home and its state in ~/.groow (or state/ in a checkout)."""
     if not args.nosandbox:
         root = _repo_root()
         if root is None:
             console.print("[red]the sandbox needs the Groow checkout (Dockerfile, docker-compose.yml, birth). "
                           "Run from the repository, set GROOW_REPO, or use --nosandbox.[/red]")
             raise SystemExit(2)
-        import shutil as _sh, subprocess
-        if not _sh.which("docker"):
+        import subprocess
+        if not shutil.which("docker"):
             console.print("[red]docker is not installed; use `groow start --nosandbox` to run on this host[/red]")
             raise SystemExit(2)
         console.print(f"[dim]sandbox: {root}/birth[/dim]")
@@ -391,7 +415,6 @@ def cmd_start(cfg: Config, args) -> None:
 
 
 def _start_host(cfg: Config, args) -> None:
-    """Supervisor around the daemon: crash in a skill -> quarantine + restart; elsewhere -> safe mode."""
     import traceback
     from .gateway import Daemon
     from .harness import SkillManager
@@ -439,12 +462,6 @@ def _start_host(cfg: Config, args) -> None:
             console.print("[yellow]entering safe mode: skills off, learning off, repair tools on[/yellow]")
 
 
-async def _ping(cfg: Config) -> dict:
-    from .gateway import Client
-    async with Client(_url(cfg)) as c:
-        return await c.hello()
-
-
 def cmd_status(cfg: Config, args) -> None:
     try:
         h = asyncio.run(_ping(cfg))
@@ -455,8 +472,7 @@ def cmd_status(cfg: Config, args) -> None:
     body = s.get("body", "host")
     where = f"[green]sandbox[/green] (body: read-only image, home {s.get('home')})" if body == "sandbox" \
         else f"[yellow]host, no sandbox[/yellow] (running as you, shell in {s.get('home')}, state {s.get('state')})"
-    console.print(Panel.fit(f"[bold]{b['name']}[/bold] · id {b['id']} · born {b['born_text']} · age {b['age']}\n"
-                            f"{where}\n"
+    console.print(Panel.fit(f"[bold]{b['name']}[/bold] · id {b['id']} · born {b['born_text']} · age {b['age']}\n{where}\n"
                             f"lineage {b['lineage']} · {b['hardware']} · {_url(cfg)}\n"
                             f"mood {s['mood']} · steps {s['steps']} · nights {s['nights']} · rank {s['rank']} · "
                             f"thoughts running {s['thoughts_running']} · skills {s['skills']} · clients {s['clients']}"
@@ -472,23 +488,22 @@ def cmd_stop(cfg: Config, args) -> None:
     async def go():
         from .gateway import Client
         async with Client(_url(cfg)) as c:
-            await c.hello()                               # is anyone there?
+            await c.hello()
             await c.say("/quit")
             try:
-                async for ev in c.events(replay=0):       # wait for the goodbye; the stream ends when it dies
+                async for ev in c.events(replay=0):
                     if ev.get("ev") == "bye":
                         break
             except Exception:
-                pass                                      # connection dropped = it is gone
+                pass
     try:
         asyncio.run(asyncio.wait_for(go(), 600))
-        console.print("[dim]groow is asleep (state saved). It finishes the turn it was in first, so this can take a minute.[/dim]")
+        console.print("[dim]groow is asleep (state saved)[/dim]")
     except Exception as e:
         console.print(f"[dim]no daemon at {_url(cfg)} ({type(e).__name__})[/dim]")
 
 
 def cmd_ask(cfg: Config, args) -> None:
-    """Single query over HTTP: wait for the turn and print the answer."""
     async def go():
         from .gateway import Client
         async with Client(_url(cfg)) as c:
@@ -499,7 +514,7 @@ def cmd_ask(cfg: Config, args) -> None:
         console.print(f"[red]cannot reach the daemon at {_url(cfg)} ({type(e).__name__})[/red]")
         return
     if args.json:
-        console.print_json(json.dumps(r, default=str))
+        _print(r)
     else:
         for e in r.get("events", []):
             if e["ev"] == "tool_call":
@@ -508,7 +523,6 @@ def cmd_ask(cfg: Config, args) -> None:
 
 
 def cmd_chat(cfg: Config, args) -> None:
-    """Minimal line client: SSE stream in, POST /say out."""
     from .gateway import Client
 
     async def go():
@@ -560,16 +574,31 @@ def cmd_chat(cfg: Config, args) -> None:
     asyncio.run(go())
 
 
+def cmd_say(cfg: Config, args) -> None:
+    """Send a message. If Groow is awake it goes over HTTP; if not, it is dropped in the mailbox and
+    read when it wakes."""
+    async def go():
+        from .gateway import Client
+        async with Client(_url(cfg)) as c:
+            return await c.say(args.text)
+    try:
+        _print(asyncio.run(go()))
+    except Exception:
+        _resolve_state(cfg, args)
+        from .mind import Mailbox, Priority
+        sig = Mailbox(cfg.state / "mailbox").push(Priority.USER, "user", args.text)
+        console.print(f"[dim]groow is asleep; left in the mailbox: {sig.path.name}[/dim]")
+
+
 def cmd_ui(cfg: Config, args) -> None:
     from .ui import run_ui
     run_ui(_url(cfg))
 
 
 def cmd_doctor(cfg: Config, args) -> None:
-    """Static health check without loading the model."""
-    from .harness import SkillManager, make_builtin_tools
-    core = set(make_builtin_tools(Path(cfg.workspace_dir), cfg.python_timeout, cfg.allow_python).names())
-    sk = SkillManager(cfg.state, protected=core)
+    from .harness import SkillManager
+    _resolve_state(cfg, args)
+    sk = SkillManager(cfg.state, protected=set())
     ok = True
     for name in sk.installed():
         r = sk.check(sk.dir / f"{name}.py")
@@ -585,131 +614,183 @@ def cmd_doctor(cfg: Config, args) -> None:
         present = (cfg.state / must).exists()
         ok &= present
         console.print(f"   state/{must}: {'ok' if present else 'MISSING'}")
-    if (cfg.state / "groow.url").exists():
-        console.print(f"   daemon url file present: {(cfg.state / 'groow.url').read_text().strip()}")
+    main = cfg.state / "main"
+    if main.exists():
+        files = sorted(main.glob("*.jsonl"))
+        console.print(f"   journal: {len(files)} file(s), latest {files[-1].name if files else '-'}")
     console.print("[green]healthy[/green]" if ok else "[red]problems found[/red]")
 
 
-# ---- one-shot commands (no daemon) -------------------------------------------------
-def _oneshot_guard(cfg: Config, args=None) -> None:
-    _resolve_state(cfg, args or argparse.Namespace(state=None))
-    if (cfg.state / "groow.url").exists():
-        console.print("[yellow]note: a daemon may be running; one-shot commands load a second copy of the model.[/yellow]")
+# ====================================================================== operations (daemon first, then local)
+def _op_command(op: str, build_args, local=None):
+    """A CLI command that runs an op on the daemon if it answers, else `local(cfg, args)` if given."""
+    def cmd(cfg: Config, args) -> None:
+        _resolve_state(cfg, args)
+        kw = build_args(args)
+        r = _daemon_op(cfg, op, **kw)
+        if r is not None:
+            _print(r)
+            return
+        if local is None:
+            console.print(f"[dim]no daemon at {_url(cfg)}; this needs a running Groow (`groow start`)[/dim]")
+            return
+        console.print(f"[dim]no daemon; running locally (loads its own copy of the model)[/dim]")
+        _print(local(cfg, args))
+    return cmd
 
 
-def cmd_memorize(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    text = Path(args.file).read_text() if args.file else args.text
-    r = app.learner.memorize(args.title, text, target_loss=args.target, max_steps=args.max_steps,
-                             on_progress=lambda s, l: console.print(f"   step {s+1:3d}  loss {l:.4f}"))
-    r.pop("curve"); console.print_json(json.dumps(r)); app.brain.save()
+def _local_play(cfg, args):
+    app = _boot(cfg)
+    r = app.learner.play(args.game, rounds=args.rounds); r.pop("history", None); app.brain.save(); return r
 
 
-def cmd_quiz(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    console.print_json(json.dumps(app.learner.quiz(args.question, args.expected)))
+def _local_probe(cfg, args):
+    return _boot(cfg).learner.probe()
 
 
-def cmd_play(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    r = app.learner.play(args.game, rounds=args.rounds, episodes=args.episodes, evaluate_n=args.eval_n,
-                         on_progress=lambda rec: console.print(
-                             f"   round {rec['round']:3d}  decisions {rec['decisions']:4d}  explored {rec['explored']:3d}  "
-                             f"mean reward {rec['mean_reward']:+.3f}  pg loss {rec['pg_loss']:+.4f}"))
-    r.pop("history"); console.print_json(json.dumps(r)); app.brain.save()
+def _local_stats(cfg, args):
+    return _boot(cfg).learner.report()
 
 
-def cmd_probe(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); console.print_json(json.dumps(_boot(cfg).learner.probe()))
+def _local_sleep(cfg, args):
+    app = _boot(cfg)
+    return app.sleep.sleep(replay_steps=args.replay, force=args.force, on_progress=lambda m: console.print(f"   [dim]{m}[/dim]"))
 
 
-def cmd_stats(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); console.print_json(json.dumps(_boot(cfg).learner.report(), default=str))
+def _local_identity(cfg, args):
+    app = _boot(cfg)
+    return {"identity": app.identity.text(), "versions": app.identity.versions(),
+            "internalised_loss": round(app.identity.probe(app.brain), 3), "birth": app.birth.card()}
 
 
-def cmd_consolidate(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    r = app.brain.consolidate(keep_previous=cfg.keep_previous_base)
-    app.memory.log("consolidate", **r, step=app.brain.meta["steps"]); console.print_json(json.dumps(r))
+def _local_learn(cfg, args):
+    app = _boot(cfg)
+    r = app.learner.learn(args.question, args.answer, args.source or "", target_loss=args.target); app.brain.save(); return r
 
 
-def cmd_sleep(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    r = app.sleep.sleep(replay_steps=args.replay, force=args.force, on_progress=lambda m: console.print(f"   [dim]{m}[/dim]"))
-    console.print_json(json.dumps(r, default=str))
+def _local_quiz(cfg, args):
+    return _boot(cfg).learner.quiz(args.question, args.expected)
+
+
+def _files_thoughts(cfg, args):
+    from .mind import ThoughtManager
+    from .memory import Memory
+    tm = ThoughtManager(cfg.state, None, lambda t: None, Memory(cfg.state))
+    return {"thoughts": tm.listing(args.all)}
+
+
+def _files_skill(cfg, args):
+    from .harness import SkillManager
+    sk = SkillManager(cfg.state, protected=set())
+    from .ops import op_skill
+    class _A:  # minimal stand-in for the app
+        skills = sk
+    return op_skill(_A, action=args.action, name=args.name or "", path=args.path or "")
+
+
+def _files_inbox(cfg, args):
+    p = cfg.state / "mentor_inbox.jsonl"
+    qs = [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+    if args.clear:
+        for q in qs:
+            q["answered"] = True
+        p.write_text("".join(json.dumps(q, ensure_ascii=False) + "\n" for q in qs))
+    return {"questions": [q for q in qs if not q.get("answered")]}
+
+
+def _files_incidents(cfg, args):
+    from .harness import SkillManager
+    return {"incidents": SkillManager(cfg.state, protected=set()).incidents(args.last)}
+
+
+def _files_news(cfg, args):
+    from .senses import NewsSense
+    from .harness import news_headlines
+    return news_headlines(NewsSense(cfg.state, feeds=cfg.feeds or None), args.items)
+
+
+cmd_play = _op_command("play", lambda a: {"game": a.game, "rounds": a.rounds}, _local_play)
+cmd_games = _op_command("games", lambda a: {}, lambda cfg, a: {"games": {k: g.description for k, g in __import__("groow.games", fromlist=["BUILTIN"]).BUILTIN.items()}})
+cmd_probe = _op_command("probe", lambda a: {}, _local_probe)
+cmd_stats = _op_command("stats", lambda a: {}, _local_stats)
+cmd_sleep = _op_command("sleep", lambda a: {"force": True}, _local_sleep)
+cmd_identity = _op_command("identity", lambda a: {}, _local_identity)
+cmd_learn = _op_command("learn", lambda a: {"question": a.question, "answer": a.answer, "source": a.source or "", "target_loss": a.target or 0.0}, _local_learn)
+cmd_quiz = _op_command("quiz", lambda a: {"question": a.question, "expected": a.expected or ""}, _local_quiz)
+cmd_news = _op_command("news", lambda a: {"items": a.items}, _files_news)
+cmd_thoughts = _op_command("thoughts", lambda a: {"all": a.all}, _files_thoughts)
+cmd_thought = _op_command("thought", lambda a: {"action": a.action, "id": a.id, "last": a.last})
+cmd_skill = _op_command("skill", lambda a: {"action": a.action, "name": a.name or "", "path": a.path or ""}, _files_skill)
+cmd_inbox = _op_command("inbox", lambda a: {"clear": a.clear}, _files_inbox)
+cmd_incidents = _op_command("incidents", lambda a: {"last": a.last}, _files_incidents)
+cmd_patch = _op_command("patch", lambda a: {"path": a.path, "description": a.description, "patch": Path(a.file).read_text()})
 
 
 def cmd_rollback(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); console.print_json(json.dumps(_boot(cfg).sleep.rollback()))
-
-
-def cmd_sense(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    if args.pipeline or cfg.curiosity_mode != "agentic":
-        r = app.curiosity.tick(args.items, on_progress=lambda m: console.print(f"   [dim]{m}[/dim]"))
-    else:
-        console.print("[bold magenta]groow>[/bold magenta] ", end="")
-        r = asyncio.run(app.curiosity.explore(app.harness, args.items))
-        console.print()
-    console.print_json(json.dumps(r, default=str)); app.brain.save()
-
-
-def cmd_identity(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    console.print(Panel(app.identity.text(), title=f"identity v{app.identity.versions()} · internalised loss "
-                        f"{app.identity.probe(app.brain):.3f} · {app.birth.line()}"))
+    _resolve_state(cfg, args); _print(_boot(cfg).sleep.rollback())
 
 
 def cmd_grow(cfg: Config, args) -> None:
-    _oneshot_guard(cfg, args); app = _boot(cfg)
-    r = app.brain.grow_rank(args.rank); app.memory.log("grow", **r, step=app.brain.meta["steps"]); console.print_json(json.dumps(r))
+    _resolve_state(cfg, args); app = _boot(cfg)
+    r = app.brain.grow_rank(args.rank); app.memory.log("grow", **r, step=app.brain.meta["steps"]); _print(r)
 
 
-def cmd_tools(cfg: Config, args) -> None:
-    from .harness import ToolRegistry, make_builtin_tools
-    reg = ToolRegistry(); reg.include(make_builtin_tools(Path(cfg.workspace_dir), cfg.python_timeout, cfg.allow_python))
-    console.print_json(json.dumps(reg.schemas()))
+def cmd_consolidate(cfg: Config, args) -> None:
+    _resolve_state(cfg, args); app = _boot(cfg)
+    r = app.brain.consolidate(keep_previous=cfg.keep_previous_base); app.memory.log("consolidate", **r, step=app.brain.meta["steps"]); _print(r)
 
 
+# ====================================================================== argparse
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="groow", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default=None, help="config file (default: ./groow.json, else ~/.groow/groow.json)")
-    p.add_argument("--model", help="override model id (e.g. Qwen/Qwen3-1.7B) before init")
+    p.add_argument("--model", help="override model id before init")
     p.add_argument("--state", help="state directory for host mode (default: state/ in a checkout, else ~/.groow/state)")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("init"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_init)
-    s = sub.add_parser("start"); s.add_argument("--safe", action="store_true", help="start in safe mode")
-    s.add_argument("--nosandbox", action="store_true", help="run on this host as you (default: Docker sandbox via ./birth)")
-    s.add_argument("-v", "--verbose", action="store_true", help="print events to stdout")
-    s.add_argument("--host"); s.add_argument("--port", type=int); s.set_defaults(fn=cmd_start)
-    s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600)
-    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("start"); s.add_argument("--safe", action="store_true"); s.add_argument("--nosandbox", action="store_true")
+    s.add_argument("-v", "--verbose", action="store_true"); s.add_argument("--host"); s.add_argument("--port", type=int); s.set_defaults(fn=cmd_start)
     sub.add_parser("stop").set_defaults(fn=cmd_stop)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     sub.add_parser("chat").set_defaults(fn=cmd_chat)
     sub.add_parser("ui").set_defaults(fn=cmd_ui)
+    s = sub.add_parser("say"); s.add_argument("text"); s.set_defaults(fn=cmd_say)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
-    s = sub.add_parser("memorize"); s.add_argument("--title", required=True)
-    s.add_argument("--text"); s.add_argument("--file"); s.add_argument("--target", type=float)
-    s.add_argument("--max-steps", type=int); s.set_defaults(fn=cmd_memorize)
+    s = sub.add_parser("ask"); s.add_argument("text"); s.add_argument("--timeout", type=float, default=600); s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_ask)
+    # operations
+    s = sub.add_parser("news"); s.add_argument("--items", type=int, default=8); s.set_defaults(fn=cmd_news)
+    s = sub.add_parser("play"); s.add_argument("game"); s.add_argument("--rounds", type=int, default=5); s.set_defaults(fn=cmd_play)
+    sub.add_parser("games").set_defaults(fn=cmd_games)
+    s = sub.add_parser("thoughts"); s.add_argument("--all", action="store_true"); s.set_defaults(fn=cmd_thoughts)
+    s = sub.add_parser("thought"); s.add_argument("action", choices=["read", "pause", "resume", "kill"]); s.add_argument("id"); s.add_argument("--last", type=int, default=10); s.set_defaults(fn=cmd_thought)
+    s = sub.add_parser("skill"); s.add_argument("action", choices=["list", "read", "check", "install", "disable", "rollback"])
+    s.add_argument("name", nargs="?", help="skill name, or a path to a .py file for check/install"); s.add_argument("--path"); s.set_defaults(fn=_skill_dispatch)
+    s = sub.add_parser("learn"); s.add_argument("question"); s.add_argument("answer"); s.add_argument("--source", default=""); s.add_argument("--target", type=float); s.set_defaults(fn=cmd_learn)
     s = sub.add_parser("quiz"); s.add_argument("question"); s.add_argument("--expected"); s.set_defaults(fn=cmd_quiz)
-    s = sub.add_parser("play"); s.add_argument("game"); s.add_argument("--rounds", type=int, default=5)
-    s.add_argument("--episodes", type=int); s.add_argument("--eval-n", type=int, default=32); s.set_defaults(fn=cmd_play)
-    sub.add_parser("probe").set_defaults(fn=cmd_probe)
     sub.add_parser("stats").set_defaults(fn=cmd_stats)
-    sub.add_parser("consolidate").set_defaults(fn=cmd_consolidate)
-    s = sub.add_parser("sleep"); s.add_argument("--replay", type=int); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_sleep)
-    sub.add_parser("rollback").set_defaults(fn=cmd_rollback)
-    s = sub.add_parser("sense"); s.add_argument("--items", type=int); s.add_argument("--pipeline", action="store_true"); s.set_defaults(fn=cmd_sense)
     sub.add_parser("identity").set_defaults(fn=cmd_identity)
+    s = sub.add_parser("inbox"); s.add_argument("--clear", action="store_true"); s.set_defaults(fn=cmd_inbox)
+    s = sub.add_parser("incidents"); s.add_argument("--last", type=int, default=3); s.set_defaults(fn=cmd_incidents)
+    s = sub.add_parser("patch"); s.add_argument("path"); s.add_argument("description"); s.add_argument("file"); s.set_defaults(fn=cmd_patch)
+    # mentor only
+    s = sub.add_parser("sleep"); s.add_argument("--replay", type=int); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_sleep)
+    sub.add_parser("probe").set_defaults(fn=cmd_probe)
     s = sub.add_parser("grow"); s.add_argument("--rank", type=int, required=True); s.set_defaults(fn=cmd_grow)
-    sub.add_parser("tools").set_defaults(fn=cmd_tools)
+    sub.add_parser("rollback").set_defaults(fn=cmd_rollback)
+    sub.add_parser("consolidate").set_defaults(fn=cmd_consolidate)
     args = p.parse_args(argv)
     cfg_path = args.config or ("groow.json" if Path("groow.json").exists() else str(Path.home() / ".groow" / "groow.json"))
     cfg = Config.load(cfg_path)
     if args.model:
         cfg.model_id = args.model
     args.fn(cfg, args)
+
+
+def _skill_dispatch(cfg: Config, args) -> None:
+    """`groow skill check path/to/file.py` or `groow skill install name`."""
+    if args.name and args.name.endswith(".py"):
+        args.path, args.name = args.name, None
+    cmd_skill(cfg, args)
 
 
 if __name__ == "__main__":
