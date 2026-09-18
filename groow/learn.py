@@ -246,6 +246,18 @@ def train(cfg: Config, max_samples: int = 32) -> dict:
     return report
 
 
+# ---------------------------------------------------------------------- nap
+def nap(cfg: Config) -> dict:
+    """The short pass, between turns: score what has happened, harvest it, practise a little.
+
+    No consolidation and no long drills, because a person may speak at any moment and the
+    card is needed to answer them.
+    """
+    out = {"feel": feel(cfg), "harvest": harvest(cfg)}
+    out["train"] = train(cfg, max_samples=cfg.nap_max_samples)
+    return out
+
+
 # -------------------------------------------------------------------- night
 def night(cfg: Config) -> dict:
     """The whole cycle: score the day, harvest it, practise it, then consolidate."""
@@ -263,7 +275,7 @@ def night(cfg: Config) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="what happens to a day after it has been lived")
-    ap.add_argument("what", choices=["feel", "harvest", "train", "night"])
+    ap.add_argument("what", choices=["feel", "harvest", "train", "nap", "night"])
     ap.add_argument("--config", default="groow.json")
     ap.add_argument("--state", default=None)
     ap.add_argument("--max", type=int, default=32)
@@ -272,7 +284,7 @@ def main() -> None:
     cfg = Config.load(Path(args.config))
     if args.state:
         cfg.state_dir = args.state
-    fn = {"feel": feel, "harvest": harvest, "night": night}.get(args.what)
+    fn = {"feel": feel, "harvest": harvest, "nap": nap, "night": night}.get(args.what)
     out = train(cfg, args.max) if args.what == "train" else fn(cfg)
     print(json.dumps(out, indent=1, default=str))
 
