@@ -49,13 +49,36 @@ pub fn prepare(home: &Path, skills_from: &Path, recipes_from: &Path) -> std::io:
     Ok(Prepared {
         skills: seed(home, skills_from)?,
         recipes: seed_recipes(home, recipes_from)?,
+        settings: seed_settings(home)?,
     })
+}
+
+/// Give the home its own settings, copied from the project's once.
+///
+/// Without this the shipped copy is read forever when running here, while the sandbox reads
+/// the one in the home: the same creature under two sets of settings depending on how it was
+/// started. Afterwards the file is the home's, like everything else in there.
+pub fn seed_settings(home: &Path) -> std::io::Result<bool> {
+    let mine = home.join("groow.json");
+    if mine.exists() {
+        return Ok(false);
+    }
+    let Some(shipped) = crate::paths::project().map(|p| p.join("groow.json")) else {
+        return Ok(false);
+    };
+    if !shipped.is_file() {
+        return Ok(false);
+    }
+    fs::create_dir_all(home)?;
+    fs::copy(&shipped, &mine)?;
+    Ok(true)
 }
 
 #[derive(Debug, Default)]
 pub struct Prepared {
     pub skills: Vec<String>,
     pub recipes: Vec<String>,
+    pub settings: bool,
 }
 
 /// Copy the shipped manual into the home, never over a page the mind has rewritten.
@@ -287,6 +310,23 @@ mod tests {
         for d in [shelf(&home), bin_dir(&home), workspace(&home), recipes(&home)] {
             assert!(d.is_dir(), "{} was not made", d.display());
         }
+    }
+
+    #[test]
+    fn the_home_gets_its_own_settings_and_then_keeps_them() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(d.path().join("groow.json"), "{\"api_port\": 7373}").unwrap();
+        let home = d.path().join("home");
+
+        let was = std::env::current_dir().unwrap();
+        std::env::set_current_dir(d.path()).unwrap();
+        assert!(seed_settings(&home).unwrap(), "the home should be given a copy");
+        fs::write(home.join("groow.json"), "{\"api_port\": 9999}").unwrap();
+        assert!(!seed_settings(&home).unwrap(), "and then left to keep it");
+        std::env::set_current_dir(was).unwrap();
+
+        assert!(fs::read_to_string(home.join("groow.json")).unwrap().contains("9999"));
     }
 
     #[test]

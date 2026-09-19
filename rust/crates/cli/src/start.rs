@@ -67,6 +67,9 @@ pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> a
             if !made.recipes.is_empty() {
                 eprintln!("  manual   installed {} pages", made.recipes.len());
             }
+            if made.settings {
+                eprintln!("  settings copied into its home; the project's copy is only the default");
+            }
         }
         Err(e) => tracing::warn!("could not prepare the home: {e}"),
     }
