@@ -134,13 +134,10 @@ async fn wake_the_sandbox(rebuild: bool) -> anyhow::Result<()> {
     anyhow::bail!("it did not wake within thirty minutes; `groow logs` shows what its body is doing")
 }
 
-/// Where the state is, in order of what was asked for and what exists.
+/// Where the state is: said explicitly, or beside the mind in its home.
 fn resolve_state(cli: &Cli) -> std::path::PathBuf {
-    if let Some(p) = &cli.state {
-        return p.clone();
+    match &cli.state {
+        Some(p) => p.clone(),
+        None => groow_core::paths::default_state(),
     }
-    if let Some(p) = std::env::var_os("GROOW_STATE") {
-        return std::path::PathBuf::from(p);
-    }
-    groow_ui::link::default_state()
 }

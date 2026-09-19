@@ -36,6 +36,7 @@ pub async fn start(state: PathBuf, config: PathBuf, as_user: Option<String>) -> 
         env!("CARGO_PKG_VERSION"),
     )?;
 
+    can_we_write(&state)?;
     let db = Db::open(&paths.db())?;
     let hub = Hub::new(cfg.clone(), paths.clone(), birth.clone(), db)?;
     let (handle, _hub_task) = hub.spawn();
@@ -167,6 +168,46 @@ fn python_for() -> String {
     "python3".to_string()
 }
 
+/// Refuse to start on a state we cannot write, and say why.
+///
+/// This happens for one reason in practice: the sandbox has had this state, and the core in
+/// there runs as root and takes ownership of it so that the mind cannot write its own history.
+/// Running here as an ordinary user then collides with that, and the raw failure is a database
+/// error several layers down that says nothing about the cause.
+fn can_we_write(state: &std::path::Path) -> anyhow::Result<()> {
+    if !state.exists() {
+        return Ok(());
+    }
+    let probe = state.join(".writable");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => {
+            let owner = owner_of(state);
+            anyhow::bail!(
+                "{} belongs to {owner} and this user cannot write it.\n\
+                 It has been run in the sandbox, where the core is root and takes the state so \
+                 the mind cannot rewrite its own history.\n\
+                 Wake it there with `groow start`, or run it here as root with `sudo groow start --here`.",
+                state.display()
+            )
+        }
+    }
+}
+
+fn owner_of(p: &std::path::Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(m) = std::fs::metadata(p) {
+            return if m.uid() == 0 { "root".to_string() } else { format!("uid {}", m.uid()) };
+        }
+    }
+    "another user".to_string()
+}
+
 /// Where something that ships with the project lives: said explicitly, or in the checkout, or
 /// installed beside the binary.
 fn shipped(what: &str, env: &str) -> PathBuf {
@@ -182,11 +223,13 @@ fn shipped(what: &str, env: &str) -> PathBuf {
     PathBuf::from(format!("/usr/share/groow/{what}"))
 }
 
+/// The mind's home. In a checkout this is the project's `home`, the same directory the
+/// container mounts, so running here wakes the creature that lives there rather than a new one.
 fn home_for(cfg: &Config) -> PathBuf {
     if !cfg.home_dir.is_empty() {
         return PathBuf::from(&cfg.home_dir);
     }
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    groow_core::paths::default_home()
 }
 
 /// What it is running on, recorded once on the birth certificate.

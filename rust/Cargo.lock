@@ -698,6 +698,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "futures",
+ "groow-core",
  "groow-harness",
  "groow-proto",
  "ratatui",

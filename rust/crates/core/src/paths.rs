@@ -75,6 +75,50 @@ impl Paths {
     }
 }
 
+/// The project this is being run from, if it is being run from one.
+///
+/// A checkout is recognised by its compose file, because that is the thing that decides where
+/// the creature lives: the same `home` directory is the mind's home whether the core is
+/// running in the container or on this machine.
+pub fn project() -> Option<PathBuf> {
+    let mut d = std::env::current_dir().ok()?;
+    loop {
+        if d.join("docker-compose.yml").is_file() {
+            return Some(d);
+        }
+        if !d.pop() {
+            return None;
+        }
+    }
+}
+
+/// The mind's home.
+///
+/// In a checkout this is the project's `home` directory, which is exactly what the container
+/// mounts at `/home/groow`. Running the core on this machine therefore wakes the same creature
+/// the sandbox does, rather than a second one beside it, and its skills and workspace land in
+/// its own home rather than in yours.
+///
+/// Outside a checkout it is the home of whoever is running it.
+pub fn default_home() -> PathBuf {
+    if let Some(p) = std::env::var_os("GROOW_HOME") {
+        return PathBuf::from(p);
+    }
+    if let Some(project) = project() {
+        return project.join("home");
+    }
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Where the state is, unless something says otherwise. Beside the mind, in its home, exactly
+/// as it is inside the body.
+pub fn default_state() -> PathBuf {
+    if let Some(p) = std::env::var_os("GROOW_STATE") {
+        return PathBuf::from(p);
+    }
+    default_home().join("state")
+}
+
 /// Write a file so that a concurrent reader sees either the old content or the new, never a
 /// mixture and never a truncation.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -180,6 +224,34 @@ mod tests {
     fn a_missing_file_is_none_not_an_error() {
         let d = tempfile::tempdir().unwrap();
         assert!(read_opt(&d.path().join("nope")).unwrap().is_none());
+    }
+
+    #[test]
+    fn in_a_checkout_the_state_is_the_one_the_sandbox_uses() {
+        // Otherwise running it here makes a second creature beside the one in the container,
+        // with its own weights and its own conversation, and neither knows about the other.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        let sub = d.path().join("rust/crates");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let was = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&sub).unwrap();
+        std::env::remove_var("GROOW_HOME");
+        std::env::remove_var("GROOW_STATE");
+        let home = default_home();
+        let state = default_state();
+        std::env::set_current_dir(was).unwrap();
+
+        assert!(home.ends_with("home"), "the mind's home should be the project's: {}", home.display());
+        assert!(state.ends_with("home/state"), "got {}", state.display());
+    }
+
+    #[test]
+    fn being_told_where_it_is_wins() {
+        std::env::set_var("GROOW_STATE", "/srv/elsewhere/state");
+        assert_eq!(default_state(), PathBuf::from("/srv/elsewhere/state"));
+        std::env::remove_var("GROOW_STATE");
     }
 
     #[test]

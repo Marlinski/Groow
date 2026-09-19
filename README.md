@@ -111,9 +111,14 @@ python -m neuro.serve --port 7374 &    # the GPU side
 ./groow ui                             # the window, in another
 ```
 
-`./groow` builds the binary if it is not there. Started this way the core is not root, so the
-state is not out of the mind's reach, and it says so at startup rather than implying a
-guarantee it does not have.
+It is the same creature either way. In a checkout the mind's home is `./home`, which is exactly
+what the container mounts, so running here wakes the one that lives there rather than a second
+one beside it.
+
+Started this way the core is not root, so the state is not out of the mind's reach, and it says
+so at startup rather than implying a guarantee it does not have. The other side of that: once
+it has run in the sandbox the state belongs to root, and starting here as yourself is refused
+with an explanation rather than a database error. `sudo groow start --here` if you mean it.
 
 ## What else there is to type
 

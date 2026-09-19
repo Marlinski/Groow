@@ -70,10 +70,7 @@ impl Link {
         if let Some(p) = std::env::var_os("GROOW_SOCKET") {
             return PathBuf::from(p);
         }
-        let state = std::env::var_os("GROOW_STATE")
-            .map(PathBuf::from)
-            .unwrap_or_else(default_state);
-        state.join("core.sock")
+        default_state().join("core.sock")
     }
 
     /// Send a request. The answer arrives on the channel, tagged with the id returned here.
@@ -94,17 +91,10 @@ impl Link {
     }
 }
 
-/// The state directory for a person running the command by hand: the one in the project if
-/// there is one, otherwise the one in their home.
+/// Where the state is, which the core decides; this is here so an interface started on its own
+/// looks in the same place.
 pub fn default_state() -> PathBuf {
-    let here = PathBuf::from("state");
-    if here.join("birth.json").exists() || PathBuf::from("groow.json").exists() {
-        return here;
-    }
-    match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h).join(".groow/state"),
-        None => here,
-    }
+    groow_core::paths::default_state()
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 groow-proto = { workspace = true }
+groow-core = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
