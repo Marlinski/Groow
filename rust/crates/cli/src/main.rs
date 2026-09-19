@@ -5,6 +5,7 @@ mod args;
 mod doctor;
 mod sandbox;
 mod start;
+mod status;
 mod talk;
 
 use args::{Cli, Command};
@@ -78,7 +79,7 @@ async fn run(cli: Cli, home: std::path::PathBuf, config: std::path::PathBuf) -> 
     }
     match cli.cmd {
         Command::Ui => groow_ui::app::run(state.join("core.sock")).await,
-        other => talk::talk(other, state).await,
+        other => talk::talk(other, state, cli.json).await,
     }
 }
 

@@ -17,7 +17,7 @@ make start               wake it in the container it ships with. The first time 
                          while and happens once.
 ./groow ui               open the window onto it
 ./groow say "hello"      say something
-./groow status           what it is doing
+./groow status           what it is doing, as a box; --json for the reply itself
 make stop                put its body back to sleep
 ```
 

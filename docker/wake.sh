@@ -26,7 +26,7 @@ docker compose up -d groow
 # a minute, and until they are loaded there is nothing a turn could do.
 echo "waiting for it to wake (it has to load its weights first)…" >&2
 for _ in $(seq 900); do
-  if docker compose exec -T -u 0 groow groow --home /home/groow status 2>/dev/null \
+  if docker compose exec -T -u 0 groow groow --home /home/groow status --json 2>/dev/null \
      | tr -d ' \n' | grep -q '"brain":true'; then
     docker compose exec -T -u 0 groow groow --home /home/groow status
     echo >&2

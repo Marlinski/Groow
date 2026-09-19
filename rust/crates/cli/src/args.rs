@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<std::path::PathBuf>,
 
+    /// Print what the core replied, as it replied it, rather than as something to read.
+    #[arg(long, global = true)]
+    pub json: bool,
+
     /// What a new home is given: skills, manual, prompt script, settings. Only read, never
     /// written. Defaults to ./skel in a checkout, then /usr/share/groow/skel.
     #[arg(long, global = true)]
