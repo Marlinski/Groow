@@ -4,9 +4,9 @@
 //! standard output, so these compose with other tools, while anything a person needs to read
 //! goes to standard error.
 //!
-//! `status` is the exception, because it is the one most often typed by a person rather than
-//! by a script: it is drawn as a box. `--json` turns that off and prints the reply, which is
-//! all the renderer ever had to work with anyway.
+//! Except that a person typing one of these wants to read the answer, not parse it, so where
+//! there is a good way to draw a reply it is drawn: see `show`. `--json` turns that off and
+//! prints the reply, which is all the renderer ever had to work with anyway.
 
 use groow_ui::link::{FromCore, Link};
 use serde_json::{json, Value};
@@ -41,13 +41,15 @@ pub async fn talk(cmd: Command, state: std::path::PathBuf, json: bool) -> anyhow
             Err(_) => anyhow::bail!("the core did not answer within thirty seconds"),
             Ok(None) | Ok(Some(FromCore::Gone)) => anyhow::bail!("the core closed the connection"),
             Ok(Some(FromCore::Reply(got, v))) if got == id => {
-                if matches!(cmd, Command::Status) && !json {
-                    println!("{}", crate::status::box_of(&v));
-                } else {
-                    println!("{}", serde_json::to_string_pretty(&v)?);
-                }
-                if let Some(note) = human_note(&cmd, &v) {
-                    eprintln!("{note}");
+                match crate::show::render(&cmd, &v).filter(|_| !json) {
+                    Some(drawn) => println!("{drawn}"),
+                    None => {
+                        println!("{}", serde_json::to_string_pretty(&v)?);
+                        // The drawn answers say this themselves, and better.
+                        if let Some(note) = human_note(&cmd, &v) {
+                            eprintln!("{note}");
+                        }
+                    }
                 }
                 return Ok(());
             }

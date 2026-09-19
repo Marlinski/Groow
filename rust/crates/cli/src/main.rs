@@ -5,7 +5,7 @@ mod args;
 mod doctor;
 mod sandbox;
 mod start;
-mod status;
+mod show;
 mod talk;
 
 use args::{Cli, Command};

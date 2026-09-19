@@ -870,6 +870,20 @@ impl Hub {
     }
 
     fn thought_action(&mut self, action: &str, id: &str, text: &str) -> Result<Value, WireError> {
+        // Listing is the one action that is not about a particular thought, so it comes before
+        // looking one up. Without this `groow thoughts` asked for the thought called "" and was
+        // told there was no such thing.
+        if action == "list" || action.is_empty() {
+            let all = self.thoughts.all().map_err(io)?;
+            return Ok(json!({
+                "thoughts": all.iter().map(|t| json!({
+                    "id": t.id, "goal": t.goal, "status": t.status.as_str(),
+                    "steps": t.steps, "max_steps": t.max_steps, "summary": t.summary,
+                })).collect::<Vec<_>>(),
+                "running": all.iter().filter(|t| t.status.as_str() == "running").count(),
+                "max": self.cfg.max_thoughts,
+            }));
+        }
         let t = self.thoughts.get(id).map_err(io)?
             .ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
         let out = match action {
