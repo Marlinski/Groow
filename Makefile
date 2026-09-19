@@ -8,7 +8,12 @@
 #   make build      the core, the harness, the window
 #   make body       the container Groow lives in
 #   make test       everything that can be checked without a GPU
-#   make start      wake it
+#   make start      wake it in the container it ships with
+#
+# The container lives here and nowhere else. `groow start` runs the core and knows nothing
+# about containers, because where the core runs — this terminal, a container, a microvm — is a
+# runtime concern rather than something the creature has an opinion about. Choosing one is what
+# these targets are for.
 #
 # Nothing here ever touches state/ or home/. Those are the creature, not the build.
 
@@ -19,7 +24,7 @@ BIN      := rust/target/release/groow
 
 .DEFAULT_GOAL := help
 .PHONY: help build body proto python install all test test-rust test-judge check fmt \
-        start stop ui logs shell status clean distclean
+        start stop run ui logs shell status clean distclean
 
 help: ## what you can do
 	@echo "Groow"
@@ -66,21 +71,25 @@ check: ## compiler warnings and lints
 fmt: ## format the Rust
 	$(CARGO) fmt --manifest-path $(MANIFEST)
 
-# ---------------------------------------------------------------- living with it
-start: $(BIN) ## wake it, in its sandbox
-	./groow start
+# ---------------------------------------------------------------- the body it runs in
+start: ## wake it in its container, and wait until it can answer
+	./docker/wake.sh
 
-stop: ## put it back to sleep
-	./groow stop
-
-ui: $(BIN) ## the window
-	./groow ui
+stop: ## put its body to sleep; the creature keeps everything in home/
+	docker compose stop groow
 
 logs: ## follow what its body is doing
-	./groow logs
+	docker compose logs -f groow
 
-shell: ## a shell in its home, as the mind
-	./groow shell
+shell: ## a shell in its home, as the mind rather than as its owner
+	docker compose exec -u groow groow bash -l
+
+run: $(BIN) ## run the core here instead, in this terminal
+	./groow start
+
+# ---------------------------------------------------------------- living with it
+ui: $(BIN) ## the window
+	./groow ui
 
 status: $(BIN) ## what it is doing
 	./groow status

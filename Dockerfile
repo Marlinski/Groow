@@ -35,13 +35,12 @@ RUN uv venv --python 3.12 /opt/venv \
     && uv pip install --python /opt/venv/bin/python --index-url https://download.pytorch.org/whl/cu126 torch
 COPY pyproject.toml README.md /opt/groow/
 COPY neuro /opt/groow/neuro
-COPY skel/groow.json /opt/groow/groow.json
 RUN uv pip install --python /opt/venv/bin/python /opt/groow sentencepiece protobuf "huggingface_hub[hf_xet]"
 
 # the core, and the commands the mind can run
 COPY --from=core /src/target/release/groow /usr/local/bin/groow
 COPY skel /usr/share/groow/skel
-RUN chmod 0755 /usr/local/bin/groow && chmod -R a+rX /usr/share/groow/skel
+RUN chmod 0755 /usr/local/bin/groow && chmod -R a+rX,go-w /usr/share/groow/skel
 
 # the mind: an ordinary user who owns nothing but its own home corner
 RUN (getent passwd 1000 && userdel -r "$(getent passwd 1000 | cut -d: -f1)" || true) \
@@ -55,4 +54,4 @@ ENV HOME=/home/groow GROOW_BODY=sandbox HF_HOME=/home/groow/.cache/huggingface \
     GROOW_SKEL=/usr/share/groow/skel
 VOLUME ["/home/groow", "/nix"]
 ENTRYPOINT ["/usr/local/bin/groow-entrypoint"]
-CMD ["start", "--here", "--as-user", "groow"]
+CMD ["start", "--as-user", "groow"]

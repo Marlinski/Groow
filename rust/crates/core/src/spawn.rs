@@ -142,6 +142,72 @@ pub fn lock_state(state: &Path, agent_uid: Option<u32>) -> std::io::Result<bool>
     Ok(true)
 }
 
+/// Hand the mind's home to the mind.
+///
+/// The core makes the home and copies the skeleton into it, and it does that as root, so every
+/// one of those files comes out owned by root and readable-but-not-writable by the mind. That
+/// is the exact opposite of what they are for. Its skills are its to rewrite, its manual is its
+/// to correct, and `.groowrc` is the prompt it tunes for itself; a home it can only read is not
+/// a home.
+///
+/// So everything the core made here is given away: the four directories and the plain files at
+/// the top. Not `state`, which `lock_state` takes for root a moment later, and not the caches
+/// and package directories the mind or the body made, which are already its.
+///
+/// Modes are widened, never narrowed: a script keeps its execute bit and gains owner write.
+pub fn hand_home_over(home: &Path, agent_uid: Option<u32>) -> std::io::Result<bool> {
+    if !crate::peer::is_root() {
+        return Ok(false);
+    }
+    let Some(uid) = agent_uid.filter(|u| *u != 0) else { return Ok(false) };
+
+    for d in [
+        crate::home::shelf(home),
+        crate::home::bin_dir(home),
+        crate::home::recipes(home),
+        crate::home::workspace(home),
+    ] {
+        if d.exists() {
+            give_tree(&d, uid)?;
+        }
+    }
+    // The plain files at the top, which is `.groowrc` and `groow.json`. Only files, so the
+    // state, the Nix store and the caches beside them are left exactly as they are.
+    for e in std::fs::read_dir(home)?.filter_map(|e| e.ok()) {
+        if e.path().is_file() {
+            give(&e.path(), uid)?;
+        }
+    }
+    Ok(true)
+}
+
+/// Give one path to `uid` without taking anything away from it.
+fn give(p: &Path, uid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(p)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    std::os::unix::fs::chown(p, Some(uid), None)?;
+    let mode = meta.permissions().mode() & 0o777;
+    let owner = if meta.is_dir() { 0o700 } else { 0o600 };
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode | owner))
+}
+
+fn give_tree(root: &Path, uid: u32) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(root)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    give(root, uid)?;
+    if meta.is_dir() {
+        for e in std::fs::read_dir(root)?.filter_map(|e| e.ok()) {
+            give_tree(&e.path(), uid)?;
+        }
+    }
+    Ok(())
+}
+
 /// Give one path to `uid`, with a mode that lets everyone read and only the owner write.
 fn own(p: &Path, uid: u32, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -173,6 +239,35 @@ fn own_tree(root: &Path, uid: u32) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_home_the_core_made_ends_up_belonging_to_the_mind() {
+        // Giving to yourself is allowed without being root, which is enough to check that
+        // nothing is taken away in the process.
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        std::fs::create_dir_all(crate::home::shelf(home).join("web/scripts")).unwrap();
+        let script = crate::home::shelf(home).join("web/scripts/web");
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let page = crate::home::shelf(home).join("web/SKILL.md");
+        std::fs::write(&page, "how to").unwrap();
+        std::fs::set_permissions(&page, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        give_tree(&crate::home::shelf(home), crate::peer::current_uid()).unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&script), 0o755, "a command it can run and now rewrite");
+        assert_eq!(mode(&page), 0o644, "a page it can now correct");
+    }
+
+    #[test]
+    fn nothing_is_handed_over_when_there_is_no_one_to_hand_it_to() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(!hand_home_over(d.path(), None).unwrap());
+        assert!(!hand_home_over(d.path(), Some(0)).unwrap());
+    }
 
     fn spawner(d: &tempfile::TempDir, uid: Option<u32>) -> Spawner {
         Spawner {

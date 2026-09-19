@@ -77,6 +77,13 @@ pub async fn start(
         Err(e) => tracing::warn!("could not prepare the home: {e}"),
     }
 
+    // Everything in the home was just made by root, so it is given to the mind before the
+    // state is taken away from it. Those two together are the whole boundary.
+    match groow_core::spawn::hand_home_over(&home, agent_uid) {
+        Ok(true) => tracing::info!("the home belongs to the mind"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("could not hand the home over: {e}"),
+    }
     match groow_core::spawn::lock_state(&state, agent_uid) {
         Ok(true) => tracing::info!("the state is readable and not writable by the mind"),
         Ok(false) => {}
@@ -198,7 +205,7 @@ fn can_we_write(state: &std::path::Path) -> anyhow::Result<()> {
                 "{} belongs to {owner} and this user cannot write it.\n\
                  It has been run in the sandbox, where the core is root and takes the state so \
                  the mind cannot rewrite its own history.\n\
-                 Wake it there with `groow start`, or run it here as root with `sudo groow start --here`.",
+                 Wake it there with `make start`, or run it here as root with `sudo groow start`.",
                 state.display()
             )
         }

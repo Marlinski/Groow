@@ -30,21 +30,17 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Wake it up.
+    /// Wake it up: run the core, here, until it is stopped.
     ///
-    /// In its sandbox by default, building the body first if there is not one yet.
+    /// Where that "here" is — this terminal, a container, a microvm — is not this command's
+    /// business. `make start` wakes it in the container this project ships with.
     Start {
-        /// Run it here, in this terminal, instead of in its sandbox.
-        #[arg(long)]
-        here: bool,
-        /// Build the body again before waking it.
-        #[arg(long)]
-        rebuild: bool,
         /// Run the mind as this user rather than as whoever started the core.
         #[arg(long)]
         as_user: Option<String>,
     },
-    /// Put it to sleep.
+    /// Put it to sleep: tell the core to stop. The body around it, if it has one and something
+    /// keeps that body running, is not this command's business either.
     Stop,
     /// What it is doing just now.
     Status,
@@ -94,10 +90,6 @@ pub enum Command {
         id: String,
         text: Vec<String>,
     },
-    /// Follow what its body is doing.
-    Logs,
-    /// A shell in its home, as the mind.
-    Shell,
     /// Check the state on disk without needing the core.
     Doctor,
 
@@ -123,8 +115,6 @@ impl Command {
             Command::Schedule { .. } => "schedule",
             Command::Thoughts => "thoughts",
             Command::Thought { .. } => "thought",
-            Command::Logs => "logs",
-            Command::Shell => "shell",
             Command::Doctor => "doctor",
             Command::RunTurn => "run-turn",
             Command::RunThought { .. } => "run-thought",
@@ -139,8 +129,6 @@ impl Command {
 pub fn mentor_only(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "start" => "you are already awake",
-        "logs" => "reading your own body's log is your mentor's to do",
-        "shell" => "you are already in your home",
         "stop" => "you would only be putting yourself to sleep; finish the turn instead",
         "ui" => "there is no terminal here",
         _ => return None,
@@ -161,14 +149,21 @@ mod tests {
     fn waking_it_takes_no_arguments_at_all() {
         let c = Cli::try_parse_from(["groow", "start"]).unwrap();
         match c.cmd {
-            Command::Start { here, rebuild, as_user } => {
-                assert!(!here, "the sandbox is the default");
-                assert!(!rebuild);
-                assert_eq!(as_user, None);
-            }
+            Command::Start { as_user } => assert_eq!(as_user, None),
             other => panic!("{other:?}"),
         }
-        assert!(Cli::try_parse_from(["groow", "start", "--here"]).is_ok());
+    }
+
+    #[test]
+    fn starting_it_knows_nothing_about_containers() {
+        // Whether it runs in this terminal, a container or a microvm is a runtime concern, so
+        // there is no flag here for choosing one. `make start` is where the container lives.
+        for gone in ["--here", "--rebuild"] {
+            assert!(Cli::try_parse_from(["groow", "start", gone]).is_err(), "{gone} should be gone");
+        }
+        for gone in ["logs", "shell"] {
+            assert!(Cli::try_parse_from(["groow", gone]).is_err(), "{gone} belongs to the body");
+        }
     }
 
     #[test]
@@ -263,7 +258,6 @@ mod tests {
             vec!["groow", "inbox"], vec!["groow", "remind", "x", "--in", "1h"],
             vec!["groow", "schedule"], vec!["groow", "thoughts"],
             vec!["groow", "thought", "read", "a1"], vec!["groow", "doctor"],
-            vec!["groow", "logs"], vec!["groow", "shell"],
             vec!["groow", "run-turn"], vec!["groow", "run-thought", "a1"],
         ] {
             let c = Cli::try_parse_from(args.clone()).unwrap();

@@ -12,17 +12,23 @@ conversation it cannot rewrite, sets its own alarms, puts work aside for later, 
 mentor when it is stuck. It has a birth certificate it cannot edit and an age that ticks.
 
 ```
-./groow start            wake it. The first time this builds its body and fetches its
-                         base model, which takes a while and happens once.
+make start               wake it in the container it ships with. The first time this
+                         builds its body and fetches its base model, which takes a
+                         while and happens once.
 ./groow ui               open the window onto it
 ./groow say "hello"      say something
 ./groow status           what it is doing
-./groow stop             put it back to sleep
+make stop                put its body back to sleep
 ```
 
-One command, wherever it is. If it is awake in its sandbox, `groow` finds it there; if you
-started it here with `groow start --here`, it talks to it directly. You should not have to
-know which.
+`groow start` runs the core, here, until it is stopped, and knows nothing about containers.
+Where the core runs — this terminal, the container this project ships with, a microvm, a
+machine of its own — is a runtime concern, and `make start` is what picks one. So the container
+lives in the Makefile, `docker-compose.yml` and `docker/wake.sh`, and nowhere in the creature.
+
+Talking to it is the other way round: one command, wherever it is. If it is awake in its
+container, `groow` finds it there; if you ran the core here, it talks to it directly. You
+should not have to know which.
 
 ## How it is put together
 
@@ -107,7 +113,7 @@ seven six, because it was judging the answer's quality rather than whether it wa
 ```
 uv pip install -e .                    # the brain and the learning passes
 python -m neuro.serve --port 7374 &    # the GPU side
-./groow start --here                   # the core, in this terminal
+./groow start                          # the core, in this terminal (or `make run`)
 ./groow ui                             # the window, in another
 ```
 
@@ -118,13 +124,13 @@ one beside it.
 Started this way the core is not root, so the state is not out of the mind's reach, and it says
 so at startup rather than implying a guarantee it does not have. The other side of that: once
 it has run in the sandbox the state belongs to root, and starting here as yourself is refused
-with an explanation rather than a database error. `sudo groow start --here` if you mean it.
+with an explanation rather than a database error. `sudo groow start` if you mean it.
 
 ## What else there is to type
 
 ```
-./groow logs           follow what its body is doing
-./groow shell          a shell in its home, as the mind
+make logs              follow what its body is doing
+make shell             a shell in its home, as the mind
 ./groow inbox          the questions it has left you
 ./groow remind "read the news" --every "daily 08:00"
 ./groow thoughts       what it is working on by itself
@@ -169,7 +175,7 @@ starting with no skeleton to be found is an error rather than a creature born wi
 skills. So a second one, on this machine, out of a skeleton of your own:
 
 ```
-groow --skel ./skel --home ~/creatures/second start --here
+groow --skel ./skel --home ~/creatures/second start
 ```
 
 Everything Groow is lives in one directory, its home: `./home` in a checkout, `/home/groow`

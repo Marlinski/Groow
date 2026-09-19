@@ -39,11 +39,11 @@ than implying a guarantee it does not have.</p>
 
 <h2>Running it</h2>
 <pre><code>git clone git@github.com:Marlinski/Groow.git &amp;&amp; cd Groow
-./birth              # builds the body, creates ./home, gives birth the first time
-./birth ui           # the window onto it
-./birth say "hello"
-./birth stop</code></pre>
+make start           # builds the body, creates ./home, gives birth the first time
+./groow ui           # the window onto it
+./groow say "hello"
+make stop</code></pre>
 <p>Without Docker: build the core with <code>cargo build --release --manifest-path rust/Cargo.toml</code>,
 install the learning side with <code>uv pip install -e .</code>, start the brain with
-<code>python -m groow.serve</code>, then <code>groow start</code> and <code>groow ui</code>.</p>
+<code>python -m neuro.serve</code>, then <code>groow start</code> and <code>groow ui</code>.</p>
 </main></body></html>

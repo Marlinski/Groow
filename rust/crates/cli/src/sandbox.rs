@@ -1,5 +1,9 @@
 //! Reaching a Groow that lives in a container.
 //!
+//! Finding the creature, never deciding where it runs. Nothing here starts, builds or stops a
+//! body: where the core runs is a runtime concern, and in this project the Makefile is what
+//! decides it. This is only how a command follows the creature to wherever it already is.
+//!
 //! There is one command. If Groow is running in its sandbox, `groow` finds it there and runs
 //! the same thing inside; if it is running on this machine, `groow` talks to it directly. You
 //! should not have to know which, and you should not have to learn a second command to find
@@ -53,11 +57,6 @@ pub fn running() -> bool {
         .unwrap_or(false)
 }
 
-pub fn have_docker() -> bool {
-    Command::new("docker").arg("--version").stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
-}
-
 /// Run the same command inside the body, as its owner, and take on its exit code.
 pub fn run_inside(args: &[String], interactive: bool) -> anyhow::Result<std::process::ExitStatus> {
     let dir = project().ok_or_else(|| anyhow::anyhow!("no docker-compose.yml above this directory"))?;
@@ -70,87 +69,6 @@ pub fn run_inside(args: &[String], interactive: bool) -> anyhow::Result<std::pro
     c.args(args);
     c.current_dir(&dir);
     Ok(c.status()?)
-}
-
-/// Build the body if it is not there, and wake it.
-pub fn wake(rebuild: bool) -> anyhow::Result<()> {
-    let dir = project().ok_or_else(|| {
-        anyhow::anyhow!("there is no docker-compose.yml here, so there is no body to wake. \
-Run this from the project, or use `groow start --here` to run it on this machine.")
-    })?;
-    if !have_docker() {
-        anyhow::bail!("docker is not installed, so there is no body to wake. \
-`groow start --here` runs it on this machine instead.");
-    }
-
-    let built = Command::new("docker")
-        .args(["image", "inspect", "groow:latest"])
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false);
-    if rebuild || !built {
-        eprintln!("building its body (a few minutes, once)…");
-        let ok = Command::new("docker").args(["compose", "build", "groow"])
-            .current_dir(&dir).status()?.success();
-        if !ok {
-            anyhow::bail!("the body would not build");
-        }
-    }
-
-    let first = !dir.join("home/state/birth.json").exists();
-    if first {
-        eprintln!("no birth certificate yet, so this is a birth: it will fetch its base model, about 8 GB, once.");
-    }
-    let ok = Command::new("docker").args(["compose", "up", "-d", "groow"])
-        .current_dir(&dir).status()?.success();
-    if !ok {
-        anyhow::bail!("the body would not start");
-    }
-    Ok(())
-}
-
-pub fn stop() -> anyhow::Result<()> {
-    let dir = project().ok_or_else(|| anyhow::anyhow!("no docker-compose.yml above this directory"))?;
-    Command::new("docker").args(["compose", "stop", "groow"]).current_dir(&dir).status()?;
-    Ok(())
-}
-
-pub fn logs() -> anyhow::Result<()> {
-    let dir = project().ok_or_else(|| anyhow::anyhow!("no docker-compose.yml above this directory"))?;
-    Command::new("docker").args(["compose", "logs", "-f", "groow"]).current_dir(&dir).status()?;
-    Ok(())
-}
-
-/// A shell in its home, as the mind rather than as its owner.
-pub fn shell() -> anyhow::Result<()> {
-    let dir = project().ok_or_else(|| anyhow::anyhow!("no docker-compose.yml above this directory"))?;
-    Command::new("docker")
-        .args(["compose", "exec", "-u", "groow", "groow", "bash", "-l"])
-        .current_dir(&dir)
-        .status()?;
-    Ok(())
-}
-
-/// Whether it can actually answer yet, rather than merely being up.
-///
-/// The core comes up in a moment; the weights take the best part of a minute. Until the brain
-/// is loaded there is nothing a turn could do, so this is what "awake" has to mean.
-pub fn brain_ready() -> bool {
-    let Some(dir) = project() else { return false };
-    let out = Command::new("docker")
-        .args(["compose", "exec", "-T", "-u", "0", "groow", "groow", "--home", HOME_INSIDE, "status"])
-        .current_dir(&dir)
-        .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|v| v.get("brain").and_then(|b| b.as_bool()))
-                .unwrap_or(false)
-        }
-        _ => false,
-    }
 }
 
 /// Whether a home is the one the sandbox writes through its bind mount.

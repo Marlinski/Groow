@@ -19,12 +19,12 @@ pub async fn talk(cmd: Command, state: std::path::PathBuf) -> anyhow::Result<()>
             // get here, and "start it" is not obviously the answer unless it is said.
             if crate::sandbox::is_the_sandboxes(state.parent().unwrap_or(&state)) {
                 anyhow::bail!(
-                    "that one lives in the sandbox and its body is not running. `groow start` wakes it."
+                    "that one lives in the sandbox and its body is not running. `make start` wakes it."
                 )
             }
             anyhow::bail!(
-                "nothing is listening at {} ({e}). `groow start` wakes it in its sandbox, \
-`groow start --here` on this machine.",
+                "nothing is listening at {} ({e}). `groow start` runs the core here; \
+`make start` wakes it in its container.",
                 socket.display()
             )
         }
