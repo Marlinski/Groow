@@ -17,6 +17,14 @@ use std::process::{Command, Stdio};
 /// Where the state lives inside the body.
 pub const STATE_INSIDE: &str = "/home/groow/state";
 
+/// Whether this process is already running inside the body.
+///
+/// The image says so. A command in there must never try to start or reach a sandbox, because
+/// it is in one.
+pub fn inside_the_body() -> bool {
+    std::env::var("GROOW_BODY").map(|v| v == "sandbox").unwrap_or(false)
+}
+
 /// The project directory, which is where the compose file is.
 pub fn project() -> Option<PathBuf> {
     let mut d = std::env::current_dir().ok()?;
@@ -32,6 +40,9 @@ pub fn project() -> Option<PathBuf> {
 
 /// Whether Groow is awake in its sandbox right now.
 pub fn running() -> bool {
+    if inside_the_body() {
+        return false;
+    }
     let Some(dir) = project() else { return false };
     Command::new("docker")
         .args(["compose", "ps", "-q", "--status", "running", "groow"])
@@ -119,6 +130,29 @@ pub fn shell() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether it can actually answer yet, rather than merely being up.
+///
+/// The core comes up in a moment; the weights take the best part of a minute. Until the brain
+/// is loaded there is nothing a turn could do, so this is what "awake" has to mean.
+pub fn brain_ready() -> bool {
+    let Some(dir) = project() else { return false };
+    let out = Command::new("docker")
+        .args(["compose", "exec", "-T", "-u", "0", "groow", "groow", "--state", STATE_INSIDE, "status"])
+        .current_dir(&dir)
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("brain").and_then(|b| b.as_bool()))
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 /// Whether a state directory is the one the sandbox writes through its bind mount.
 ///
 /// Talking to that socket from the host would arrive with the mind's authority, not yours,
@@ -130,6 +164,16 @@ pub fn is_the_sandboxes(state: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inside_the_body_there_is_no_sandbox_to_reach_for() {
+        // Without this the body starts, looks for a sandbox, finds none, and exits in a loop.
+        std::env::set_var("GROOW_BODY", "sandbox");
+        assert!(inside_the_body());
+        assert!(!running(), "a command in the body must not think there is a sandbox around it");
+        std::env::remove_var("GROOW_BODY");
+        assert!(!inside_the_body());
+    }
 
     #[test]
     fn the_sandboxes_state_is_recognised() {

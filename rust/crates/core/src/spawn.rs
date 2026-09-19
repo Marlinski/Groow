@@ -98,7 +98,7 @@ impl Spawner {
     /// the weights, and neither of those is the mind's to touch.
     pub fn learn(&self, what: &str, python: &str, config: &Path, state: &Path) -> std::io::Result<Child> {
         Command::new(python)
-            .args(["-m", "groow.learn", what])
+            .args(["-m", "neuro.learn", what])
             .arg("--config").arg(config)
             .arg("--state").arg(state)
             .current_dir(&self.home)

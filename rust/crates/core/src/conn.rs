@@ -374,7 +374,8 @@ mod tests {
 
     async fn rig(role: Role) -> (Client, Handle, tempfile::TempDir) {
         let d = tempfile::tempdir().unwrap();
-        let hub: Hub = hub_for_test(d.path()).unwrap();
+        let mut hub: Hub = hub_for_test(d.path()).unwrap();
+        hub.set_brain_up(true);
         let (handle, _join) = hub.spawn();
         let (mine, theirs) = duplex(64 * 1024);
         let (r, w) = tokio::io::split(theirs);

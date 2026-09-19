@@ -12,11 +12,17 @@ conversation it cannot rewrite, sets its own alarms, puts work aside for later, 
 mentor when it is stuck. It has a birth certificate it cannot edit and an age that ticks.
 
 ```
-./birth                  wake it (the first time, this is a birth: it fetches its base model)
-./birth ui               open the window onto it
-./birth say "hello"      say something
-./birth stop             put it to sleep
+./groow start            wake it. The first time this builds its body and fetches its
+                         base model, which takes a while and happens once.
+./groow ui               open the window onto it
+./groow say "hello"      say something
+./groow status           what it is doing
+./groow stop             put it back to sleep
 ```
+
+One command, wherever it is. If it is awake in its sandbox, `groow` finds it there; if you
+started it here with `groow start --here`, it talks to it directly. You should not have to
+know which.
 
 ## How it is put together
 
@@ -43,10 +49,10 @@ into things to practise and the bad ones into things to do less of, and take the
 What is learned is decided by how things went, not by the mind deciding it did well.
 
 ```
-python -m groow.learn feel       score the turns that have ended
-python -m groow.learn harvest    turn what was felt into things to practise
-python -m groow.learn nap        the short pass: feel, harvest, a little practice
-python -m groow.learn night      all of it, then merge the overlay into the base
+python -m neuro.learn feel       score the turns that have ended
+python -m neuro.learn harvest    turn what was felt into things to practise
+python -m neuro.learn nap        the short pass: feel, harvest, a little practice
+python -m neuro.learn night      all of it, then merge the overlay into the base
 ```
 
 A night changes the weights on disk, so it tells the brain to pick them up; otherwise it would
@@ -91,7 +97,7 @@ oldest, and one nobody answers expires. Both outcomes come back as a cost, which
 teaches it to ask less and ask better.
 
 Because the judge never learns, a badly worded question to it is a permanent, invisible
-mistake. `python -m groow.limbic.calibrate` checks it against exchanges where we know what a
+mistake. `python -m neuro.limbic.calibrate` checks it against exchanges where we know what a
 person would say, and fails if it is ever confidently backwards. That fixture is how the
 current wording was chosen: an earlier one scored a perfectly good answer at minus zero point
 seven six, because it was judging the answer's quality rather than whether it was an answer.
@@ -99,15 +105,29 @@ seven six, because it was judging the answer's quality rather than whether it wa
 ## Running it without Docker
 
 ```
-cargo build --release --manifest-path rust/Cargo.toml     # the core, the harness, the window
-uv pip install -e .                                       # the brain and the learning passes
-python -m groow.serve --port 7374 &                       # the card
-rust/target/release/groow start                           # the core
-rust/target/release/groow ui                              # the window
+uv pip install -e .                    # the brain and the learning passes
+python -m neuro.serve --port 7374 &    # the GPU side
+./groow start --here                   # the core, in this terminal
+./groow ui                             # the window, in another
 ```
 
-Started this way the core is not root, so the state is not out of the mind's reach. It says so
-at startup rather than implying a guarantee it does not have.
+`./groow` builds the binary if it is not there. Started this way the core is not root, so the
+state is not out of the mind's reach, and it says so at startup rather than implying a
+guarantee it does not have.
+
+## What else there is to type
+
+```
+./groow logs           follow what its body is doing
+./groow shell          a shell in its home, as the mind
+./groow inbox          the questions it has left you
+./groow remind "read the news" --every "daily 08:00"
+./groow thoughts       what it is working on by itself
+./groow doctor         check the state on disk without needing it awake
+cargo test --manifest-path rust/Cargo.toml
+python -m neuro.limbic.calibrate       check the judge against known cases
+python -m neuro.learn night            score the day, practise it, merge it
+```
 
 ## The machine this was built for
 
@@ -124,12 +144,13 @@ rust/crates/core       state, scheduler, connections, the only writer
 rust/crates/harness    the agent loop
 rust/crates/ui         the window
 rust/crates/cli        the groow command
-groow/serve.py         the brain
-groow/learn.py         feel, harvest, train, night
-groow/brain, learning  the model and the gradient steps
+neuro/serve.py         the brain: generation, training, consolidation
+neuro/learn.py         the conductor: feel, harvest, train, consolidate
+neuro/limbic/          the sensors and the frozen judge
+neuro/hippocampus.py   a day becomes something to practise
 skills/                the skills it starts with, copied into its home
 recipes/               its manual, copied into its home where it can rewrite it
 ```
 
 Run the tests with `cargo test --manifest-path rust/Cargo.toml`, and check the judge with
-`python -m groow.limbic.calibrate`.
+`python -m neuro.limbic.calibrate`.

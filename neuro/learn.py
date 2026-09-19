@@ -4,12 +4,12 @@ The mind does not call any of this, and could not. The core runs it between turn
 night, which is the point: what is learned is decided by how things went, not by the mind
 deciding it did well.
 
-    python -m groow.learn feel         the limbic pass: score the turns that have ended
-    python -m groow.learn harvest      the hippocampus: turn what was felt into samples
-    python -m groow.learn train        ask the brain to make gradients from them
-    python -m groow.learn consolidate  ask it to merge the overlay into the base
-    python -m groow.learn nap          the short pass, between turns
-    python -m groow.learn night        all of it, ending in a merge
+    python -m neuro.learn feel         the limbic pass: score the turns that have ended
+    python -m neuro.learn harvest      the hippocampus: turn what was felt into samples
+    python -m neuro.learn train        ask the brain to make gradients from them
+    python -m neuro.learn consolidate  ask it to merge the overlay into the base
+    python -m neuro.learn nap          the short pass, between turns
+    python -m neuro.learn night        all of it, ending in a merge
 
 Feeling and harvesting happen here, on the processor, because they need only the journal, the
 statistics and the judge, and can run while the mind is mid-turn. Anything that touches the

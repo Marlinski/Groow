@@ -16,7 +16,7 @@ their turn rather than being refused, exactly as they wait behind another
 generation, and the new weights are live the moment the step ends because
 nothing was copied anywhere.
 
-    python -m groow.serve --port 7374
+    python -m neuro.serve --port 7374
 """
 from __future__ import annotations
 

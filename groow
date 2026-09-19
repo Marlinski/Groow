@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# groow: the only command.
+#
+# Builds the binary if it is not there, then runs it. Once you have it on your PATH
+# (`cargo install --path rust/crates/cli`) you can drop the ./ and forget this file exists.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+bin=rust/target/release/groow
+if [ ! -x "$bin" ] || [ -n "$(find rust/crates nervous_system/proto -newer "$bin" -name '*.rs' -o -newer "$bin" -name '*.proto' 2>/dev/null | head -1)" ]; then
+  echo "building…" >&2
+  cargo build --release --manifest-path rust/Cargo.toml
+fi
+exec "$bin" "$@"

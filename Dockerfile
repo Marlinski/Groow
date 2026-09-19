@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN uv venv --python 3.12 /opt/venv \
     && uv pip install --python /opt/venv/bin/python --index-url https://download.pytorch.org/whl/cu126 torch
 COPY pyproject.toml README.md /opt/groow/
-COPY groow /opt/groow/groow
+COPY neuro /opt/groow/neuro
 COPY groow.json /opt/groow/groow.json
 RUN uv pip install --python /opt/venv/bin/python /opt/groow sentencepiece protobuf "huggingface_hub[hf_xet]"
 
@@ -56,4 +56,4 @@ ENV HOME=/home/groow GROOW_BODY=sandbox HF_HOME=/home/groow/.cache/huggingface \
     GROOW_SKILLS=/usr/share/groow/skills GROOW_RECIPES=/usr/share/groow/recipes
 VOLUME ["/home/groow", "/nix"]
 ENTRYPOINT ["/usr/local/bin/groow-entrypoint"]
-CMD ["start", "--as-user", "groow"]
+CMD ["start", "--here", "--as-user", "groow"]

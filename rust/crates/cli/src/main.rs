@@ -1,7 +1,9 @@
 //! The `groow` command.
 
+
 mod args;
 mod doctor;
+mod sandbox;
 mod start;
 mod talk;
 
@@ -49,14 +51,87 @@ async fn main() {
 }
 
 async fn run(cli: Cli, state: std::path::PathBuf, config: std::path::PathBuf) -> anyhow::Result<()> {
+    // These are about the body itself, or run inside it, so they never travel.
+    match &cli.cmd {
+        Command::Start { here, rebuild, as_user } => {
+            // Inside the body there is no sandbox to reach for: this is it. Without this the
+            // body starts, looks for a sandbox, finds none and exits, over and over.
+            return if *here || sandbox::inside_the_body() {
+                start::start(state, config, as_user.clone()).await
+            } else {
+                wake_the_sandbox(*rebuild).await
+            }
+        }
+        Command::RunTurn => return start::run_turn().await,
+        Command::RunThought { id } => return start::run_thought(id.clone()).await,
+        Command::Logs => return sandbox::logs(),
+        // Telling the core inside to quit would leave the body running and restart it.
+        Command::Stop if sandbox::running() => {
+            sandbox::stop()?;
+            eprintln!("asleep. Its home is kept in ./home.");
+            return Ok(());
+        }
+        Command::Shell => return sandbox::shell(),
+        Command::Doctor => return doctor::doctor(&state, &config),
+        _ => {}
+    }
+
+    // Everything else goes wherever Groow actually is. If it is awake in its sandbox, the same
+    // command runs inside it; you should not have to know which, or learn a second command to
+    // find out.
+    if !args::is_the_mind() && sandbox::running() {
+        let inside = std::env::args().skip(1).filter(|a| a != "--state" && a != "--config").collect::<Vec<_>>();
+        let status = sandbox::run_inside(&without_paths(inside), matches!(cli.cmd, Command::Ui))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     match cli.cmd {
-        Command::Start { as_user } => start::start(state, config, as_user).await,
-        Command::RunTurn => start::run_turn().await,
-        Command::RunThought { id } => start::run_thought(id).await,
         Command::Ui => groow_ui::app::run(state.join("core.sock")).await,
-        Command::Doctor => doctor::doctor(&state, &config),
         other => talk::talk(other, state).await,
     }
+}
+
+/// Drop the path arguments, whose values mean something different inside the body.
+fn without_paths(args: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if a == "--state" || a == "--config" {
+            skip = true;
+            continue;
+        }
+        if a.starts_with("--state=") || a.starts_with("--config=") {
+            continue;
+        }
+        out.push(a);
+    }
+    out
+}
+
+/// Build the body if there is not one, wake it, and wait until it answers.
+async fn wake_the_sandbox(rebuild: bool) -> anyhow::Result<()> {
+    if sandbox::running() && !rebuild {
+        eprintln!("already awake.");
+        let _ = sandbox::run_inside(&["status".to_string()], false);
+        return Ok(());
+    }
+    sandbox::wake(rebuild)?;
+    // Waiting for the core is not enough: loading the weights takes the best part of a minute,
+    // and until they are loaded it cannot answer anything. Saying it is awake before then
+    // invites the first message to fail.
+    eprintln!("waiting for it to wake (it has to load its weights first)…");
+    for _ in 0..900 {
+        if sandbox::running() && sandbox::brain_ready() {
+            let _ = sandbox::run_inside(&["status".to_string()], false);
+            eprintln!("\n`groow ui` opens the window. `groow stop` puts it back to sleep.");
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    anyhow::bail!("it did not wake within thirty minutes; `groow logs` shows what its body is doing")
 }
 
 /// Where the state is, in order of what was asked for and what exists.

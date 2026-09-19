@@ -18,7 +18,7 @@ import threading
 
 # The wording of these questions is the judge's whole behaviour, and it never learns, so a
 # badly phrased one is a permanent mistake. Both were chosen by measurement against labelled
-# exchanges; `python -m groow.limbic.calibrate --explore` reproduces the comparison.
+# exchanges; `python -m neuro.limbic.calibrate --explore` reproduces the comparison.
 #
 # The earlier wording of ANSWERS_Q asked whether a reply "gives the information that was asked
 # for", and scored a perfectly good answer at -0.76 because it judged the answer's quality

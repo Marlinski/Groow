@@ -1,7 +1,7 @@
 [project]
-name = "groow"
+name = "groow-neuro"
 version = "0.3.0"
-description = "The learning side of Groow: the model that generates, and the passes that change its weights. The core, the agent loop and the interface are in rust/."
+description = "Groow's neuro package: the brain that generates, the limbic system that scores a turn, and the hippocampus that turns a day into practice. The core, the agent loop and the interface are in rust/."
 requires-python = ">=3.12"
 dependencies = [
   "torch",
@@ -15,12 +15,12 @@ dependencies = [
 ]
 
 [project.scripts]
-groow-brain = "groow.serve:main"
-groow-learn = "groow.learn:main"
+groow-brain = "neuro.serve:main"
+groow-learn = "neuro.learn:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["groow*"]
+include = ["neuro*"]

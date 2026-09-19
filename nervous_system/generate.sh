@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v protoc >/dev/null || { echo "protoc is needed to regenerate the protocol"; exit 1; }
 
-out=groow/proto
+out=neuro/proto
 mkdir -p "$out"
 protoc --proto_path=nervous_system/proto --python_out="$out" nervous_system/proto/*.proto
 

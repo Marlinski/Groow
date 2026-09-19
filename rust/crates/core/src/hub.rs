@@ -91,6 +91,8 @@ pub enum Cmd {
     ThoughtFailed { id: String, why: String },
     /// The brain is learning rather than answering. Nothing else runs meanwhile.
     Napping { what: Option<String> },
+    /// Whether the brain is answering at all. A turn needs it, so nothing starts without it.
+    BrainState { up: bool },
 
     Say { text: String, kind: SignalKind, meta: Value, reply: Answer<Value> },
     Ask { question: String, context: String, reply: Answer<Value> },
@@ -165,6 +167,9 @@ impl Handle {
     pub async fn napping(&self, what: Option<&str>) {
         self.tell(Cmd::Napping { what: what.map(|s| s.to_string()) }).await
     }
+    pub async fn brain_state(&self, up: bool) {
+        self.tell(Cmd::BrainState { up }).await
+    }
     pub async fn say(&self, text: &str, kind: SignalKind, meta: Value) -> Result<Value, WireError> {
         let text = text.to_string();
         self.ask(|reply| Cmd::Say { text, kind, meta, reply }).await
@@ -236,6 +241,9 @@ pub struct Hub {
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
     napping: Option<String>,
+    /// Whether the brain is answering. It takes a while to load the weights, and a turn that
+    /// starts before then fails for a reason that has nothing to do with the turn.
+    brain_up: bool,
     /// Consecutive turns that ended badly, and when the last one did. A brain that is down
     /// must not turn into a spawn loop.
     fail_streak: u32,
@@ -301,6 +309,7 @@ impl Hub {
             epoch: Epoch(0),
             idle_streak: 0,
             napping: None,
+            brain_up: false,
             fail_streak: 0,
             last_failure: 0.0,
             since_learned: 0,
@@ -359,6 +368,12 @@ impl Hub {
             }
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
             Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
+            Cmd::BrainState { up } => {
+                if self.brain_up != up {
+                    self.brain_up = up;
+                    self.fanout(Event::new(EventName::Status, self.status()));
+                }
+            }
             Cmd::Napping { what } => {
                 self.napping = what.clone();
                 self.fanout(Event::new(EventName::Status, self.status()));
@@ -455,6 +470,7 @@ impl Hub {
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
             "napping": self.napping,
+            "brain": self.brain_up,
             "mood": self.mood(),
             "age": self.birth.age_text(now),
             "born": self.birth.born,
@@ -475,6 +491,9 @@ impl Hub {
         if self.napping.is_some() {
             return "napping";
         }
+        if !self.brain_up {
+            return "waking";
+        }
         match &self.active {
             Some(_) => "thinking",
             None if self.idle_streak > 0 => "idle",
@@ -491,6 +510,12 @@ impl Hub {
     /// The current time, from the hub's own clock.
     pub fn now(&self) -> f64 {
         (self.clock)()
+    }
+
+    /// For tests and for a dry run: say whether the brain is answering.
+    #[doc(hidden)]
+    pub fn set_brain_up(&mut self, up: bool) {
+        self.brain_up = up;
     }
 
     /// Replace the clock. For tests, so time can be moved deliberately.
@@ -518,6 +543,12 @@ impl Hub {
         // Whatever arrives meanwhile waits in the queue, which is what sleeping means here.
         if self.napping.is_some() {
             return Ok(Duty::Idle(1.0));
+        }
+        // Not there yet. Loading the weights takes the best part of a minute, and a turn
+        // started in that window fails for a reason that has nothing to do with the turn: it
+        // would be counted against the message and the message eventually set down.
+        if !self.brain_up {
+            return Ok(Duty::Idle(2.0));
         }
         // After a failure, wait before trying again, longer each time. Without this, a brain
         // that is down becomes a loop that spawns a process as fast as the machine allows.
@@ -1109,13 +1140,15 @@ mod tests {
 
     fn hub() -> (Hub, tempfile::TempDir) {
         let d = tempfile::tempdir().unwrap();
-        let h = hub_for_test(d.path()).unwrap();
+        let mut h = hub_for_test(d.path()).unwrap();
+        h.brain_up = true;
         (h, d)
     }
 
     fn hub_at(at: f64) -> (Hub, Clock, tempfile::TempDir) {
         let d = tempfile::tempdir().unwrap();
         let mut h = hub_for_test(d.path()).unwrap();
+        h.brain_up = true;
         let c = Clock::new(at);
         c.install(&mut h);
         (h, c, d)
@@ -1366,6 +1399,7 @@ mod tests {
     fn an_unanswered_question_expires_into_one_batched_nudge() {
         let d = tempfile::tempdir().unwrap();
         let mut h = hub_for_test(d.path()).unwrap();
+        h.brain_up = true;
         h.inbox = Inbox::new(h.paths.inbox(), 5, 0.0);
         for i in 0..3 {
             take(|reply| Cmd::Ask { question: format!("q{i}"), context: String::new(), reply }, &mut h).unwrap();
@@ -1461,6 +1495,26 @@ mod tests {
             turn, epoch: epoch.0, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
         }), reply }, &mut h).unwrap();
         assert_eq!(h.fail_streak, 0, "one good turn should clear the backoff");
+    }
+
+    #[test]
+    fn nothing_is_started_before_the_brain_can_answer() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        h.brain_up = false;
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+        clock.advance(10.0);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)),
+            "a turn was started while the weights were still loading");
+        let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
+        assert_eq!(s["brain"], false);
+        assert_eq!(s["mood"], "waking");
+
+        h.handle(Cmd::BrainState { up: true });
+        clock.advance(1.0);
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+            Duty::Turn(s, _) => assert_eq!(s.text, "hello", "and it is still there when the brain wakes"),
+            other => panic!("the message was lost: {other:?}"),
+        }
     }
 
     #[test]

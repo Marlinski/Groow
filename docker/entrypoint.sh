@@ -30,7 +30,7 @@ RC
 
 # The brain: it holds the card and the weights, so it starts first and keeps running.
 echo "body: starting the brain"
-/opt/venv/bin/python -m groow.serve --config "$HOME/groow.json" --state "$STATE" --port "${GROOW_BRAIN_PORT:-7374}" &
+/opt/venv/bin/python -m neuro.serve --config "$HOME/groow.json" --state "$STATE" --port "${GROOW_BRAIN_PORT:-7374}" &
 BRAIN=$!
 trap 'kill $BRAIN 2>/dev/null || true' EXIT
 

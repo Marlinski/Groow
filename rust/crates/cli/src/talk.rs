@@ -15,8 +15,16 @@ pub async fn talk(cmd: Command, state: std::path::PathBuf) -> anyhow::Result<()>
     let (mut link, mut rx) = match Link::open(&socket).await {
         Ok(v) => v,
         Err(e) => {
+            // Pointing at the sandbox's state while its body is asleep is the likeliest way to
+            // get here, and "start it" is not obviously the answer unless it is said.
+            if crate::sandbox::is_the_sandboxes(&state) {
+                anyhow::bail!(
+                    "that one lives in the sandbox and its body is not running. `groow start` wakes it."
+                )
+            }
             anyhow::bail!(
-                "nothing is listening at {} ({e}). Start it with `groow start`.",
+                "nothing is listening at {} ({e}). `groow start` wakes it in its sandbox, \
+`groow start --here` on this machine.",
                 socket.display()
             )
         }

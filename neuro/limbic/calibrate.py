@@ -4,8 +4,8 @@ The judge decides how a turn felt, and it never learns, so if its questions are
 phrased badly the mistake is permanent and invisible. This is the fixture that
 says whether it is reading a conversation the way a person would.
 
-    python -m groow.limbic.calibrate            score the shipped phrasing
-    python -m groow.limbic.calibrate --explore  compare candidate phrasings
+    python -m neuro.limbic.calibrate            score the shipped phrasing
+    python -m neuro.limbic.calibrate --explore  compare candidate phrasings
 
 Each case is a short exchange and the sign a person would give it. A judge that
 cannot tell praise from correction is worse than no judge, because the sensors

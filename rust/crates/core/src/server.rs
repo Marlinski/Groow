@@ -86,7 +86,24 @@ impl Core {
     /// It never holds state of its own. Every decision comes from the hub, so the scheduler
     /// cannot drift out of step with what is actually recorded.
     pub async fn run_scheduler(self: Arc<Self>) {
+        let mut said_waiting = false;
         loop {
+            // A turn needs the brain. Loading the weights takes the best part of a minute, and
+            // a turn started before then fails for a reason that is nothing to do with it.
+            let up = self.brain.healthy().await;
+            self.hub.brain_state(up).await;
+            if !up {
+                if !said_waiting {
+                    said_waiting = true;
+                    self.hub.emit(Event::log("info", "waiting for the brain to finish loading")).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+            if said_waiting {
+                said_waiting = false;
+                self.hub.emit(Event::log("info", "the brain is answering")).await;
+            }
             let duty = match self.hub.next_duty().await {
                 Ok(d) => d,
                 Err(e) => {
@@ -213,7 +230,8 @@ mod tests {
     use crate::hub::hub_for_test;
 
     fn core_for(d: &tempfile::TempDir, exe: &str) -> Arc<Core> {
-        let hub = hub_for_test(d.path()).unwrap();
+        let mut hub = hub_for_test(d.path()).unwrap();
+        hub.set_brain_up(true);
         let (handle, _join) = hub.spawn();
         let mut cfg = Config::default();
         cfg.turn_timeout = 2.0;

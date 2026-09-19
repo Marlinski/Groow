@@ -24,8 +24,16 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Wake it up and stay in the foreground.
+    /// Wake it up.
+    ///
+    /// In its sandbox by default, building the body first if there is not one yet.
     Start {
+        /// Run it here, in this terminal, instead of in its sandbox.
+        #[arg(long)]
+        here: bool,
+        /// Build the body again before waking it.
+        #[arg(long)]
+        rebuild: bool,
         /// Run the mind as this user rather than as whoever started the core.
         #[arg(long)]
         as_user: Option<String>,
@@ -80,6 +88,10 @@ pub enum Command {
         id: String,
         text: Vec<String>,
     },
+    /// Follow what its body is doing.
+    Logs,
+    /// A shell in its home, as the mind.
+    Shell,
     /// Check the state on disk without needing the core.
     Doctor,
 
@@ -105,6 +117,8 @@ impl Command {
             Command::Schedule { .. } => "schedule",
             Command::Thoughts => "thoughts",
             Command::Thought { .. } => "thought",
+            Command::Logs => "logs",
+            Command::Shell => "shell",
             Command::Doctor => "doctor",
             Command::RunTurn => "run-turn",
             Command::RunThought { .. } => "run-thought",
@@ -119,6 +133,8 @@ impl Command {
 pub fn mentor_only(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "start" => "you are already awake",
+        "logs" => "reading your own body's log is your mentor's to do",
+        "shell" => "you are already in your home",
         "stop" => "you would only be putting yourself to sleep; finish the turn instead",
         "ui" => "there is no terminal here",
         _ => return None,
@@ -134,6 +150,20 @@ pub fn is_the_mind() -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn waking_it_takes_no_arguments_at_all() {
+        let c = Cli::try_parse_from(["groow", "start"]).unwrap();
+        match c.cmd {
+            Command::Start { here, rebuild, as_user } => {
+                assert!(!here, "the sandbox is the default");
+                assert!(!rebuild);
+                assert_eq!(as_user, None);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(Cli::try_parse_from(["groow", "start", "--here"]).is_ok());
+    }
 
     #[test]
     fn the_everyday_commands_parse() {
@@ -218,6 +248,7 @@ mod tests {
             vec!["groow", "inbox"], vec!["groow", "remind", "x", "--in", "1h"],
             vec!["groow", "schedule"], vec!["groow", "thoughts"],
             vec!["groow", "thought", "read", "a1"], vec!["groow", "doctor"],
+            vec!["groow", "logs"], vec!["groow", "shell"],
             vec!["groow", "run-turn"], vec!["groow", "run-thought", "a1"],
         ] {
             let c = Cli::try_parse_from(args.clone()).unwrap();
