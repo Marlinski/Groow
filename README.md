@@ -82,8 +82,8 @@ nothing.
 
 Skills are simply executable files. Python, shell, a compiled binary: the kernel runs it, the
 mind reads what it printed. Nothing is loaded into the core, so a broken skill breaks only its
-own process. The ones that ship are in `skills/`; the mind can write its own, and one it has
-changed is never overwritten.
+own process. The ones that ship are in `skel/skills`; the mind can write its own, and one it
+has changed is never overwritten.
 
 ## Why it does not annotate itself
 
@@ -153,9 +153,14 @@ neuro/serve.py         the brain: generation, training, consolidation
 neuro/learn.py         the conductor: feel, harvest, train, consolidate
 neuro/limbic/          the sensors and the frozen judge
 neuro/hippocampus.py   a day becomes something to practise
-skills/                the skills it starts with, copied into its home
-recipes/               its manual, copied into its home where it can rewrite it
+skel/                  what a new home is given: skills, manual, prompt script, settings
 ```
+
+`skel` is the source and `home` is the creature. Nothing in the repository is ever written to
+while Groow runs: on a first start the core copies `skel` into the home, and from then on every
+one of those files belongs to the mind and is never overwritten, however far it takes them. So
+`skel` is in git and `home` is not — one is what a creature is given, the other is what it has
+become.
 
 Everything Groow is lives in one directory, its home: `./home` in a checkout, `/home/groow`
 inside the body. The state is a folder in there, alongside its skills, its commands, its manual

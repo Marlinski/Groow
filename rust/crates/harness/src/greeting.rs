@@ -26,24 +26,10 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_CHARS: usize = 4000;
 
 /// What is written the first time, which the mind may then rewrite.
-pub const DEFAULT: &str = r#"#!/bin/sh
-# Run at the start of every turn. Whatever this prints is added to your system prompt.
-#
-# It is yours: change it. Put in what you want in front of you at the start of every turn and
-# take out what you do not read. Keep it short, because it is there every single time.
-
-echo "Today is $(date '+%A %-d %B %Y, %H:%M')."
-echo
-
-echo "Your skills are directories in ~/skills. Each one is a command you run in your shell,"
-echo "not a tool you call, and each has a SKILL.md saying how and when it is worth using."
-for d in "$HOME"/skills/*/; do
-  [ -f "$d/SKILL.md" ] || continue
-  name=$(basename "$d")
-  what=$(sed -n 's/^description: *//p' "$d/SKILL.md" | head -1)
-  echo "- $name: $what"
-done
-"#;
+///
+/// It is `skel/.groowrc` in the repository, baked in here so that there is one copy of it and
+/// so that a binary on its own still knows what to give a new home.
+pub const DEFAULT: &str = include_str!("../../../../skel/.groowrc");
 
 /// Run the script, if there is one, and return what it printed.
 ///

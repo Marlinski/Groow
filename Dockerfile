@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libs
 # The schema, which the build turns into the wire types. protoc comes with the build itself,
 # so nothing needs installing for it.
 COPY nervous_system/proto /nervous_system/proto
+# The skeleton home, because the default prompt script is baked into the binary from it.
+COPY skel /skel
 COPY rust/Cargo.toml rust/Cargo.lock* ./
 COPY rust/crates ./crates
 RUN cargo build --release --locked 2>/dev/null || cargo build --release
@@ -35,14 +37,13 @@ RUN uv venv --python 3.12 /opt/venv \
     && uv pip install --python /opt/venv/bin/python --index-url https://download.pytorch.org/whl/cu126 torch
 COPY pyproject.toml README.md /opt/groow/
 COPY neuro /opt/groow/neuro
-COPY groow.json /opt/groow/groow.json
+COPY skel/groow.json /opt/groow/groow.json
 RUN uv pip install --python /opt/venv/bin/python /opt/groow sentencepiece protobuf "huggingface_hub[hf_xet]"
 
 # the core, and the commands the mind can run
 COPY --from=core /src/target/release/groow /usr/local/bin/groow
-COPY skills /usr/share/groow/skills
-COPY recipes /usr/share/groow/recipes
-RUN chmod 0755 /usr/local/bin/groow && chmod -R 0755 /usr/share/groow/skills
+COPY skel /usr/share/groow/skel
+RUN chmod 0755 /usr/local/bin/groow && chmod -R a+rX /usr/share/groow/skel
 
 # the mind: an ordinary user who owns nothing but its own home corner
 RUN (getent passwd 1000 && userdel -r "$(getent passwd 1000 | cut -d: -f1)" || true) \
@@ -53,7 +54,7 @@ RUN chmod 0755 /usr/local/bin/groow-entrypoint
 
 WORKDIR /home/groow
 ENV HOME=/home/groow GROOW_BODY=sandbox HF_HOME=/home/groow/.cache/huggingface \
-    GROOW_SKILLS=/usr/share/groow/skills GROOW_RECIPES=/usr/share/groow/recipes
+    GROOW_SKEL=/usr/share/groow/skel
 VOLUME ["/home/groow", "/nix"]
 ENTRYPOINT ["/usr/local/bin/groow-entrypoint"]
 CMD ["start", "--here", "--as-user", "groow"]

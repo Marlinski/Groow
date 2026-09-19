@@ -11,7 +11,7 @@ STATE="$HOME/state"
 mkdir -p "$STATE" "$HOME/.cache/tmp" "$HOME/.config/nix"
 export TMPDIR="$HOME/.cache/tmp"     # /tmp may be mounted without exec; installers need somewhere to run
 chown -R groow:groow "$HOME/.cache" "$HOME/.config" 2>/dev/null || true
-[ -f "$HOME/groow.json" ] || cp /opt/groow/groow.json "$HOME/groow.json"
+[ -f "$HOME/groow.json" ] || cp /usr/share/groow/skel/groow.json "$HOME/groow.json"
 
 # Nix, installed into the home as the mind, so it can add tools for itself without root.
 if [ -z "$GROOW_SKIP_NIX" ] && [ ! -x "$HOME/.nix-profile/bin/nix" ]; then

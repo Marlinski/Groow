@@ -92,6 +92,25 @@ pub fn project() -> Option<PathBuf> {
     }
 }
 
+/// What a new home is given: the shipped skills, manual, prompt script and settings.
+///
+/// Named after `/etc/skel`, which is the same idea: a directory whose contents are copied into
+/// a home the first time there is one, and never touched again. Keeping it in one place is
+/// what keeps the source of the creature separate from the creature. Everything under `skel`
+/// is in the repository and never written to; everything under `home` belongs to the mind and
+/// is never in the repository.
+pub fn skel() -> PathBuf {
+    if let Some(p) = std::env::var_os("GROOW_SKEL") {
+        return PathBuf::from(p);
+    }
+    if let Some(p) = project().map(|p| p.join("skel")) {
+        if p.is_dir() {
+            return p;
+        }
+    }
+    PathBuf::from("/usr/share/groow/skel")
+}
+
 /// The mind's home.
 ///
 /// In a checkout this is the project's `home` directory, which is exactly what the container
@@ -137,10 +156,11 @@ pub fn config_in(home: &Path) -> PathBuf {
     if mine.is_file() {
         return mine;
     }
-    match project() {
-        Some(p) if p.join("groow.json").is_file() => p.join("groow.json"),
-        _ => mine,
+    let shipped = skel().join("groow.json");
+    if shipped.is_file() {
+        return shipped;
     }
+    mine
 }
 
 /// Write a file so that a concurrent reader sees either the old content or the new, never a
@@ -275,21 +295,23 @@ mod tests {
     fn the_settings_come_from_the_home_once_it_has_its_own() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
-        std::fs::write(d.path().join("groow.json"), "{}").unwrap();
+        std::fs::create_dir_all(d.path().join("skel")).unwrap();
+        std::fs::write(d.path().join("skel/groow.json"), "{}").unwrap();
         std::fs::create_dir_all(d.path().join("home")).unwrap();
 
         let was = std::env::current_dir().unwrap();
         std::env::set_current_dir(d.path()).unwrap();
         std::env::remove_var("GROOW_HOME");
         std::env::remove_var("GROOW_CONFIG");
+        std::env::remove_var("GROOW_SKEL");
 
-        // Before the home has one, the shipped copy is used.
+        // Before the home has one, the one in the skeleton is used.
         let shipped = default_config();
         std::fs::write(d.path().join("home/groow.json"), "{}").unwrap();
         let mine = default_config();
         std::env::set_current_dir(was).unwrap();
 
-        assert!(shipped.ends_with("groow.json") && !shipped.ends_with("home/groow.json"));
+        assert!(shipped.ends_with("skel/groow.json"), "got {}", shipped.display());
         assert!(mine.ends_with("home/groow.json"), "got {}", mine.display());
     }
 

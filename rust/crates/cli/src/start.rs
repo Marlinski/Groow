@@ -59,7 +59,7 @@ pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> a
         Ok(false) => {}
         Err(e) => tracing::warn!("could not write the prompt script: {e}"),
     }
-    match groow_core::home::prepare(&home, &shipped("skills", "GROOW_SKILLS"), &shipped("recipes", "GROOW_RECIPES")) {
+    match groow_core::home::prepare(&home, &groow_core::paths::skel()) {
         Ok(made) => {
             if !made.skills.is_empty() {
                 eprintln!("  skills   installed {}", made.skills.join(", "));
@@ -68,7 +68,7 @@ pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> a
                 eprintln!("  manual   installed {} pages", made.recipes.len());
             }
             if made.settings {
-                eprintln!("  settings copied into its home; the project's copy is only the default");
+                eprintln!("  settings copied into its home; the one in skel is only the default");
             }
         }
         Err(e) => tracing::warn!("could not prepare the home: {e}"),
@@ -211,21 +211,6 @@ fn owner_of(p: &std::path::Path) -> String {
         }
     }
     "another user".to_string()
-}
-
-/// Where something that ships with the project lives: said explicitly, or in the checkout, or
-/// installed beside the binary.
-fn shipped(what: &str, env: &str) -> PathBuf {
-    if let Ok(p) = std::env::var(env) {
-        return PathBuf::from(p);
-    }
-    for prefix in ["", "../", "../../"] {
-        let p = PathBuf::from(format!("{prefix}{what}"));
-        if p.is_dir() {
-            return p;
-        }
-    }
-    PathBuf::from(format!("/usr/share/groow/{what}"))
 }
 
 /// The mind's home. In a checkout this is the project's `home`, the same directory the

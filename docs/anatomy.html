@@ -177,7 +177,7 @@ outcome(command, result)             -> p(useful)  − p(failed)</code></pre>
   harness/      the agent loop: parse a generation, run the tools, report what it noticed
   ui/           the window, the creature and the card
   cli/          the groow command, in its two lives
-groow/
+neuro/
   serve.py      the brain: generation, training and consolidation, one queue, one GPU
   learn.py      the conductor: feel, harvest, train, consolidate; the mind never calls these
   limbic/       sensors.py (free signals), judge.py (frozen), feel.py (the pass), calibrate.py
@@ -186,7 +186,9 @@ groow/
   brain/        model.py (the weights), chatfmt.py (loss masks)
   learning/     trainer.py (the only gradients), trainingset.py, sleep.py, learner.py
   memory/       journal.py, day.py (the conversation as whole turns), episodic.py
-skills/         the commands it starts with; any executable
-state/          base/ plastic/ main/ mailbox/ training/ log/ thoughts/ recipes/ groow.db …</code></pre>
+skel/           what a new home is given: skills/ recipes/ .groowrc groow.json
+home/           the creature itself, never in the repository
+  skills/ bin/ recipes/ workspace/ .groowrc groow.json
+  state/        base/ plastic/ main/ mailbox/ training/ log/ thoughts/ groow.db …</code></pre>
 <footer>Groow · docs · anatomy</footer>
 </main></body></html>

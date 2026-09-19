@@ -38,34 +38,33 @@ pub fn recipes(home: &Path) -> PathBuf {
     home.join("recipes")
 }
 
-/// Make the home, and put the shipped things in it on a first start.
+/// Make the home, and copy the skeleton into it on a first start.
 ///
-/// Everything here is created once and then left alone. What the mind does with it afterwards
-/// is its business.
-pub fn prepare(home: &Path, skills_from: &Path, recipes_from: &Path) -> std::io::Result<Prepared> {
+/// `skel` is one directory shaped like a home: `skills`, `recipes`, `groow.json`. It is the
+/// shipped source and is never written to. Everything here is copied once and then left alone.
+/// What the mind does with it afterwards is its business.
+pub fn prepare(home: &Path, skel: &Path) -> std::io::Result<Prepared> {
     for d in [shelf(home), bin_dir(home), workspace(home), recipes(home)] {
         fs::create_dir_all(d)?;
     }
     Ok(Prepared {
-        skills: seed(home, skills_from)?,
-        recipes: seed_recipes(home, recipes_from)?,
-        settings: seed_settings(home)?,
+        skills: seed(home, &skel.join("skills"))?,
+        recipes: seed_recipes(home, &skel.join("recipes"))?,
+        settings: seed_file(home, skel, "groow.json")?,
     })
 }
 
-/// Give the home its own settings, copied from the project's once.
+/// Give the home its own copy of one file from the skeleton, once.
 ///
 /// Without this the shipped copy is read forever when running here, while the sandbox reads
 /// the one in the home: the same creature under two sets of settings depending on how it was
 /// started. Afterwards the file is the home's, like everything else in there.
-pub fn seed_settings(home: &Path) -> std::io::Result<bool> {
-    let mine = home.join("groow.json");
+pub fn seed_file(home: &Path, skel: &Path, name: &str) -> std::io::Result<bool> {
+    let mine = home.join(name);
     if mine.exists() {
         return Ok(false);
     }
-    let Some(shipped) = crate::paths::project().map(|p| p.join("groow.json")) else {
-        return Ok(false);
-    };
+    let shipped = skel.join(name);
     if !shipped.is_file() {
         return Ok(false);
     }
@@ -304,7 +303,14 @@ mod tests {
         fs::write(manual.join("shell.md"), "how the shell works").unwrap();
 
         let home = d.path().join("home");
-        let made = prepare(&home, &from, &manual).unwrap();
+        let skel = d.path().join("skel");
+        fs::create_dir_all(&skel).unwrap();
+        fs::rename(&from, skel.join("skills")).unwrap();
+        fs::rename(&manual, skel.join("recipes")).unwrap();
+        fs::write(skel.join("groow.json"), "{}").unwrap();
+
+        let made = prepare(&home, &skel).unwrap();
+        assert!(made.settings, "the home is given its own settings");
         assert_eq!(made.recipes, vec!["shell.md".to_string()]);
         assert_eq!(made.skills.len(), 2);
         for d in [shelf(&home), bin_dir(&home), workspace(&home), recipes(&home)] {
@@ -315,17 +321,16 @@ mod tests {
     #[test]
     fn the_home_gets_its_own_settings_and_then_keeps_them() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
-        std::fs::write(d.path().join("groow.json"), "{\"api_port\": 7373}").unwrap();
+        let skel = d.path().join("skel");
+        fs::create_dir_all(&skel).unwrap();
+        fs::write(skel.join("groow.json"), "{\"api_port\": 7373}").unwrap();
         let home = d.path().join("home");
 
-        let was = std::env::current_dir().unwrap();
-        std::env::set_current_dir(d.path()).unwrap();
-        assert!(seed_settings(&home).unwrap(), "the home should be given a copy");
+        assert!(seed_file(&home, &skel, "groow.json").unwrap(), "the home should be given a copy");
         fs::write(home.join("groow.json"), "{\"api_port\": 9999}").unwrap();
-        assert!(!seed_settings(&home).unwrap(), "and then left to keep it");
-        std::env::set_current_dir(was).unwrap();
+        assert!(!seed_file(&home, &skel, "groow.json").unwrap(), "and then left to keep it");
 
+        assert_eq!(fs::read_to_string(skel.join("groow.json")).unwrap(), "{\"api_port\": 7373}", "the skeleton is never written to");
         assert!(fs::read_to_string(home.join("groow.json")).unwrap().contains("9999"));
     }
 
@@ -341,6 +346,48 @@ mod tests {
 
         assert!(seed_recipes(&home, &manual).unwrap().is_empty());
         assert_eq!(fs::read_to_string(recipes(&home).join("shell.md")).unwrap(), "what I have learned since");
+    }
+
+    #[test]
+    fn the_skeleton_is_only_ever_read() {
+        // The whole point of keeping it separate: the repository holds what a creature is
+        // given, the home holds what it has become, and starting one never writes to the other.
+        let d = tempfile::tempdir().unwrap();
+        let skel = d.path().join("skel");
+        fs::create_dir_all(&skel).unwrap();
+        fs::rename(shipped(d.path()), skel.join("skills")).unwrap();
+        fs::create_dir_all(skel.join("recipes")).unwrap();
+        fs::write(skel.join("recipes/home.md"), "the shipped page").unwrap();
+        fs::write(skel.join("groow.json"), "{}").unwrap();
+        let before = fingerprint(&skel);
+
+        let home = d.path().join("home");
+        prepare(&home, &skel).unwrap();
+        fs::write(shelf(&home).join("web/SKILL.md"), "mine now").unwrap();
+        fs::write(recipes(&home).join("home.md"), "mine now").unwrap();
+        fs::write(home.join("groow.json"), "{\"api_port\": 9999}").unwrap();
+        prepare(&home, &skel).unwrap();
+
+        assert_eq!(before, fingerprint(&skel), "the skeleton changed");
+    }
+
+    /// Every file under a directory and what is in it.
+    fn fingerprint(root: &Path) -> Vec<(PathBuf, String)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).unwrap().filter_map(|e| e.ok()) {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p.strip_prefix(root).unwrap().to_path_buf();
+                    out.push((rel, fs::read_to_string(&p).unwrap_or_default()));
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     #[test]
