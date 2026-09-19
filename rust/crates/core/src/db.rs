@@ -17,6 +17,18 @@ pub struct Db {
     conn: Connection,
 }
 
+/// How a turn finished. Named rather than passed as six values in a row, because six scalars
+/// of the same shape are easy to put in the wrong order and nothing would ever complain.
+#[derive(Debug, Clone, Default)]
+pub struct Ended {
+    pub at: f64,
+    pub seconds: f64,
+    pub tools: u32,
+    pub rounds: u32,
+    pub flags: Vec<String>,
+    pub outcome: String,
+}
+
 impl Db {
     pub fn open(path: &Path) -> anyhow::Result<Db> {
         if let Some(d) = path.parent() {
@@ -121,13 +133,10 @@ impl Db {
 
     /// Close a turn out. Writing the same outcome twice leaves one row, because a retried
     /// report must not double-count a turn in the statistics.
-    pub fn turn_ended(
-        &self, id: &str, ended: f64, seconds: f64, tools: u32, rounds: u32,
-        flags: &[String], outcome: &str,
-    ) -> anyhow::Result<()> {
+    pub fn turn_ended(&self, id: &str, e: &Ended) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE turns SET ended=?2, seconds=?3, tools=?4, rounds=?5, flags=?6, outcome=?7 WHERE id=?1",
-            params![id, ended, seconds, tools, rounds, flags.join(","), outcome],
+            params![id, e.at, e.seconds, e.tools, e.rounds, e.flags.join(","), e.outcome],
         )?;
         Ok(())
     }
@@ -295,7 +304,8 @@ mod tests {
     fn a_turn_is_recorded_from_start_to_finish() {
         let db = Db::memory().unwrap();
         db.turn_started("t1", "user", 100.0).unwrap();
-        db.turn_ended("t1", 104.5, 4.5, 3, 2, &["completed".into()], "ok").unwrap();
+        db.turn_ended("t1", &Ended { at: 104.5, seconds: 4.5, tools: 3, rounds: 2,
+                                     flags: vec!["completed".into()], outcome: "ok".into() }).unwrap();
         assert_eq!(db.turn_count().unwrap(), 1);
     }
 
@@ -304,8 +314,9 @@ mod tests {
         let db = Db::memory().unwrap();
         db.turn_started("t1", "user", 100.0).unwrap();
         db.turn_started("t1", "user", 100.0).unwrap();
-        db.turn_ended("t1", 104.0, 4.0, 1, 1, &[], "ok").unwrap();
-        db.turn_ended("t1", 104.0, 4.0, 1, 1, &[], "ok").unwrap();
+        let done = Ended { at: 104.0, seconds: 4.0, tools: 1, rounds: 1, flags: vec![], outcome: "ok".into() };
+        db.turn_ended("t1", &done).unwrap();
+        db.turn_ended("t1", &done).unwrap();
         assert_eq!(db.turn_count().unwrap(), 1, "a retried report must not invent a second turn");
     }
 
@@ -319,7 +330,8 @@ mod tests {
             ("died", "abandoned", "its process went away"),
         ] {
             db.turn_started(id, "user", 1.0).unwrap();
-            db.turn_ended(id, 2.0, 1.0, 0, 1, &[flags.to_string()], outcome).unwrap();
+            db.turn_ended(id, &Ended { at: 2.0, seconds: 1.0, tools: 0, rounds: 1,
+                                       flags: vec![flags.to_string()], outcome: outcome.into() }).unwrap();
         }
         let forget = db.turns_to_forget().unwrap();
         assert!(!forget.contains("good"), "a turn that worked should stay in the window");
@@ -332,7 +344,8 @@ mod tests {
     fn a_turn_a_person_reacted_badly_to_is_not_shown_again() {
         let db = Db::memory().unwrap();
         db.turn_started("sour", "user", 1.0).unwrap();
-        db.turn_ended("sour", 2.0, 1.0, 0, 1, &["completed".into()], "ok").unwrap();
+        db.turn_ended("sour", &Ended { at: 2.0, seconds: 1.0, tools: 0, rounds: 1,
+                                       flags: vec!["completed".into()], outcome: "ok".into() }).unwrap();
         assert!(!db.turns_to_forget().unwrap().contains("sour"), "nothing is wrong with it yet");
         db.felt("sour", 3.0, 0.15, Some(-0.9), -0.75).unwrap();
         assert!(db.turns_to_forget().unwrap().contains("sour"));
@@ -342,7 +355,8 @@ mod tests {
     fn a_turn_nobody_has_reacted_to_is_still_shown() {
         let db = Db::memory().unwrap();
         db.turn_started("fresh", "user", 1.0).unwrap();
-        db.turn_ended("fresh", 2.0, 1.0, 0, 1, &["completed".into()], "ok").unwrap();
+        db.turn_ended("fresh", &Ended { at: 2.0, seconds: 1.0, tools: 0, rounds: 1,
+                                        flags: vec!["completed".into()], outcome: "ok".into() }).unwrap();
         db.felt("fresh", 3.0, 0.15, None, 0.15).unwrap();
         assert!(!db.turns_to_forget().unwrap().contains("fresh"));
     }

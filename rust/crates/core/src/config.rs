@@ -266,9 +266,11 @@ mod tests {
     fn it_round_trips_through_a_file() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("groow.json");
-        let mut c = Config::default();
-        c.model_id = "Qwen/Qwen3-1.7B".into();
-        c.feeds = vec!["https://example.org/rss".into()];
+        let c = Config {
+            model_id: "Qwen/Qwen3-1.7B".into(),
+            feeds: vec!["https://example.org/rss".into()],
+            ..Default::default()
+        };
         c.save(&p).unwrap();
         let back = Config::load(&p).unwrap();
         assert_eq!(back.model_id, c.model_id);
@@ -278,8 +280,7 @@ mod tests {
 
     #[test]
     fn the_wildcard_host_is_rewritten_for_display() {
-        let mut c = Config::default();
-        c.api_host = "0.0.0.0".into();
+        let c = Config { api_host: "0.0.0.0".into(), ..Default::default() };
         assert_eq!(c.gateway_url(), "http://127.0.0.1:7373");
     }
 }

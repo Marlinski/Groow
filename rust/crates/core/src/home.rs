@@ -188,11 +188,12 @@ fn is_runnable(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return p.is_file()
-            && fs::metadata(p).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+        p.is_file() && fs::metadata(p).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
     }
     #[cfg(not(unix))]
-    p.is_file()
+    {
+        p.is_file()
+    }
 }
 
 #[cfg(test)]

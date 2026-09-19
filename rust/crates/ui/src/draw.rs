@@ -64,7 +64,7 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui) {
         };
         if !label.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("{label}"),
+                label.to_string(),
                 Style::default().fg(colour).add_modifier(Modifier::BOLD),
             )));
         }

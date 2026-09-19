@@ -152,5 +152,7 @@ skills/                the skills it starts with, copied into its home
 recipes/               its manual, copied into its home where it can rewrite it
 ```
 
-Run the tests with `cargo test --manifest-path rust/Cargo.toml`, and check the judge with
-`python -m neuro.limbic.calibrate`.
+`make` lists what there is to build: `make build` for the core, `make body` for the container,
+`make proto` to regenerate the Python side of the schema, `make test` for the Rust tests and
+the judge fixture, `make check` for lints. Nothing in it touches `state/` or `home/`, which are
+the creature rather than the build.

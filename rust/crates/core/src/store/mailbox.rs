@@ -202,10 +202,9 @@ impl Mailbox {
         let suffix = format!("-{}.json", kind.as_str());
         let mut n = 0;
         for p in self.pending()? {
-            if p.file_name().and_then(|s| s.to_str()).map(|s| s.ends_with(&suffix)).unwrap_or(false) {
-                if fs::remove_file(&p).is_ok() {
-                    n += 1;
-                }
+            let matches = p.file_name().and_then(|s| s.to_str()).map(|s| s.ends_with(&suffix)).unwrap_or(false);
+            if matches && fs::remove_file(&p).is_ok() {
+                n += 1;
             }
         }
         Ok(n)

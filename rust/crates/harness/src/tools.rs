@@ -163,7 +163,14 @@ pub async fn run_shell(command: &str, home: &std::path::Path, timeout: Duration)
             let ok = out.status.success();
             let mut text = clip(text.trim_end(), MAX_OUTPUT);
             if text.is_empty() {
-                text = if ok { "(no output)".into() } else { "(no output)".into() };
+                // Silence from a command that worked means it had nothing to say. Silence from
+                // one that failed is worth naming, because there is no error to read and
+                // nothing to go on otherwise.
+                text = if ok {
+                    "(no output)".into()
+                } else {
+                    "(it printed nothing at all, on either stream)".into()
+                };
             }
             let text = match code {
                 Some(0) => text,
@@ -310,6 +317,17 @@ mod tests {
         let r = run_shell("true", d.path(), Duration::from_secs(5)).await;
         assert!(r.ok);
         assert_eq!(r.text, "(no output)");
+    }
+
+    #[tokio::test]
+    async fn a_command_that_fails_silently_says_that_it_did() {
+        // There is no error to read and nothing on either stream, which is the least helpful
+        // thing that can happen. It should at least be named.
+        let d = tempfile::tempdir().unwrap();
+        let r = run_shell("exit 4", d.path(), Duration::from_secs(5)).await;
+        assert!(!r.ok);
+        assert!(r.text.contains("printed nothing"), "unhelpful: {}", r.text);
+        assert!(r.text.contains("[exit 4]"), "{}", r.text);
     }
 
     #[tokio::test]

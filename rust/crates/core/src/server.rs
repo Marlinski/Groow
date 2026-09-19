@@ -233,9 +233,7 @@ mod tests {
         let mut hub = hub_for_test(d.path()).unwrap();
         hub.set_brain_up(true);
         let (handle, _join) = hub.spawn();
-        let mut cfg = Config::default();
-        cfg.turn_timeout = 2.0;
-        cfg.thought_timeout = 2.0;
+        let cfg = Config { turn_timeout: 2.0, thought_timeout: 2.0, ..Default::default() };
         Arc::new(Core {
             hub: handle,
             cfg: Arc::new(cfg),

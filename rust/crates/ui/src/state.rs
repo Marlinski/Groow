@@ -309,9 +309,7 @@ mod tests {
     use serde_json::json;
 
     fn ui() -> Ui {
-        let mut u = Ui::default();
-        u.birth = json!({"name": "Groow", "born": 1000.0});
-        u
+        Ui { birth: json!({"name": "Groow", "born": 1000.0}), ..Default::default() }
     }
 
     #[test]

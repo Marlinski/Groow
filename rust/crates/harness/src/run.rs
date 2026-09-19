@@ -323,12 +323,14 @@ fn is_a_command(name: &str, home: &std::path::Path) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            return std::fs::metadata(&p)
+            std::fs::metadata(&p)
                 .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false);
+                .unwrap_or(false)
         }
         #[cfg(not(unix))]
-        p.is_file()
+        {
+            p.is_file()
+        }
     })
 }
 

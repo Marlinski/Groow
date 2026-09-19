@@ -717,8 +717,10 @@ impl Hub {
         self.guard(&out.turn, Epoch(out.epoch))?;
         let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
-        let _ = self.db.turn_ended(
-            &a.id, now, now - a.started, out.tools_used, a.rounds, &out.flags, "ok");
+        let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
+            at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
+            flags: out.flags.clone(), outcome: "ok".into(),
+        });
         let _ = self.mailbox.ack(&a.signal);
         self.fail_streak = 0;
         self.since_learned += 1;
@@ -780,7 +782,10 @@ impl Hub {
         self.active = None;
         self.epoch = self.epoch.next();
         let now = self.now();
-        let _ = self.db.turn_ended(&a.id, now, now - a.started, 0, a.rounds, &["abandoned".into()], why);
+        let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
+            at: now, seconds: now - a.started, tools: 0, rounds: a.rounds,
+            flags: vec!["abandoned".into()], outcome: why.to_string(),
+        });
         self.fail_streak = self.fail_streak.saturating_add(1);
         self.last_failure = now;
 
@@ -1102,9 +1107,11 @@ fn pid_alive(pid: u32) -> bool {
 /// Shared by the tests in this module and the integration tests.
 #[doc(hidden)]
 pub fn hub_for_test(dir: &std::path::Path) -> anyhow::Result<Hub> {
-    let mut cfg = Config::default();
-    cfg.state_dir = dir.to_string_lossy().to_string();
-    cfg.curiosity = false;
+    let cfg = Config {
+        state_dir: dir.to_string_lossy().to_string(),
+        curiosity: false,
+        ..Default::default()
+    };
     let paths = Paths::new(dir);
     paths.ensure()?;
     let birth = Birth::load_or_create(&paths.birth(), "test/model", "test", "Marlinski", "0.3.0")?;

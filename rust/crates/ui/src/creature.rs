@@ -245,7 +245,7 @@ impl Mood {
 
     /// Eyes shut for the whole of a sleep, and for one frame in six otherwise.
     fn eyes_closed(&self, tick: u64) -> bool {
-        matches!(self, Mood::Sleeping | Mood::Napping) || (tick % 6 == 0 && *self != Mood::Repair)
+        matches!(self, Mood::Sleeping | Mood::Napping) || (tick.is_multiple_of(6) && *self != Mood::Repair)
     }
 
     /// A sleeping creature does not breathe visibly.
@@ -257,7 +257,7 @@ impl Mood {
 /// Sparkle positions for the learning mood, drawn on alternating frames.
 const SPARKS: [(usize, usize); 4] = [(0, 1), (1, 10), (3, 0), (4, 11)];
 
-fn apply_mood(g: &mut Vec<Vec<char>>, mood: Mood, tick: u64) {
+fn apply_mood(g: &mut [Vec<char>], mood: Mood, tick: u64) {
     let eyes: Vec<(usize, usize)> = cells(g, 'e');
     let mouth: Vec<(usize, usize)> = cells(g, 'm');
 
@@ -285,7 +285,7 @@ fn apply_mood(g: &mut Vec<Vec<char>>, mood: Mood, tick: u64) {
         }
         Mood::Learning => {
             for (i, (y, x)) in SPARKS.iter().enumerate() {
-                if (i as u64 + tick) % 2 == 0 && *y < H && *x < W {
+                if (i as u64 + tick).is_multiple_of(2) && *y < H && *x < W {
                     g[*y][*x] = '*';
                 }
             }
