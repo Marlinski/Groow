@@ -272,6 +272,25 @@ pub fn read_opt(path: &Path) -> std::io::Result<Option<String>> {
 mod tests {
     use super::*;
 
+    /// The working directory belongs to the process, not to a test, so the ones that move it
+    /// take turns. Without this they pass alone and fail together, which is worse than either.
+    static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Move into `dir` for as long as the guard lives, and put the process back afterwards.
+    fn inside(dir: &Path) -> impl Drop {
+        // The guard is never read; holding it is the whole point.
+        struct Back(std::path::PathBuf, #[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Back {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let held = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let was = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        Back(was, held)
+    }
+
     #[test]
     fn a_write_replaces_the_whole_file() {
         let d = tempfile::tempdir().unwrap();
@@ -331,13 +350,11 @@ mod tests {
         let sub = d.path().join("rust/crates");
         std::fs::create_dir_all(&sub).unwrap();
 
-        let was = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&sub).unwrap();
+        let _cwd = inside(&sub);
         std::env::remove_var("GROOW_HOME");
         std::env::remove_var("GROOW_STATE");
         let home = default_home();
         let state = default_state();
-        std::env::set_current_dir(was).unwrap();
 
         assert!(home.ends_with("home"), "the mind's home should be the project's: {}", home.display());
         assert!(state.ends_with("home/state"), "got {}", state.display());
@@ -351,8 +368,7 @@ mod tests {
         std::fs::write(d.path().join("skel/groow.json"), "{}").unwrap();
         std::fs::create_dir_all(d.path().join("home")).unwrap();
 
-        let was = std::env::current_dir().unwrap();
-        std::env::set_current_dir(d.path()).unwrap();
+        let _cwd = inside(d.path());
         std::env::remove_var("GROOW_HOME");
         std::env::remove_var("GROOW_CONFIG");
         std::env::remove_var("GROOW_SKEL");
@@ -361,7 +377,6 @@ mod tests {
         let shipped = default_config();
         std::fs::write(d.path().join("home/groow.json"), "{}").unwrap();
         let mine = default_config();
-        std::env::set_current_dir(was).unwrap();
 
         assert!(shipped.ends_with("skel/groow.json"), "got {}", shipped.display());
         assert!(mine.ends_with("home/groow.json"), "got {}", mine.display());
@@ -391,11 +406,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
         std::fs::create_dir_all(d.path().join("skel")).unwrap();
-        let was = std::env::current_dir().unwrap();
-        std::env::set_current_dir(d.path()).unwrap();
+        let _cwd = inside(d.path());
         std::env::remove_var("GROOW_SKEL");
         let found = skel(None);
-        std::env::set_current_dir(was).unwrap();
         assert!(found.unwrap().ends_with("skel"));
     }
 
@@ -403,11 +416,9 @@ mod tests {
     fn with_no_skeleton_anywhere_it_says_where_it_looked() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
-        let was = std::env::current_dir().unwrap();
-        std::env::set_current_dir(d.path()).unwrap();
+        let _cwd = inside(d.path());
         std::env::remove_var("GROOW_SKEL");
         let e = skel(None).map(|p| p.display().to_string());
-        std::env::set_current_dir(was).unwrap();
 
         // /usr/share/groow/skel exists on an installed machine, and then there is no error to
         // check; this is about the message when there is one.

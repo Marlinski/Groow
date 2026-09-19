@@ -138,12 +138,9 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
                 .collect::<Vec<_>>()));
         }
         history.push(said.clone());
+        // Writing it is what announces it: the core emits the event when it takes the record,
+        // so saying it again here would have every watcher show the answer twice.
         write(client, settings, &ctx, &said).await?;
-        let _ = client
-            .emit(Event::new(EventName::Message, json!({
-                "role": "assistant", "content": p.content, "turn": ctx.turn,
-            })))
-            .await;
 
         if p.calls.is_empty() {
             final_text = p.content;
@@ -377,6 +374,8 @@ mod tests {
     #[derive(Default)]
     struct Recorded {
         appended: Vec<Message>,
+        /// Events the turn announced on its own account.
+        emitted: Vec<(String, serde_json::Value)>,
         outcome: Option<TurnOutcome>,
         asked: Vec<serde_json::Value>,
         completions: usize,
@@ -401,6 +400,11 @@ mod tests {
                     return;
                 }
                 let Ok(f) = Frame::decode(&line) else { continue };
+                // An event is announced, not asked, so it has no reply and is only recorded.
+                if let Some((name, _, data)) = f.event() {
+                    log.lock().unwrap().emitted.push((name.to_string(), data));
+                    continue;
+                }
                 let Some((id, op, arg)) = f.request() else { continue };
                 let (op, arg) = (op.to_string(), arg);
                 let reply = match op.as_str() {

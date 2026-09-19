@@ -971,8 +971,15 @@ impl Hub {
     }
 
     fn thought_append(&mut self, id: &str, msg: Message) -> Result<Value, WireError> {
+        let role = msg.role.clone();
+        let content = msg.content.clone().unwrap_or_default();
         self.thoughts.patch(id, |t| t.history.push(msg)).map_err(io)?
             .ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
+        // Whoever writes the record announces it, here as on the main thread. Anything else
+        // means two places deciding what was said, and a watcher hearing it twice.
+        self.fanout(Event::new(EventName::Message, json!({
+            "role": role, "content": content, "turn": id,
+        })));
         Ok(json!({"ok": true}))
     }
 
@@ -1601,6 +1608,36 @@ mod tests {
             Duty::Turn(s, _) => assert_eq!(s.text, "hello"),
             other => panic!("it went to sleep with someone waiting: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_message_is_announced_by_whoever_records_it() {
+        // On the main thread and inside a thought alike. If the core stays quiet for one of
+        // them, whatever wrote it announces it instead, and then the two disagree.
+        let (mut h, _d) = hub();
+        let mut watching = take(|reply| Cmd::Subscribe { reply }, &mut h).unwrap();
+
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
+        take(|reply| Cmd::Append {
+            turn: ctx.turn.clone(), epoch: Epoch(ctx.epoch),
+            msg: Box::new(Message::assistant("hello yourself")), reply,
+        }, &mut h).unwrap();
+
+        let id = take(|reply| Cmd::Think { goal: "learn a thing".into(), max_steps: 4, reply }, &mut h)
+            .unwrap()["id"].as_str().unwrap().to_string();
+        take(|reply| Cmd::ThoughtAppend {
+            id: id.clone(), msg: Box::new(Message::assistant("a step")), reply,
+        }, &mut h).unwrap();
+
+        let mut said = Vec::new();
+        while let Ok(ev) = watching.try_recv() {
+            if ev.name == "message" {
+                said.push(ev.data["content"].as_str().unwrap_or("").to_string());
+            }
+        }
+        assert_eq!(said, vec!["hello yourself".to_string(), "a step".to_string()], "{said:?}");
     }
 
     #[test]

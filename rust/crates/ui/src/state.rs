@@ -52,6 +52,11 @@ pub struct Ui {
     pub connected: bool,
     /// The answer being streamed, which replaces itself as more arrives.
     speaking: Option<usize>,
+    /// Where this turn's answer ended up, so the end of the turn corrects it rather than
+    /// saying the same thing twice.
+    said: Option<usize>,
+    /// What was typed here and shown at once, waiting for the core to announce the same thing.
+    echoed: Option<String>,
     /// How far back the conversation is scrolled; zero is the newest.
     pub scroll_back: u16,
     /// Set when the person asks to leave.
@@ -75,6 +80,8 @@ impl Default for Ui {
             input: String::new(),
             connected: false,
             speaking: None,
+            said: None,
+            echoed: None,
             scroll_back: 0,
             done: false,
             trouble: None,
@@ -92,6 +99,7 @@ impl Ui {
             let cut = self.bubbles.len() - KEEP;
             self.bubbles.drain(..cut);
             self.speaking = self.speaking.and_then(|i| i.checked_sub(cut));
+            self.said = self.said.and_then(|i| i.checked_sub(cut));
         }
         // Anything new brings the view back to the present, unless a person is reading back.
         if self.scroll_back == 0 {
@@ -114,8 +122,15 @@ impl Ui {
         match name {
             "turn_start" => {
                 self.speaking = None;
+                self.said = None;
                 if s("who") == "user" {
-                    self.push(Who::Human, "you", s("text"));
+                    // What was typed here is already on screen: showing it again the moment the
+                    // core announces the same turn would make every question appear twice.
+                    if self.echoed.as_deref() == Some(s("text")) {
+                        self.echoed = None;
+                    } else {
+                        self.push(Who::Human, "you", s("text"));
+                    }
                 } else {
                     self.push(Who::Signal, &format!("signal \u{b7} {}", s("kind")), s("text"));
                 }
@@ -150,8 +165,14 @@ impl Ui {
                     match self.speaking {
                         // The complete message replaces whatever was streamed, so a dropped
                         // delta never leaves a hole in what a person reads.
-                        Some(i) if i < self.bubbles.len() => self.bubbles[i].text = text,
-                        _ => self.push(Who::Groow, &self.name().to_lowercase().clone(), &text),
+                        Some(i) if i < self.bubbles.len() => {
+                            self.bubbles[i].text = text;
+                            self.said = Some(i);
+                        }
+                        _ => {
+                            self.push(Who::Groow, &self.name().to_lowercase().clone(), &text);
+                            self.said = Some(self.bubbles.len() - 1);
+                        }
                     }
                     self.speaking = None;
                 }
@@ -159,12 +180,15 @@ impl Ui {
             "turn_end" => {
                 let text = groow_harness::parse::visible(s("final"));
                 if !text.is_empty() {
-                    match self.speaking {
+                    // The end of a turn carries the same words the last message did. It is a
+                    // correction to what is already there, not another thing said.
+                    match self.speaking.or(self.said) {
                         Some(i) if i < self.bubbles.len() => self.bubbles[i].text = text,
                         _ => self.push(Who::Groow, &self.name().to_lowercase().clone(), &text),
                     }
                 }
                 self.speaking = None;
+                self.said = None;
                 self.mood = Mood::Listening;
             }
             "tool_call" => {
@@ -263,12 +287,14 @@ impl Ui {
         if text == "/clear" {
             self.bubbles.clear();
             self.speaking = None;
+            self.said = None;
             return None;
         }
         if let Some(rest) = text.strip_prefix('/') {
             return Some(Sent::Command(rest.to_string()));
         }
         self.push(Who::Human, "you", &text);
+        self.echoed = Some(text.clone());
         Some(Sent::Say(text))
     }
 
@@ -389,6 +415,64 @@ mod tests {
         assert_eq!(row.goal, "read about rivers", "a later update must not wipe the goal");
         assert_eq!(row.steps, 3);
         assert_eq!(row.status, "running");
+    }
+
+    #[test]
+    fn a_whole_exchange_appears_once() {
+        // What a person types is shown at once and then announced back by the core; what the
+        // mind says arrives as tokens, then as a message, then again at the end of the turn.
+        // Every one of those is the same words, and each was being added to the screen.
+        let mut u = ui();
+        u.input = "what is in this directory?".into();
+        u.submit();
+
+        u.on_event("turn_start", &json!({"who": "user", "kind": "user",
+                                         "text": "what is in this directory?", "turn": "t1"}));
+        u.on_event("token", &json!({"delta": "There are "}));
+        u.on_event("token", &json!({"delta": "six."}));
+        u.on_event("message", &json!({"role": "assistant", "content": "There are six.", "turn": "t1"}));
+        u.on_event("turn_end", &json!({"turn": "t1", "kind": "user", "final": "There are six."}));
+
+        let said: Vec<(Who, &str)> =
+            u.bubbles.iter().map(|b| (b.who, b.text.as_str())).collect();
+        assert_eq!(said, vec![
+            (Who::Human, "what is in this directory?"),
+            (Who::Groow, "There are six."),
+        ], "{said:?}");
+    }
+
+    #[test]
+    fn a_turn_nobody_here_started_is_still_shown() {
+        // The echo only silences the one thing this window just sent. A message left from
+        // another window, or the same words said again later, must still appear.
+        let mut u = ui();
+        u.on_event("turn_start", &json!({"who": "user", "text": "hello", "turn": "t1"}));
+        u.on_event("turn_end", &json!({"turn": "t1", "final": "hello yourself"}));
+        u.on_event("turn_start", &json!({"who": "user", "text": "hello", "turn": "t2"}));
+        assert_eq!(u.bubbles.iter().filter(|b| b.text == "hello").count(), 2, "{:?}", u.bubbles);
+    }
+
+    #[test]
+    fn an_answer_that_was_never_streamed_still_arrives() {
+        // A short turn can end without a single token event, and then the end of the turn is
+        // the only place the words come from.
+        let mut u = ui();
+        u.on_event("turn_start", &json!({"who": "signal", "kind": "alarm", "text": "the news"}));
+        u.on_event("turn_end", &json!({"turn": "t1", "final": "nothing worth reporting"}));
+        assert_eq!(u.bubbles.last().unwrap().text, "nothing worth reporting");
+        assert_eq!(u.bubbles.iter().filter(|b| b.who == Who::Groow).count(), 1);
+    }
+
+    #[test]
+    fn the_end_of_a_turn_corrects_what_is_on_screen() {
+        // The final text is authoritative: a dropped delta is repaired rather than appended.
+        let mut u = ui();
+        u.on_event("turn_start", &json!({"who": "user", "text": "hello", "turn": "t1"}));
+        u.on_event("token", &json!({"delta": "There are s"}));
+        u.on_event("message", &json!({"role": "assistant", "content": "There are s", "turn": "t1"}));
+        u.on_event("turn_end", &json!({"turn": "t1", "final": "There are six."}));
+        assert_eq!(u.bubbles.last().unwrap().text, "There are six.");
+        assert_eq!(u.bubbles.iter().filter(|b| b.who == Who::Groow).count(), 1);
     }
 
     #[test]
