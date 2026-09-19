@@ -14,8 +14,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Where the state lives inside the body.
-pub const STATE_INSIDE: &str = "/home/groow/state";
+/// Where it lives inside the body.
+pub const HOME_INSIDE: &str = "/home/groow";
 
 /// Whether this process is already running inside the body.
 ///
@@ -66,7 +66,7 @@ pub fn run_inside(args: &[String], interactive: bool) -> anyhow::Result<std::pro
     if !interactive {
         c.arg("-T");
     }
-    c.args(["-u", "0", "groow", "groow", "--state", STATE_INSIDE]);
+    c.args(["-u", "0", "groow", "groow", "--home", HOME_INSIDE]);
     c.args(args);
     c.current_dir(&dir);
     Ok(c.status()?)
@@ -137,7 +137,7 @@ pub fn shell() -> anyhow::Result<()> {
 pub fn brain_ready() -> bool {
     let Some(dir) = project() else { return false };
     let out = Command::new("docker")
-        .args(["compose", "exec", "-T", "-u", "0", "groow", "groow", "--state", STATE_INSIDE, "status"])
+        .args(["compose", "exec", "-T", "-u", "0", "groow", "groow", "--home", HOME_INSIDE, "status"])
         .current_dir(&dir)
         .stderr(Stdio::null())
         .output();
@@ -153,12 +153,12 @@ pub fn brain_ready() -> bool {
     }
 }
 
-/// Whether a state directory is the one the sandbox writes through its bind mount.
+/// Whether a home is the one the sandbox writes through its bind mount.
 ///
 /// Talking to that socket from the host would arrive with the mind's authority, not yours,
 /// because inside the container your user id belongs to the mind.
-pub fn is_the_sandboxes(state: &Path) -> bool {
-    state.ends_with("home/state")
+pub fn is_the_sandboxes(home: &Path) -> bool {
+    home.ends_with("home")
 }
 
 #[cfg(test)]
@@ -177,10 +177,9 @@ mod tests {
 
     #[test]
     fn the_sandboxes_state_is_recognised() {
-        assert!(is_the_sandboxes(Path::new("/srv/groow/home/state")));
-        assert!(is_the_sandboxes(Path::new("home/state")));
-        assert!(!is_the_sandboxes(Path::new("/srv/groow/state")));
-        assert!(!is_the_sandboxes(Path::new("state")));
+        assert!(is_the_sandboxes(Path::new("/srv/groow/home")));
+        assert!(is_the_sandboxes(Path::new("home")));
+        assert!(!is_the_sandboxes(Path::new("/srv/groow/elsewhere")));
     }
 
     #[test]

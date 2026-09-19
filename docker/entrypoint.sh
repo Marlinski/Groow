@@ -35,4 +35,4 @@ BRAIN=$!
 trap 'kill $BRAIN 2>/dev/null || true' EXIT
 
 echo "body: waking groow ($*)"
-exec /usr/local/bin/groow --config "$HOME/groow.json" --state "$STATE" "$@"
+exec /usr/local/bin/groow --home "$HOME" --config "$HOME/groow.json" "$@"

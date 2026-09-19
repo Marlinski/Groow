@@ -34,13 +34,11 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    let state = resolve_state(&cli);
-    let config = cli.config.clone().unwrap_or_else(|| {
-        let here = std::path::PathBuf::from("groow.json");
-        if here.exists() { here } else { state.join("..").join("groow.json") }
-    });
+    let home = cli.home.clone().unwrap_or_else(groow_core::paths::default_home);
+    let state = home.join("state");
+    let config = cli.config.clone().unwrap_or_else(|| groow_core::paths::config_in(&home));
 
-    let code = match run(cli, state, config).await {
+    let code = match run(cli, home, config).await {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
@@ -50,14 +48,15 @@ async fn main() {
     std::process::exit(code);
 }
 
-async fn run(cli: Cli, state: std::path::PathBuf, config: std::path::PathBuf) -> anyhow::Result<()> {
+async fn run(cli: Cli, home: std::path::PathBuf, config: std::path::PathBuf) -> anyhow::Result<()> {
+    let state = home.join("state");
     // These are about the body itself, or run inside it, so they never travel.
     match &cli.cmd {
         Command::Start { here, rebuild, as_user } => {
             // Inside the body there is no sandbox to reach for: this is it. Without this the
             // body starts, looks for a sandbox, finds none and exits, over and over.
             return if *here || sandbox::inside_the_body() {
-                start::start(state, config, as_user.clone()).await
+                start::start(home.clone(), config, as_user.clone()).await
             } else {
                 wake_the_sandbox(*rebuild).await
             }
@@ -99,11 +98,11 @@ fn without_paths(args: Vec<String>) -> Vec<String> {
             skip = false;
             continue;
         }
-        if a == "--state" || a == "--config" {
+        if a == "--home" || a == "--config" {
             skip = true;
             continue;
         }
-        if a.starts_with("--state=") || a.starts_with("--config=") {
+        if a.starts_with("--home=") || a.starts_with("--config=") {
             continue;
         }
         out.push(a);
@@ -113,12 +112,15 @@ fn without_paths(args: Vec<String>) -> Vec<String> {
 
 /// Build the body if there is not one, wake it, and wait until it answers.
 async fn wake_the_sandbox(rebuild: bool) -> anyhow::Result<()> {
-    if sandbox::running() && !rebuild {
-        eprintln!("already awake.");
-        let _ = sandbox::run_inside(&["status".to_string()], false);
-        return Ok(());
-    }
+    let was_running = sandbox::running();
+    // Always let compose decide. It leaves a container alone when nothing has changed and
+    // replaces it when the image has, which is what should happen after a rebuild; skipping
+    // this on the grounds that something is already running leaves the old body in place and
+    // the new one on the shelf.
     sandbox::wake(rebuild)?;
+    if was_running && !rebuild {
+        eprintln!("already awake.");
+    }
     // Waiting for the core is not enough: loading the weights takes the best part of a minute,
     // and until they are loaded it cannot answer anything. Saying it is awake before then
     // invites the first message to fail.
@@ -132,12 +134,4 @@ async fn wake_the_sandbox(rebuild: bool) -> anyhow::Result<()> {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
     anyhow::bail!("it did not wake within thirty minutes; `groow logs` shows what its body is doing")
-}
-
-/// Where the state is: said explicitly, or beside the mind in its home.
-fn resolve_state(cli: &Cli) -> std::path::PathBuf {
-    match &cli.state {
-        Some(p) => p.clone(),
-        None => groow_core::paths::default_state(),
-    }
 }

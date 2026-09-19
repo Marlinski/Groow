@@ -17,7 +17,7 @@ pub async fn talk(cmd: Command, state: std::path::PathBuf) -> anyhow::Result<()>
         Err(e) => {
             // Pointing at the sandbox's state while its body is asleep is the likeliest way to
             // get here, and "start it" is not obviously the answer unless it is said.
-            if crate::sandbox::is_the_sandboxes(&state) {
+            if crate::sandbox::is_the_sandboxes(state.parent().unwrap_or(&state)) {
                 anyhow::bail!(
                     "that one lives in the sandbox and its body is not running. `groow start` wakes it."
                 )

@@ -10,11 +10,12 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(name = "groow", version, about = "A small mind that learns by changing its own weights")]
 pub struct Cli {
-    /// Where the state lives. Defaults to ./state in a checkout, or ~/.groow/state.
+    /// Where it lives. Everything it is is in there: its state, its skills, its commands, its
+    /// manual and somewhere to work. Defaults to ./home in a checkout.
     #[arg(long, global = true)]
-    pub state: Option<std::path::PathBuf>,
+    pub home: Option<std::path::PathBuf>,
 
-    /// The configuration file. Defaults to ./groow.json.
+    /// The settings. Defaults to groow.json in its home, or the project's copy until it has one.
     #[arg(long, global = true)]
     pub config: Option<std::path::PathBuf>,
 
@@ -163,6 +164,15 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(Cli::try_parse_from(["groow", "start", "--here"]).is_ok());
+    }
+
+    #[test]
+    fn where_it_lives_is_one_place_not_two() {
+        // The home is the thing; the state is a folder inside it, along with everything else
+        // it owns. Asking for them separately invited them to disagree.
+        let c = Cli::try_parse_from(["groow", "--home", "/srv/groow", "status"]).unwrap();
+        assert_eq!(c.home.as_deref(), Some(std::path::Path::new("/srv/groow")));
+        assert!(Cli::try_parse_from(["groow", "--state", "/srv/groow/state", "status"]).is_err());
     }
 
     #[test]

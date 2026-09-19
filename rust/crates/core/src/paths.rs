@@ -119,6 +119,30 @@ pub fn default_state() -> PathBuf {
     default_home().join("state")
 }
 
+/// The settings, which live beside the creature in its home.
+///
+/// The one in the project is the shipped default, used only until the home has its own. Reading
+/// the project's copy while the sandbox reads the home's would mean the same creature running
+/// under two different settings depending on how it was started.
+pub fn default_config() -> PathBuf {
+    config_in(&default_home())
+}
+
+/// The settings for a particular home.
+pub fn config_in(home: &Path) -> PathBuf {
+    if let Some(p) = std::env::var_os("GROOW_CONFIG") {
+        return PathBuf::from(p);
+    }
+    let mine = home.join("groow.json");
+    if mine.is_file() {
+        return mine;
+    }
+    match project() {
+        Some(p) if p.join("groow.json").is_file() => p.join("groow.json"),
+        _ => mine,
+    }
+}
+
 /// Write a file so that a concurrent reader sees either the old content or the new, never a
 /// mixture and never a truncation.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -245,6 +269,28 @@ mod tests {
 
         assert!(home.ends_with("home"), "the mind's home should be the project's: {}", home.display());
         assert!(state.ends_with("home/state"), "got {}", state.display());
+    }
+
+    #[test]
+    fn the_settings_come_from_the_home_once_it_has_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(d.path().join("groow.json"), "{}").unwrap();
+        std::fs::create_dir_all(d.path().join("home")).unwrap();
+
+        let was = std::env::current_dir().unwrap();
+        std::env::set_current_dir(d.path()).unwrap();
+        std::env::remove_var("GROOW_HOME");
+        std::env::remove_var("GROOW_CONFIG");
+
+        // Before the home has one, the shipped copy is used.
+        let shipped = default_config();
+        std::fs::write(d.path().join("home/groow.json"), "{}").unwrap();
+        let mine = default_config();
+        std::env::set_current_dir(was).unwrap();
+
+        assert!(shipped.ends_with("groow.json") && !shipped.ends_with("home/groow.json"));
+        assert!(mine.ends_with("home/groow.json"), "got {}", mine.display());
     }
 
     #[test]

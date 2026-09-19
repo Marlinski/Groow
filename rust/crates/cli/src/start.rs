@@ -14,9 +14,11 @@ use groow_core::spawn::Spawner;
 use groow_core::store::birth::Birth;
 
 /// Bring the core up and stay until it is asked to stop.
-pub async fn start(state: PathBuf, config: PathBuf, as_user: Option<String>) -> anyhow::Result<()> {
+pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> anyhow::Result<()> {
+    let state = home.join("state");
     let mut cfg = Config::load(&config)?;
     cfg.state_dir = state.to_string_lossy().to_string();
+    cfg.home_dir = home.to_string_lossy().to_string();
     if let Some(u) = &as_user {
         cfg.agent_user = u.clone();
     }

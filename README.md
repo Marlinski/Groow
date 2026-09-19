@@ -157,6 +157,10 @@ skills/                the skills it starts with, copied into its home
 recipes/               its manual, copied into its home where it can rewrite it
 ```
 
+Everything Groow is lives in one directory, its home: `./home` in a checkout, `/home/groow`
+inside the body. The state is a folder in there, alongside its skills, its commands, its manual
+and its workspace. `groow --home <dir>` points at a different one.
+
 `make` lists what there is to build: `make build` for the core, `make body` for the container,
 `make proto` to regenerate the Python side of the schema, `make test` for the Rust tests and
 the judge fixture, `make check` for lints. Nothing in it touches `state/` or `home/`, which are
