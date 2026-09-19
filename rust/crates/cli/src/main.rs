@@ -35,7 +35,6 @@ async fn main() {
         .init();
 
     let home = cli.home.clone().unwrap_or_else(groow_core::paths::default_home);
-    let state = home.join("state");
     let config = cli.config.clone().unwrap_or_else(|| groow_core::paths::config_in(&home));
 
     let code = match run(cli, home, config).await {
