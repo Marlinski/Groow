@@ -15,8 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libs
 # The schema, which the build turns into the wire types. protoc comes with the build itself,
 # so nothing needs installing for it.
 COPY nervous_system/proto /nervous_system/proto
-# The skeleton home, because the default prompt script is baked into the binary from it.
-COPY skel /skel
 COPY rust/Cargo.toml rust/Cargo.lock* ./
 COPY rust/crates ./crates
 RUN cargo build --release --locked 2>/dev/null || cargo build --release

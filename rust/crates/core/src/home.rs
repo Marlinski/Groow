@@ -40,9 +40,10 @@ pub fn recipes(home: &Path) -> PathBuf {
 
 /// Make the home, and copy the skeleton into it on a first start.
 ///
-/// `skel` is one directory shaped like a home: `skills`, `recipes`, `groow.json`. It is the
-/// shipped source and is never written to. Everything here is copied once and then left alone.
-/// What the mind does with it afterwards is its business.
+/// `skel` is one directory shaped like a home: `skills`, `recipes`, and the files a home
+/// starts with, `groow.json` and `.groowrc`. It is the shipped source and is never written to.
+/// Everything here is copied once and then left alone. What the mind does with it afterwards
+/// is its business.
 pub fn prepare(home: &Path, skel: &Path) -> std::io::Result<Prepared> {
     for d in [shelf(home), bin_dir(home), workspace(home), recipes(home)] {
         fs::create_dir_all(d)?;
@@ -50,34 +51,50 @@ pub fn prepare(home: &Path, skel: &Path) -> std::io::Result<Prepared> {
     Ok(Prepared {
         skills: seed(home, &skel.join("skills"))?,
         recipes: seed_recipes(home, &skel.join("recipes"))?,
-        settings: seed_file(home, skel, "groow.json")?,
+        files: seed_files(home, skel)?,
     })
 }
 
-/// Give the home its own copy of one file from the skeleton, once.
+/// Give the home its own copy of every plain file at the top of the skeleton, once.
 ///
-/// Without this the shipped copy is read forever when running here, while the sandbox reads
-/// the one in the home: the same creature under two sets of settings depending on how it was
-/// started. Afterwards the file is the home's, like everything else in there.
-pub fn seed_file(home: &Path, skel: &Path, name: &str) -> std::io::Result<bool> {
-    let mine = home.join(name);
-    if mine.exists() {
-        return Ok(false);
-    }
-    let shipped = skel.join(name);
-    if !shipped.is_file() {
-        return Ok(false);
-    }
+/// Whatever is there: nothing here knows what `groow.json` or `.groowrc` are for, so putting
+/// another file in the skeleton is all it takes for every new home to be given one. An
+/// executable stays executable, because the prompt script is one.
+///
+/// Copying rather than reading the skeleton's is the point. Otherwise the shipped copy is read
+/// forever when running here, while the sandbox reads the one in the home: the same creature
+/// under two sets of settings depending on how it was started.
+pub fn seed_files(home: &Path, skel: &Path) -> std::io::Result<Vec<String>> {
     fs::create_dir_all(home)?;
-    fs::copy(&shipped, &mine)?;
-    Ok(true)
+    let mut put = Vec::new();
+    let rd = match fs::read_dir(skel) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(put),
+        Err(e) => return Err(e),
+    };
+    let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file()).collect();
+    files.sort();
+    for src in files {
+        let Some(name) = src.file_name().and_then(|n| n.to_str()) else { continue };
+        let dst = home.join(name);
+        if dst.exists() {
+            continue;
+        }
+        fs::copy(&src, &dst)?;
+        if is_runnable(&src) {
+            make_runnable(&dst)?;
+        }
+        put.push(name.to_string());
+    }
+    Ok(put)
 }
 
 #[derive(Debug, Default)]
 pub struct Prepared {
     pub skills: Vec<String>,
     pub recipes: Vec<String>,
-    pub settings: bool,
+    /// The files at the top of the home: its settings and its prompt script.
+    pub files: Vec<String>,
 }
 
 /// Copy the shipped manual into the home, never over a page the mind has rewritten.
@@ -308,9 +325,12 @@ mod tests {
         fs::rename(&from, skel.join("skills")).unwrap();
         fs::rename(&manual, skel.join("recipes")).unwrap();
         fs::write(skel.join("groow.json"), "{}").unwrap();
+        fs::write(skel.join(".groowrc"), "#!/bin/sh\necho hello\n").unwrap();
+        make_runnable(&skel.join(".groowrc")).unwrap();
 
         let made = prepare(&home, &skel).unwrap();
-        assert!(made.settings, "the home is given its own settings");
+        assert_eq!(made.files, vec![".groowrc".to_string(), "groow.json".to_string()]);
+        assert!(is_runnable(&home.join(".groowrc")), "the prompt script must be runnable");
         assert_eq!(made.recipes, vec!["shell.md".to_string()]);
         assert_eq!(made.skills.len(), 2);
         for d in [shelf(&home), bin_dir(&home), workspace(&home), recipes(&home)] {
@@ -326,12 +346,25 @@ mod tests {
         fs::write(skel.join("groow.json"), "{\"api_port\": 7373}").unwrap();
         let home = d.path().join("home");
 
-        assert!(seed_file(&home, &skel, "groow.json").unwrap(), "the home should be given a copy");
+        assert_eq!(seed_files(&home, &skel).unwrap(), vec!["groow.json".to_string()]);
         fs::write(home.join("groow.json"), "{\"api_port\": 9999}").unwrap();
-        assert!(!seed_file(&home, &skel, "groow.json").unwrap(), "and then left to keep it");
+        assert!(seed_files(&home, &skel).unwrap().is_empty(), "and then left to keep it");
 
         assert_eq!(fs::read_to_string(skel.join("groow.json")).unwrap(), "{\"api_port\": 7373}", "the skeleton is never written to");
         assert!(fs::read_to_string(home.join("groow.json")).unwrap().contains("9999"));
+    }
+
+    #[test]
+    fn a_new_file_in_the_skeleton_is_given_to_every_new_home() {
+        // Nothing here knows what the files at the top of a home are for, which is what makes
+        // adding one a matter of putting it in the skeleton and nothing else.
+        let d = tempfile::tempdir().unwrap();
+        let skel = d.path().join("skel");
+        fs::create_dir_all(&skel).unwrap();
+        fs::write(skel.join("MANIFESTO.md"), "what I am for").unwrap();
+        let home = d.path().join("home");
+        assert_eq!(seed_files(&home, &skel).unwrap(), vec!["MANIFESTO.md".to_string()]);
+        assert_eq!(fs::read_to_string(home.join("MANIFESTO.md")).unwrap(), "what I am for");
     }
 
     #[test]
@@ -359,6 +392,7 @@ mod tests {
         fs::create_dir_all(skel.join("recipes")).unwrap();
         fs::write(skel.join("recipes/home.md"), "the shipped page").unwrap();
         fs::write(skel.join("groow.json"), "{}").unwrap();
+        fs::write(skel.join(".groowrc"), "#!/bin/sh\necho hello\n").unwrap();
         let before = fingerprint(&skel);
 
         let home = d.path().join("home");
@@ -366,7 +400,14 @@ mod tests {
         fs::write(shelf(&home).join("web/SKILL.md"), "mine now").unwrap();
         fs::write(recipes(&home).join("home.md"), "mine now").unwrap();
         fs::write(home.join("groow.json"), "{\"api_port\": 9999}").unwrap();
+        fs::write(home.join(".groowrc"), "#!/bin/sh\necho what I want to see\n").unwrap();
         prepare(&home, &skel).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(home.join(".groowrc")).unwrap(),
+            "#!/bin/sh\necho what I want to see\n",
+            "a prompt script it has rewritten is its own"
+        );
 
         assert_eq!(before, fingerprint(&skel), "the skeleton changed");
     }

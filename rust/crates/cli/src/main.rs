@@ -35,7 +35,8 @@ async fn main() {
         .init();
 
     let home = cli.home.clone().unwrap_or_else(groow_core::paths::default_home);
-    let config = cli.config.clone().unwrap_or_else(|| groow_core::paths::config_in(&home));
+    let config =
+        cli.config.clone().unwrap_or_else(|| groow_core::paths::config_in(&home, cli.skel.as_deref()));
 
     let code = match run(cli, home, config).await {
         Ok(()) => 0,
@@ -52,10 +53,11 @@ async fn run(cli: Cli, home: std::path::PathBuf, config: std::path::PathBuf) -> 
     // These are about the body itself, or run inside it, so they never travel.
     match &cli.cmd {
         Command::Start { here, rebuild, as_user } => {
+            let skel = cli.skel.clone();
             // Inside the body there is no sandbox to reach for: this is it. Without this the
             // body starts, looks for a sandbox, finds none and exits, over and over.
             return if *here || sandbox::inside_the_body() {
-                start::start(home.clone(), config, as_user.clone()).await
+                start::start(home.clone(), config, skel, as_user.clone()).await
             } else {
                 wake_the_sandbox(*rebuild).await
             }
@@ -78,7 +80,7 @@ async fn run(cli: Cli, home: std::path::PathBuf, config: std::path::PathBuf) -> 
     // command runs inside it; you should not have to know which, or learn a second command to
     // find out.
     if !args::is_the_mind() && sandbox::running() {
-        let inside = std::env::args().skip(1).filter(|a| a != "--state" && a != "--config").collect::<Vec<_>>();
+        let inside = std::env::args().skip(1).collect::<Vec<_>>();
         let status = sandbox::run_inside(&without_paths(inside), matches!(cli.cmd, Command::Ui))?;
         std::process::exit(status.code().unwrap_or(1));
     }
@@ -97,11 +99,11 @@ fn without_paths(args: Vec<String>) -> Vec<String> {
             skip = false;
             continue;
         }
-        if a == "--home" || a == "--config" {
+        if a == "--home" || a == "--config" || a == "--skel" {
             skip = true;
             continue;
         }
-        if a.starts_with("--home=") || a.starts_with("--config=") {
+        if a.starts_with("--home=") || a.starts_with("--config=") || a.starts_with("--skel=") {
             continue;
         }
         out.push(a);

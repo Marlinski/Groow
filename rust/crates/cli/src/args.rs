@@ -15,9 +15,14 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub home: Option<std::path::PathBuf>,
 
-    /// The settings. Defaults to groow.json in its home, or the project's copy until it has one.
+    /// The settings. Defaults to groow.json in its home, or the skeleton's until it has one.
     #[arg(long, global = true)]
     pub config: Option<std::path::PathBuf>,
+
+    /// What a new home is given: skills, manual, prompt script, settings. Only read, never
+    /// written. Defaults to ./skel in a checkout, then /usr/share/groow/skel.
+    #[arg(long, global = true)]
+    pub skel: Option<std::path::PathBuf>,
 
     #[command(subcommand)]
     pub cmd: Command,

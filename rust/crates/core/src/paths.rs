@@ -92,24 +92,75 @@ pub fn project() -> Option<PathBuf> {
     }
 }
 
+/// Where the skeleton is when Groow has been installed rather than checked out.
+///
+/// Not `/etc/skel`: that is the system's own, copied into the home of every account anyone
+/// makes on this machine, and Groow's settings have no business turning up there.
+pub const SKEL_INSTALLED: &str = "/usr/share/groow/skel";
+
 /// What a new home is given: the shipped skills, manual, prompt script and settings.
 ///
 /// Named after `/etc/skel`, which is the same idea: a directory whose contents are copied into
 /// a home the first time there is one, and never touched again. Keeping it in one place is
-/// what keeps the source of the creature separate from the creature. Everything under `skel`
-/// is in the repository and never written to; everything under `home` belongs to the mind and
-/// is never in the repository.
-pub fn skel() -> PathBuf {
-    if let Some(p) = std::env::var_os("GROOW_SKEL") {
-        return PathBuf::from(p);
+/// what keeps the source of the creature separate from the creature. Everything under the
+/// skeleton is read and never written; everything under `home` belongs to the mind and is
+/// never in the repository.
+///
+/// It is found on disk and never built into the binary. A creature is born from files you can
+/// read and change without rebuilding anything, and if they are not there it says so rather
+/// than quietly birthing something out of its own compiled-in idea of a home.
+pub fn skel(told: Option<&Path>) -> Result<PathBuf, NoSkel> {
+    let mut tried = Vec::new();
+    // Said explicitly, on the command line or in the environment. An explicit answer that is
+    // wrong is an error, not a reason to go looking somewhere else.
+    let said = told
+        .map(|p| (p.to_path_buf(), "--skel"))
+        .or_else(|| std::env::var_os("GROOW_SKEL").map(|p| (PathBuf::from(p), "GROOW_SKEL")));
+    if let Some((p, how)) = said {
+        return if p.is_dir() { Ok(p) } else { Err(NoSkel { tried: vec![p], said: Some(how) }) };
     }
-    if let Some(p) = project().map(|p| p.join("skel")) {
+    for p in [project().map(|p| p.join("skel")), Some(PathBuf::from(SKEL_INSTALLED))]
+        .into_iter()
+        .flatten()
+    {
         if p.is_dir() {
-            return p;
+            return Ok(p);
+        }
+        tried.push(p);
+    }
+    Err(NoSkel { tried, said: None })
+}
+
+/// There is nothing to birth a creature from.
+#[derive(Debug)]
+pub struct NoSkel {
+    /// Where it looked, in order.
+    pub tried: Vec<PathBuf>,
+    /// Which explicit answer sent it there, if one did.
+    pub said: Option<&'static str>,
+}
+
+impl std::fmt::Display for NoSkel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let where_ = self.tried.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
+        match self.said {
+            Some(how) => write!(
+                f,
+                "{how} says the skeleton is at {}, and there is no directory there.",
+                where_.join("")
+            ),
+            None => write!(
+                f,
+                "there is no skeleton to give a new home, so there is nothing to start from.\n\
+                 Looked in: {}.\n\
+                 Point at one with `--skel <dir>` or GROOW_SKEL; in a checkout it is `./skel`.",
+                where_.join(", ")
+            ),
         }
     }
-    PathBuf::from("/usr/share/groow/skel")
 }
+
+impl std::error::Error for NoSkel {}
 
 /// The mind's home.
 ///
@@ -144,11 +195,11 @@ pub fn default_state() -> PathBuf {
 /// the project's copy while the sandbox reads the home's would mean the same creature running
 /// under two different settings depending on how it was started.
 pub fn default_config() -> PathBuf {
-    config_in(&default_home())
+    config_in(&default_home(), None)
 }
 
 /// The settings for a particular home.
-pub fn config_in(home: &Path) -> PathBuf {
+pub fn config_in(home: &Path, skel_dir: Option<&Path>) -> PathBuf {
     if let Some(p) = std::env::var_os("GROOW_CONFIG") {
         return PathBuf::from(p);
     }
@@ -156,11 +207,12 @@ pub fn config_in(home: &Path) -> PathBuf {
     if mine.is_file() {
         return mine;
     }
-    let shipped = skel().join("groow.json");
-    if shipped.is_file() {
-        return shipped;
+    // Before the home has its own, the skeleton's is the default. Not having a skeleton is not
+    // this function's problem to report: whoever is starting says that far better.
+    match skel(skel_dir) {
+        Ok(s) if s.join("groow.json").is_file() => s.join("groow.json"),
+        _ => mine,
     }
-    mine
 }
 
 /// Write a file so that a concurrent reader sees either the old content or the new, never a
@@ -313,6 +365,56 @@ mod tests {
 
         assert!(shipped.ends_with("skel/groow.json"), "got {}", shipped.display());
         assert!(mine.ends_with("home/groow.json"), "got {}", mine.display());
+    }
+
+    #[test]
+    fn a_skeleton_that_was_named_and_is_not_there_is_an_error() {
+        // Saying where it is and being wrong is a mistake to report, not a reason to go and
+        // birth the creature out of somebody else's skeleton.
+        let d = tempfile::tempdir().unwrap();
+        let said = d.path().join("nowhere");
+        let e = skel(Some(&said)).unwrap_err();
+        assert_eq!(e.said, Some("--skel"));
+        assert!(e.to_string().contains("nowhere"), "{e}");
+    }
+
+    #[test]
+    fn a_skeleton_that_is_there_is_used_as_given() {
+        let d = tempfile::tempdir().unwrap();
+        let s = d.path().join("skel");
+        std::fs::create_dir_all(&s).unwrap();
+        assert_eq!(skel(Some(&s)).unwrap(), s);
+    }
+
+    #[test]
+    fn the_checkouts_skeleton_is_found_without_being_told() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        std::fs::create_dir_all(d.path().join("skel")).unwrap();
+        let was = std::env::current_dir().unwrap();
+        std::env::set_current_dir(d.path()).unwrap();
+        std::env::remove_var("GROOW_SKEL");
+        let found = skel(None);
+        std::env::set_current_dir(was).unwrap();
+        assert!(found.unwrap().ends_with("skel"));
+    }
+
+    #[test]
+    fn with_no_skeleton_anywhere_it_says_where_it_looked() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
+        let was = std::env::current_dir().unwrap();
+        std::env::set_current_dir(d.path()).unwrap();
+        std::env::remove_var("GROOW_SKEL");
+        let e = skel(None).map(|p| p.display().to_string());
+        std::env::set_current_dir(was).unwrap();
+
+        // /usr/share/groow/skel exists on an installed machine, and then there is no error to
+        // check; this is about the message when there is one.
+        if let Err(e) = e {
+            assert!(e.to_string().contains(SKEL_INSTALLED), "{e}");
+            assert!(e.to_string().contains("--skel"), "{e}");
+        }
     }
 
     #[test]

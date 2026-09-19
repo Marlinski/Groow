@@ -162,6 +162,16 @@ one of those files belongs to the mind and is never overwritten, however far it 
 `skel` is in git and `home` is not — one is what a creature is given, the other is what it has
 become.
 
+The skeleton is always a directory on disk, never compiled in, so what a new creature is given
+can be changed without rebuilding anything. It is `./skel` in a checkout and
+`/usr/share/groow/skel` once installed; `--skel <dir>` or `GROOW_SKEL` says otherwise, and
+starting with no skeleton to be found is an error rather than a creature born without its
+skills. So a second one, on this machine, out of a skeleton of your own:
+
+```
+groow --skel ./skel --home ~/creatures/second start --here
+```
+
 Everything Groow is lives in one directory, its home: `./home` in a checkout, `/home/groow`
 inside the body. The state is a folder in there, alongside its skills, its commands, its manual
 and its workspace. `groow --home <dir>` points at a different one.

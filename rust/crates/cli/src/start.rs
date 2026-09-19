@@ -14,8 +14,16 @@ use groow_core::spawn::Spawner;
 use groow_core::store::birth::Birth;
 
 /// Bring the core up and stay until it is asked to stop.
-pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> anyhow::Result<()> {
+pub async fn start(
+    home: PathBuf,
+    config: PathBuf,
+    skel: Option<PathBuf>,
+    as_user: Option<String>,
+) -> anyhow::Result<()> {
     let state = home.join("state");
+    // Before anything else, because without it there is nothing to give a home that does not
+    // exist yet, and a creature born without its skills or its manual is worse than none.
+    let skel = groow_core::paths::skel(skel.as_deref())?;
     let mut cfg = Config::load(&config)?;
     cfg.state_dir = state.to_string_lossy().to_string();
     cfg.home_dir = home.to_string_lossy().to_string();
@@ -51,15 +59,10 @@ pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> a
         socket: paths.socket(),
         state: state.clone(),
     };
-    // Make the mind's home and put the shipped things in it, without touching any it has
+    // Make the mind's home and copy the skeleton into it, without touching anything it has
     // changed. Everything in there is its own; the state directory below is the core's.
     let home = home_for(&cfg);
-    match groow_harness::greeting::seed(&home) {
-        Ok(true) => eprintln!("  prompt   wrote {}, which is its own to change", groow_harness::greeting::RC),
-        Ok(false) => {}
-        Err(e) => tracing::warn!("could not write the prompt script: {e}"),
-    }
-    match groow_core::home::prepare(&home, &groow_core::paths::skel()) {
+    match groow_core::home::prepare(&home, &skel) {
         Ok(made) => {
             if !made.skills.is_empty() {
                 eprintln!("  skills   installed {}", made.skills.join(", "));
@@ -67,8 +70,8 @@ pub async fn start(home: PathBuf, config: PathBuf, as_user: Option<String>) -> a
             if !made.recipes.is_empty() {
                 eprintln!("  manual   installed {} pages", made.recipes.len());
             }
-            if made.settings {
-                eprintln!("  settings copied into its home; the one in skel is only the default");
+            if !made.files.is_empty() {
+                eprintln!("  given    its own {}, from {}", made.files.join(" and "), skel.display());
             }
         }
         Err(e) => tracing::warn!("could not prepare the home: {e}"),

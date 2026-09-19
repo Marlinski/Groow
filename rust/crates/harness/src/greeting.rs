@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Where the script lives. Named after the shell's own convention, because that is what it is.
+///
+/// The core puts one in a new home, copied from the skeleton like everything else in there.
+/// Nothing is compiled in here: what a new creature is given is a file on disk that can be
+/// changed without rebuilding anything.
 pub const RC: &str = ".groowrc";
 
 /// How long it may take before the turn goes on without it.
@@ -24,12 +28,6 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How much of its output is used. A runaway listing must not crowd out the conversation.
 pub const MAX_CHARS: usize = 4000;
-
-/// What is written the first time, which the mind may then rewrite.
-///
-/// It is `skel/.groowrc` in the repository, baked in here so that there is one copy of it and
-/// so that a binary on its own still knows what to give a new home.
-pub const DEFAULT: &str = include_str!("../../../../skel/.groowrc");
 
 /// Run the script, if there is one, and return what it printed.
 ///
@@ -86,23 +84,6 @@ pub async fn greeting(home: &Path) -> Option<String> {
     }
     let _ = started;
     Some(clip(&text, MAX_CHARS))
-}
-
-/// Put the default script in place, once. Never overwritten: once it has been edited, it is
-/// the mind's own.
-pub fn seed(home: &Path) -> std::io::Result<bool> {
-    let rc = home.join(RC);
-    if rc.exists() {
-        return Ok(false);
-    }
-    std::fs::create_dir_all(home)?;
-    std::fs::write(&rc, DEFAULT)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o755));
-    }
-    Ok(true)
 }
 
 /// The mind's home, which is where the script lives.
@@ -202,16 +183,11 @@ mod tests {
         assert!(greeting(d.path()).await.unwrap().contains("a note to myself"));
     }
 
-    #[test]
-    fn the_default_is_written_once_and_then_belongs_to_the_mind() {
-        let d = tempfile::tempdir().unwrap();
-        assert!(seed(d.path()).unwrap());
-        let rc = d.path().join(RC);
-        assert!(std::fs::read_to_string(&rc).unwrap().contains("skills"));
-
-        std::fs::write(&rc, "#!/bin/sh\necho mine\n").unwrap();
-        assert!(!seed(d.path()).unwrap(), "a second start should not overwrite it");
-        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "#!/bin/sh\necho mine\n");
+    /// Put the shipped script in the home, which is what the core does on a first start.
+    /// Read from the skeleton rather than compiled in, so these test the file that ships.
+    fn shipped(home: &Path) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../skel").join(RC);
+        std::fs::copy(&src, home.join(RC)).unwrap_or_else(|e| panic!("{}: {e}", src.display()));
     }
 
     #[tokio::test]
@@ -224,7 +200,7 @@ mod tests {
             "---\nname: tides\ndescription: The next high tide at a port.\n---\n\nRun `tides <port>`.\n",
         )
         .unwrap();
-        seed(d.path()).unwrap();
+        shipped(d.path());
         let g = greeting(d.path()).await.unwrap();
         assert!(g.contains("- tides: The next high tide at a port."), "{g}");
     }
@@ -236,7 +212,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("skills/notes")).unwrap();
         std::fs::write(d.path().join("skills/notes/thoughts.txt"), "whatever I like").unwrap();
-        seed(d.path()).unwrap();
+        shipped(d.path());
         let g = greeting(d.path()).await.unwrap();
         assert!(!g.contains("notes"), "it should not be announced as a skill: {g}");
         assert!(g.contains("Today is"), "and the rest of the prompt still works");
@@ -245,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_script_runs_and_says_something_useful() {
         let d = tempfile::tempdir().unwrap();
-        seed(d.path()).unwrap();
+        shipped(d.path());
         let g = greeting(d.path()).await.unwrap();
         assert!(g.contains("Today is"), "{g}");
         assert!(g.contains("in your shell"), "it should say how a skill is run: {g}");
