@@ -486,7 +486,6 @@ impl Hub {
             "state": self.stem.state().as_str(),
             "napping": self.stem.pass(),
             "brain": self.stem.state() != crate::brainstem::State::Waking,
-            "mood": self.mood(),
             "age": self.birth.age_text(now),
             "born": self.birth.born,
             "queue": self.inbox.len().unwrap_or(0),
@@ -519,11 +518,6 @@ impl Hub {
             self.fanout(Event::new(EventName::Status, self.status()));
         }
         reflex
-    }
-
-    /// What it is doing, asked of the one thing that knows.
-    fn mood(&self) -> &'static str {
-        self.stem.state().as_str()
     }
 
     /// Read the conversation back: the last `n`, or the `n` before a time already held.
@@ -1457,7 +1451,7 @@ mod tests {
             "a turn was started while the weights were still loading");
         let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
         assert_eq!(s["brain"], false);
-        assert_eq!(s["mood"], "waking");
+        assert_eq!(s["state"], "waking");
 
         h.handle(Cmd::BrainState { up: true });
         clock.advance(1.0);
@@ -1477,7 +1471,7 @@ mod tests {
             "a turn was started while the brain was busy changing itself");
         let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
         assert_eq!(s["napping"], "night");
-        assert_eq!(s["mood"], "sleeping", "a night is not a nap");
+        assert_eq!(s["state"], "sleeping", "a night is not a nap");
         assert_eq!(s["queue"], 1, "and what arrived meanwhile is still waiting");
 
         // When it wakes, the message is still there.

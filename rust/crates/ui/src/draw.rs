@@ -324,7 +324,7 @@ fn side(f: &mut Frame, area: Rect, ui: &Ui) {
     let now = groow_proto::event::now();
     let mut i = 0;
     if show_creature {
-        f.render_widget(Paragraph::new(creature::render(ui.age(now), ui.mood, ui.tick, true)), rows[i]);
+        f.render_widget(Paragraph::new(creature::render(ui.age(now), ui.doing, ui.tick, true)), rows[i]);
         i += 1;
     }
     if card_h >= 4 {
@@ -486,7 +486,7 @@ fn input(f: &mut Frame, area: Rect, ui: &Ui, typing: &crate::line::Wrapped) {
 fn status(f: &mut Frame, area: Rect, ui: &Ui) {
     let n = |k: &str| ui.status.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
     let mut spans = vec![Span::styled(
-        format!(" {} ", ui.mood.caption()),
+        format!(" {} ", ui.doing.caption()),
         Style::default().fg(MINT).add_modifier(Modifier::BOLD),
     )];
     if let Some(what) = ui.status.get("napping").and_then(|v| v.as_str()) {
@@ -566,7 +566,7 @@ mod tests {
         u.push(Who::System, "", "  \u{21b3} notes.md  rivers.md");
         u.push(Who::Groow, "groow", "Two files: notes and something about rivers.");
         u.on_event("thought", &json!({"id": "ab12", "status": "running", "goal": "read about the Loire"}));
-        u.mood = crate::creature::Mood::Listening;
+        u.doing = crate::creature::State::Listening;
         println!("\n{}\n", render(96, 30, &u));
     }
 

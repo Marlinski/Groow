@@ -47,7 +47,6 @@ impl Card for Ticker {
 
     fn lines(&self, ui: &Ui, w: usize) -> Vec<Line<'static>> {
         let mut out = Vec::new();
-        let s = |k: &str| ui.status.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let n = |k: &str| ui.status.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
 
         let doing = if let Some(nap) = ui.status.get("napping").and_then(|v| v.as_str()) {
@@ -57,7 +56,7 @@ impl Card for Ticker {
         } else {
             "nothing just now".into()
         };
-        out.push(row("doing", &doing, if s("mood") == "napping" { VIOLET } else { FG }));
+        out.push(row("doing", &doing, if ui.doing.asleep() { VIOLET } else { FG }));
 
         let queue = n("queue");
         out.push(row(

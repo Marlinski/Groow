@@ -2,7 +2,7 @@
 //!
 //! Twelve rows of twelve pixels, each pixel drawn as two block characters. It ages through
 //! four stages, blinks, breathes, and wears a small glyph beside its head that says what it is
-//! doing. The tick counter is monotonic and is never reset by a change of mood, so a mood
+//! doing. The tick counter is monotonic and is never reset by a change of doing, so a doing
 //! change mid-cycle does not restart the blink or the breath.
 
 use ratatui::style::Color;
@@ -160,13 +160,17 @@ fn grid(art: &str) -> Vec<Vec<char>> {
     rows
 }
 
-// ---------------------------------------------------------------- mood
+// ---------------------------------------------------------------- what it is doing
 /// What the creature is doing, which is the brainstem's word for it and not a second one.
 ///
-/// The window used to keep its own list and set it from events as they arrived: its own little
-/// state machine, running beside the real one and disagreeing with it whenever an event was
-/// missed. There is one vocabulary now, and the creature simply wears it.
-pub use groow_core::brainstem::State as Mood;
+/// It was called a doing, which it is not: whether you are awake or asleep is not a matter of
+/// doing, and this creature has a real one — pain, pleasure and the tone they add up to — that
+/// wanted the word back.
+///
+/// The window used to keep its own list of these and set them from events as they arrived: its
+/// own little state machine, running beside the real one and disagreeing with it whenever an
+/// event was missed. There is one vocabulary now, and the creature simply wears it.
+pub use groow_core::brainstem::State;
 
 /// How the creature looks in each of them.
 pub trait Looks {
@@ -176,60 +180,60 @@ pub trait Looks {
     fn bobs(&self) -> bool;
 }
 
-impl Looks for Mood {
+impl Looks for State {
     fn caption(&self) -> &'static str {
         match self {
-            Mood::Waking => "waking up (loading its weights)",
-            Mood::Idle => "waiting",
-            Mood::Listening => "listening",
-            Mood::Thinking => "thinking",
-            Mood::Working => "running a command",
-            Mood::Napping => "napping (weights updating)",
-            Mood::Sleeping => "sleeping (night: replay, merge)",
-            Mood::Stopping => "stopping",
+            State::Waking => "waking up (loading its weights)",
+            State::Idle => "waiting",
+            State::Listening => "listening",
+            State::Thinking => "thinking",
+            State::Working => "running a command",
+            State::Napping => "napping (weights updating)",
+            State::Sleeping => "sleeping (night: replay, merge)",
+            State::Stopping => "stopping",
         }
     }
 
     /// The glyph frames drawn beside the head, and their colour.
     fn overlay(&self) -> Option<(&'static [&'static str], Color)> {
         Some(match self {
-            Mood::Thinking => (&[" .", " . .", " . . ."], BODY_LIGHT),
-            Mood::Working => (&[" \u{2699}", "  \u{2699}"], GEAR),
-            Mood::Sleeping => (&[" z", " z z", " z z z"], ZED),
-            Mood::Napping => (&[" z", "  z"], ZED),
-            Mood::Waking => (&[" \u{271a}", "  \u{271a}"], WRENCH),
-            Mood::Stopping => (&[" \u{00b7}", "  \u{00b7}"], ZED),
-            Mood::Idle | Mood::Listening => return None,
+            State::Thinking => (&[" .", " . .", " . . ."], BODY_LIGHT),
+            State::Working => (&[" \u{2699}", "  \u{2699}"], GEAR),
+            State::Sleeping => (&[" z", " z z", " z z z"], ZED),
+            State::Napping => (&[" z", "  z"], ZED),
+            State::Waking => (&[" \u{271a}", "  \u{271a}"], WRENCH),
+            State::Stopping => (&[" \u{00b7}", "  \u{00b7}"], ZED),
+            State::Idle | State::Listening => return None,
         })
     }
 
     /// Eyes shut for the whole of a sleep, and for one frame in six otherwise.
     fn eyes_closed(&self, tick: u64) -> bool {
-        matches!(self, Mood::Sleeping | Mood::Napping)
-            || (tick.is_multiple_of(6) && *self != Mood::Waking)
+        matches!(self, State::Sleeping | State::Napping)
+            || (tick.is_multiple_of(6) && *self != State::Waking)
     }
 
     /// A sleeping creature does not breathe visibly.
     fn bobs(&self) -> bool {
-        !matches!(self, Mood::Sleeping | Mood::Napping)
+        !matches!(self, State::Sleeping | State::Napping)
     }
 }
 
 /// Sparkle positions for a learning pass, drawn on alternating frames.
 const SPARKS: [(usize, usize); 4] = [(0, 1), (1, 10), (3, 0), (4, 11)];
 
-fn apply_mood(g: &mut [Vec<char>], mood: Mood, tick: u64) {
+fn apply_state(g: &mut [Vec<char>], doing: State, tick: u64) {
     let eyes: Vec<(usize, usize)> = cells(g, 'e');
     let mouth: Vec<(usize, usize)> = cells(g, 'm');
 
-    if mood.eyes_closed(tick) {
+    if doing.eyes_closed(tick) {
         for (y, x) in &eyes {
             g[*y][*x] = 'G';
         }
     }
     let _ = &mouth;
-    match mood {
-        Mood::Thinking => {
+    match doing {
+        State::Thinking => {
             if tick % 2 == 1 {
                 for (y, x) in &eyes {
                     if *x > 0 {
@@ -240,14 +244,14 @@ fn apply_mood(g: &mut [Vec<char>], mood: Mood, tick: u64) {
             }
         }
         // A pass is the weights changing, which is the one thing worth sparkling about.
-        Mood::Napping | Mood::Sleeping => {
+        State::Napping | State::Sleeping => {
             for (i, (y, x)) in SPARKS.iter().enumerate() {
                 if (i as u64 + tick).is_multiple_of(2) && *y < H && *x < W {
                     g[*y][*x] = '*';
                 }
             }
         }
-        Mood::Waking => {
+        State::Waking => {
             for (y, x) in &eyes {
                 g[*y][*x] = 'r';
             }
@@ -272,12 +276,12 @@ fn cells(g: &[Vec<char>], code: char) -> Vec<(usize, usize)> {
 ///
 /// The height is constant whatever the breath is doing: a blank line goes above the body on
 /// the up-beat and below it on the down-beat, so nothing else on the panel shifts.
-pub fn render(age_seconds: f64, mood: Mood, tick: u64, caption: bool) -> Vec<Line<'static>> {
+pub fn render(age_seconds: f64, doing: State, tick: u64, caption: bool) -> Vec<Line<'static>> {
     let (stage, art) = stage_for(age_seconds);
     let mut g = grid(art);
-    apply_mood(&mut g, mood, tick);
+    apply_state(&mut g, doing, tick);
 
-    let bob = mood.bobs() && matches!(tick % 4, 1 | 2);
+    let bob = doing.bobs() && matches!(tick % 4, 1 | 2);
     let mut out: Vec<Line<'static>> = Vec::with_capacity(H + 2);
     if bob {
         out.push(Line::from(""));
@@ -291,7 +295,7 @@ pub fn render(age_seconds: f64, mood: Mood, tick: u64, caption: bool) -> Vec<Lin
             }
         }
         if y == 2 {
-            if let Some((frames, col)) = mood.overlay() {
+            if let Some((frames, col)) = doing.overlay() {
                 let f = frames[(tick as usize) % frames.len()];
                 spans.push(Span::styled(f.to_string(), ratatui::style::Style::default().fg(col)));
             }
@@ -303,7 +307,7 @@ pub fn render(age_seconds: f64, mood: Mood, tick: u64, caption: bool) -> Vec<Lin
     }
     if caption {
         out.push(Line::from(Span::styled(
-            format!("  {} \u{b7} {}", mood.caption(), stage),
+            format!("  {} \u{b7} {}", doing.caption(), stage),
             ratatui::style::Style::default().fg(CAPTION),
         )));
     }
@@ -349,24 +353,24 @@ mod tests {
 
     #[test]
     fn the_height_is_constant_through_the_breath() {
-        let heights: Vec<usize> = (0..8).map(|t| render(0.0, Mood::Idle, t, true).len()).collect();
+        let heights: Vec<usize> = (0..8).map(|t| render(0.0, State::Idle, t, true).len()).collect();
         assert!(heights.iter().all(|h| *h == heights[0]), "breathing changed the height: {heights:?}");
     }
 
     #[test]
     fn it_blinks_every_sixth_frame_but_never_while_waking() {
-        assert!(Mood::Idle.eyes_closed(0));
-        assert!(Mood::Idle.eyes_closed(6));
-        assert!(!Mood::Idle.eyes_closed(1));
-        assert!(!Mood::Waking.eyes_closed(0), "a creature loading its weights keeps them open");
-        assert!(Mood::Sleeping.eyes_closed(1), "a sleeping creature keeps them shut");
+        assert!(State::Idle.eyes_closed(0));
+        assert!(State::Idle.eyes_closed(6));
+        assert!(!State::Idle.eyes_closed(1));
+        assert!(!State::Waking.eyes_closed(0), "a creature loading its weights keeps them open");
+        assert!(State::Sleeping.eyes_closed(1), "a sleeping creature keeps them shut");
     }
 
     #[test]
     fn a_sleeping_creature_does_not_bob() {
-        assert!(!Mood::Sleeping.bobs());
-        assert!(!Mood::Napping.bobs());
-        assert!(Mood::Idle.bobs());
+        assert!(!State::Sleeping.bobs());
+        assert!(!State::Napping.bobs());
+        assert!(State::Idle.bobs());
     }
 
     #[test]
@@ -374,20 +378,20 @@ mod tests {
         // The window shows the brainstem's states and no others. A state the core can reach
         // and the window cannot draw would be a creature with no face for what it is doing.
         for m in [
-            Mood::Waking, Mood::Idle, Mood::Listening, Mood::Thinking,
-            Mood::Working, Mood::Napping, Mood::Sleeping, Mood::Stopping,
+            State::Waking, State::Idle, State::Listening, State::Thinking,
+            State::Working, State::Napping, State::Sleeping, State::Stopping,
         ] {
-            assert_eq!(Mood::parse(m.as_str()), Some(m));
+            assert_eq!(State::parse(m.as_str()), Some(m));
             assert!(!m.caption().is_empty(), "{} has no caption", m.as_str());
             let _ = render(0.0, m, 1, true);
         }
-        assert_eq!(Mood::parse("euphoric"), None);
+        assert_eq!(State::parse("euphoric"), None);
     }
 
     #[test]
     fn thinking_moves_the_eyes_and_puts_them_back() {
-        let still = render(0.0, Mood::Thinking, 2, false);
-        let glancing = render(0.0, Mood::Thinking, 1, false);
+        let still = render(0.0, State::Thinking, 2, false);
+        let glancing = render(0.0, State::Thinking, 1, false);
         assert_ne!(format!("{still:?}"), format!("{glancing:?}"), "the eyes should move");
     }
 
@@ -396,7 +400,7 @@ mod tests {
         // No shipped sprite has one, but the mutation must be safe if a future sprite does.
         let mut g = vec![vec!['.'; W]; H];
         g[5][0] = 'e';
-        apply_mood(&mut g, Mood::Thinking, 1);
+        apply_state(&mut g, State::Thinking, 1);
         assert_eq!(g[5][0], 'e', "an eye at the left edge stays put rather than wrapping");
     }
 }

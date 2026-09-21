@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::creature::Mood;
+use crate::creature::State;
 use crate::line::Editor;
 
 /// One thing shown in the conversation.
@@ -93,7 +93,8 @@ pub struct Ui {
     pub thoughts: BTreeMap<String, ThoughtRow>,
     pub status: Value,
     pub birth: Value,
-    pub mood: Mood,
+    /// What it is doing, as the core last said. Not a mood: `feeling` is the mood.
+    pub doing: State,
     pub tick: u64,
     pub input: Editor,
     pub connected: bool,
@@ -195,7 +196,7 @@ impl Default for Ui {
             thoughts: BTreeMap::new(),
             status: Value::Null,
             birth: Value::Null,
-            mood: Mood::Waking,
+            doing: State::Waking,
             tick: 0,
             input: Editor::default(),
             connected: false,
@@ -498,8 +499,8 @@ impl Ui {
     /// which meant the first status of a session, which arrives as a reply rather than an
     /// event, left the creature looking as though it were still loading its weights.
     pub fn status(&mut self, v: Value) {
-        if let Some(m) = v.get("state").and_then(|s| s.as_str()).and_then(Mood::parse) {
-            self.mood = m;
+        if let Some(m) = v.get("state").and_then(|s| s.as_str()).and_then(State::parse) {
+            self.doing = m;
         }
         self.status = v;
     }
@@ -895,13 +896,13 @@ mod tests {
         // When only the event path set it, a window opened onto a creature that had been awake
         // for hours showed it as still loading its weights.
         let mut u = ui();
-        assert_eq!(u.mood, Mood::Waking, "before it has heard anything, it says so");
+        assert_eq!(u.doing, State::Waking, "before it has heard anything, it says so");
 
         u.status(json!({"state": "listening", "queue": 0}));
-        assert_eq!(u.mood, Mood::Listening);
+        assert_eq!(u.doing, State::Listening);
 
         u.on_event("status", &json!({"state": "working", "queue": 1}));
-        assert_eq!(u.mood, Mood::Working);
+        assert_eq!(u.doing, State::Working);
         assert_eq!(u.status["queue"], 1, "and the rest of it arrives with it");
     }
 

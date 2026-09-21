@@ -255,21 +255,23 @@ pub fn box_of(v: &Value) -> String {
 /// The same rows every time, so the box does not change shape while you watch it.
 fn rows(v: &Value) -> Vec<(&'static str, String)> {
     vec![
-        ("mood", mood(v)),
+        ("state", str_of(v, "state").unwrap_or_else(|| "?".into())),
         ("doing", doing(v)),
+        ("feeling", feeling(v)),
         ("brain", brain(v)),
         ("turns", turns(v)),
         ("thoughts", thoughts(v)),
     ]
 }
 
-fn mood(v: &Value) -> String {
-    let m = str_of(v, "mood").unwrap_or_else(|| "?".into());
+/// The mood, which is the one thing here that is actually a mood: what the last while felt
+/// like. Whether it is awake or asleep is its state, and lives a row above.
+fn feeling(v: &Value) -> String {
     let f = v.get("feeling");
     let tone = f.and_then(|f| f.get("tone")).and_then(|t| t.as_str()).unwrap_or("");
     let pain = f.and_then(|f| f.get("pain")).and_then(|p| p.as_f64()).unwrap_or(0.0);
     let joy = f.and_then(|f| f.get("pleasure")).and_then(|p| p.as_f64()).unwrap_or(0.0);
-    let mut s = if tone.is_empty() { m } else { format!("{m}, {tone}") };
+    let mut s = if tone.is_empty() { "unknown".to_string() } else { tone.to_string() };
     // Only when there is something to say: an even day should not be a row of zeroes.
     if pain > 0.0 || joy > 0.0 {
         s.push_str(&format!(" (pleasure {joy:.2}, pain {pain:.2})"));
@@ -339,7 +341,7 @@ mod tests {
             "brain": true, "busy": false, "age": "22h 16m", "napping": null,
             "idle_streak": 1, "queue": 0, "thoughts": 0,
             "feeling": {"pain": 0, "tone": "even", "pleasure": 0},
-            "turn": null, "mood": "idle",
+            "turn": null, "state": "idle",
             "born": 1789731096.238, "turns": 38
         })
     }
@@ -441,7 +443,8 @@ mod tests {
     fn the_box_says_what_the_json_said() {
         let s = box_of(&idle());
         assert!(s.contains("22h 16m old"), "{s}");
-        assert!(s.contains("idle, even"), "{s}");
+        assert!(s.contains("idle"), "{s}");
+        assert!(s.contains("even"), "and what it feels, separately: {s}");
         assert!(s.contains("nothing just now"), "{s}");
         assert!(s.contains("loaded and answering"), "{s}");
         assert!(s.contains("38 so far"), "{s}");
@@ -450,7 +453,7 @@ mod tests {
     #[test]
     fn every_line_of_the_box_is_the_same_width() {
         // Including the ones with box-drawing characters, which are not one byte each.
-        for v in [idle(), json!({}), json!({"mood": "thinking", "turn": "01789810553254-0000",
+        for v in [idle(), json!({}), json!({"state": "thinking", "turn": "01789810553254-0000",
                                             "busy": true, "queue": 3, "age": "3d 4h"})] {
             let s = box_of(&v);
             let widths: Vec<usize> = s.lines().map(|l| l.chars().count()).collect();
@@ -467,9 +470,9 @@ mod tests {
 
     #[test]
     fn what_it_is_doing_comes_before_what_is_waiting_for_it() {
-        let s = box_of(&json!({"turn": "01789-0000", "queue": 2, "mood": "thinking"}));
+        let s = box_of(&json!({"turn": "01789-0000", "queue": 2, "state": "thinking"}));
         assert!(s.contains("a turn, 01789-0000 · 2 messages waiting"), "{s}");
-        let s = box_of(&json!({"napping": "since 03:00", "mood": "asleep"}));
+        let s = box_of(&json!({"napping": "since 03:00", "state": "sleeping"}));
         assert!(s.contains("napping (since 03:00)"), "{s}");
     }
 
@@ -477,7 +480,7 @@ mod tests {
     fn a_feeling_is_only_spelled_out_when_there_is_one() {
         let s = box_of(&idle());
         assert!(!s.contains("pain 0"), "an even day is not a row of zeroes: {s}");
-        let hurt = json!({"mood": "sore", "feeling": {"tone": "low", "pain": 0.4, "pleasure": 0.1}});
+        let hurt = json!({"state": "idle", "feeling": {"tone": "low", "pain": 0.4, "pleasure": 0.1}});
         assert!(box_of(&hurt).contains("(pleasure 0.10, pain 0.40)"));
     }
 }
