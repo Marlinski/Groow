@@ -117,7 +117,13 @@ fn conversation(v: &Value) -> String {
         }
         last_turn = turn;
 
-        let who = str_of(&m, "role").unwrap_or_default();
+        // Everything that woke it is journalled as a user message, whoever sent it. Saying
+        // "user" for an alarm or an inner thought reporting back reads as though a person had
+        // typed it, which is the one thing it was not.
+        let who = match (str_of(&m, "role").unwrap_or_default().as_str(), str_of(&m, "kind")) {
+            ("user", Some(kind)) if kind != "user" => kind,
+            (role, _) => role.to_string(),
+        };
         let mut body = str_of(&m, "content").unwrap_or_default();
         // What a command printed can be a hundred lines, and then the exchange around it is
         // unreadable. It is clipped here and nowhere else: `--json` still has all of it.
@@ -152,7 +158,11 @@ fn clip(body: &str, keep: usize) -> String {
 /// One speaker's line, with everything after the first line hanging under it.
 fn wrapped(who: &str, body: &str) -> String {
     const INDENT: &str = "             ";
+    // A name longer than the column still gets its space, or it runs into what was said.
     let mut out = format!("  {who:<11}");
+    if who.chars().count() >= 11 {
+        out.push(' ');
+    }
     for (i, line) in body.lines().enumerate() {
         if i > 0 {
             out.push_str(INDENT);
@@ -430,6 +440,19 @@ mod tests {
         let v = json!({"messages": [{"role": "assistant", "content": long, "turn": "t1"}]});
         let s = render(&cmd(&["groow", "recall"]), &v).unwrap();
         assert!(s.contains("thought 40"), "only command output is clipped: {s}");
+    }
+
+    #[test]
+    fn what_woke_it_is_named_for_what_it_was() {
+        let v = json!({"messages": [
+            {"role": "user", "kind": "user", "content": "read the news", "turn": "t1"},
+            {"role": "user", "kind": "focus", "content": "[inner thought a9 says] run news", "turn": "t2"},
+            {"role": "user", "kind": "alarm", "content": "[an alarm you set earlier] news", "turn": "t3"},
+        ]});
+        let s = render(&cmd(&["groow", "recall"]), &v).unwrap();
+        assert!(s.contains("user       read the news"), "{s}");
+        assert!(s.contains("focus      [inner thought"), "a thought is not you: {s}");
+        assert!(s.contains("alarm      [an alarm"), "{s}");
     }
 
     #[test]

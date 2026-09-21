@@ -443,13 +443,20 @@ impl Ui {
             let at = r.get("ts").and_then(|t| t.as_f64());
             let body = groow_harness::parse::visible(get("content"));
             match get("role") {
+                // Everything that woke it is journalled as a user message, whoever sent it: an
+                // alarm, an idle nudge, an inner thought reporting back. Read back, they were
+                // all being shown as though a person had said them — which is how an inner
+                // thought ends up looking like something you typed.
                 "user" => {
-                    // Only what a person actually typed. An alarm going off and an idle nudge
-                    // are journalled as user messages too, and they were nobody's prompt.
-                    if matches!(get("kind"), "user" | "") {
+                    let kind = get("kind");
+                    if matches!(kind, "user" | "") {
                         said_by_a_person.push(body.clone());
+                        made.push(Bubble::new(Who::Human, "you", &body).at(at));
+                    } else {
+                        made.push(
+                            Bubble::new(Who::Signal, &format!("signal \u{b7} {kind}"), &body).at(at),
+                        );
                     }
-                    made.push(Bubble::new(Who::Human, "you", &body).at(at));
                 }
                 "assistant" => {
                     if !body.trim().is_empty() {
@@ -489,6 +496,31 @@ impl Ui {
             }
             made.append(&mut self.bubbles);
             self.bubbles = made;
+        }
+    }
+
+    /// The inner thoughts as the core last listed them.
+    ///
+    /// They used to arrive only as events, so a window opened while one was running showed
+    /// "none just now" until the thought next did something. What is already under way is not
+    /// news, and a window has to ask for it.
+    pub fn thoughts(&mut self, v: &Value) {
+        for t in v.get("thoughts").and_then(|a| a.as_array()).into_iter().flatten() {
+            let Some(id) = t.get("id").and_then(|i| i.as_str()) else { continue };
+            let row = self.thoughts.entry(id.to_string()).or_default();
+            row.id = id.to_string();
+            if let Some(g) = t.get("goal").and_then(|g| g.as_str()) {
+                row.goal = g.to_string();
+            }
+            if let Some(st) = t.get("status").and_then(|s| s.as_str()) {
+                row.status = st.to_string();
+            }
+            if let Some(n) = t.get("steps").and_then(|s| s.as_u64()) {
+                row.steps = n as u32;
+            }
+            if let Some(s) = t.get("summary").and_then(|s| s.as_str()) {
+                row.note = s.to_string();
+            }
         }
     }
 
@@ -731,6 +763,45 @@ mod tests {
         assert_eq!(u.input.text(), "read the news", "an alarm and a nudge were nobody's prompt");
         u.input.earlier();
         assert_eq!(u.input.text(), "read the news", "and there is nothing older");
+    }
+
+    #[test]
+    fn a_thought_already_running_is_there_when_the_window_opens() {
+        // Thought rows only ever came from events, so a window opened while one was working
+        // showed "none just now" until that thought happened to do something.
+        let mut u = ui();
+        u.thoughts(&json!({"thoughts": [
+            {"id": "a97d91", "goal": "understand the news skill", "status": "running", "steps": 1, "max_steps": 3},
+            {"id": "5ef81e", "goal": "set an alarm", "status": "done", "steps": 3, "summary": "set it"},
+        ]}));
+        assert_eq!(u.thoughts.len(), 2);
+        assert_eq!(u.thoughts["a97d91"].goal, "understand the news skill");
+        assert_eq!(u.thoughts["a97d91"].status, "running");
+        assert_eq!(u.thoughts["5ef81e"].note, "set it");
+
+        // And an event about one of them still updates it rather than starting again.
+        u.on_event("thought", &json!({"id": "a97d91", "steps": 2}));
+        assert_eq!(u.thoughts["a97d91"].steps, 2);
+        assert_eq!(u.thoughts["a97d91"].goal, "understand the news skill", "the goal survived");
+    }
+
+    #[test]
+    fn what_woke_it_is_not_shown_as_something_you_said() {
+        // Everything that wakes it is journalled as a user message, whoever sent it. Read back,
+        // an inner thought reporting to the main thread appeared under "you", as though you had
+        // typed it — while live, the same thing is shown as the signal it is.
+        let mut u = ui();
+        u.history(&json!({"more": false, "messages": [
+            {"role": "user", "kind": "user", "content": "read the news", "ts": 1.0},
+            {"role": "user", "kind": "focus", "content": "[inner thought a97d91 says] run news", "ts": 2.0},
+            {"role": "user", "kind": "alarm", "content": "[an alarm you set earlier] the news", "ts": 3.0},
+        ]}), false);
+
+        let who: Vec<(Who, &str)> =
+            u.bubbles.iter().map(|b| (b.who, b.label.as_str())).collect();
+        assert_eq!(who[0], (Who::Human, "you"));
+        assert_eq!(who[1], (Who::Signal, "signal \u{b7} focus"), "a thought is not you");
+        assert_eq!(who[2], (Who::Signal, "signal \u{b7} alarm"), "nor is an alarm");
     }
 
     #[test]

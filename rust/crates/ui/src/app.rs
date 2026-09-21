@@ -51,6 +51,7 @@ pub struct Pending {
     pub older: Option<u32>,
     pub stats: Option<u32>,
     pub alarms: Option<u32>,
+    pub thoughts: Option<u32>,
 }
 
 impl Pending {
@@ -69,6 +70,9 @@ impl Pending {
         } else if self.alarms == Some(id) {
             self.alarms = None;
             ui.alarms = v.clone();
+        } else if self.thoughts == Some(id) {
+            self.thoughts = None;
+            ui.thoughts(v);
         } else {
             return false;
         }
@@ -231,6 +235,8 @@ async fn main_loop<B: ratatui::backend::Backend>(
                     }
                     pending.stats = l.send("stats", json!({"n": STATS})).await.ok();
                     pending.alarms = l.send("schedule", json!({"action": "list"})).await.ok();
+                    // What is already under way is not news and never arrives as an event.
+                    pending.thoughts = l.send("thought", json!({"action": "list"})).await.ok();
                     link = Some(l);
                     from_core = Some(rx);
                     ui.connected = true;
@@ -277,6 +283,7 @@ async fn main_loop<B: ratatui::backend::Backend>(
                     if let Some(l) = link.as_mut() {
                         pending.stats = l.send("stats", json!({"n": STATS})).await.ok();
                         pending.alarms = l.send("schedule", json!({"action": "list"})).await.ok();
+                        pending.thoughts = l.send("thought", json!({"action": "list"})).await.ok();
                     }
                 }
             }
