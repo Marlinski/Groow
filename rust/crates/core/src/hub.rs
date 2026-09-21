@@ -486,6 +486,12 @@ impl Hub {
             "thoughts": self.thoughts.live().map(|v| v.len()).unwrap_or(0),
             "feeling": {"pain": pain, "pleasure": pleasure, "tone": tone},
             "idle_streak": self.idle_streak,
+            // When curiosity will next wake it, which is the thing that nudges it all day and
+            // was the one piece of what happens next that nothing outside could see.
+            "idle_in": self.cfg.curiosity.then(|| {
+                let gap = idle_gap(self.idle_streak, self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
+                (self.last_human + gap - now).max(0.0)
+            }),
         })
     }
 

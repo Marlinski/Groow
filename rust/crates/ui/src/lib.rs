@@ -1,6 +1,7 @@
 // placeholder
 pub mod creature;
 pub mod state;
+pub mod cards;
 pub mod draw;
 pub mod line;
 pub mod link;

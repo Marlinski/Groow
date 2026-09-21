@@ -118,6 +118,8 @@ pub struct Ui {
     pub pane: Pane,
     /// The measurements behind the creature, as the core last reported them.
     pub stats: Value,
+    /// The alarms set for it, as the core last reported them.
+    pub alarms: Value,
     /// The time of the oldest thing loaded, which is where reading further back starts.
     oldest: Option<f64>,
     /// Whether there is more history behind what is loaded.
@@ -159,6 +161,7 @@ impl Default for Ui {
             trouble: None,
             pane: Pane::Conversation,
             stats: Value::Null,
+            alarms: Value::Null,
             oldest: None,
             more_history: true,
             want_more: false,

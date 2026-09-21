@@ -50,6 +50,7 @@ pub struct Pending {
     pub history: Option<u32>,
     pub older: Option<u32>,
     pub stats: Option<u32>,
+    pub alarms: Option<u32>,
 }
 
 impl Pending {
@@ -65,6 +66,9 @@ impl Pending {
         } else if self.stats == Some(id) {
             self.stats = None;
             ui.stats = v.clone();
+        } else if self.alarms == Some(id) {
+            self.alarms = None;
+            ui.alarms = v.clone();
         } else {
             return false;
         }
@@ -226,6 +230,7 @@ async fn main_loop<B: ratatui::backend::Backend>(
                         pending.history = l.send("recall", json!({"n": PAGE})).await.ok();
                     }
                     pending.stats = l.send("stats", json!({"n": STATS})).await.ok();
+                    pending.alarms = l.send("schedule", json!({"action": "list"})).await.ok();
                     link = Some(l);
                     from_core = Some(rx);
                     ui.connected = true;
@@ -271,6 +276,7 @@ async fn main_loop<B: ratatui::backend::Backend>(
                 if ui.tick % STATS_EVERY == 0 && ui.pane == Pane::Admin {
                     if let Some(l) = link.as_mut() {
                         pending.stats = l.send("stats", json!({"n": STATS})).await.ok();
+                        pending.alarms = l.send("schedule", json!({"action": "list"})).await.ok();
                     }
                 }
             }
@@ -294,6 +300,7 @@ async fn main_loop<B: ratatui::backend::Backend>(
                                 if p == Pane::Admin {
                                     if let Some(l) = link.as_mut() {
                                         pending.stats = l.send("stats", json!({"n": STATS})).await.ok();
+                                        pending.alarms = l.send("schedule", json!({"action": "list"})).await.ok();
                                     }
                                 }
                             }

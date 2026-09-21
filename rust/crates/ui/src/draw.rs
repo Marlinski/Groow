@@ -157,108 +157,16 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
 /// Everything here comes out of the statistics database, which only the core can open. It is
 /// deliberately the plainest view in the window: a list of what ran and how long it took, and
 /// two lines showing where the numbers are going. A graph that flatters is worse than no graph.
+/// The operator's view: a column of cards, scrolled from the top.
+///
+/// It knows which cards it shows and nothing about what any of them contains. Moving one to
+/// its own tab, or putting two side by side, is a change to `cards::operator()` and to the
+/// layout here, and to nothing else.
 fn meta(f: &mut Frame, area: Rect, ui: &Ui) {
-    let mut lines: Vec<Line> = Vec::new();
-    let get = |k: &str| ui.stats.get(k).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     // Nothing here wraps: these are rows, and a row that folds onto the next line stops being
-    // a table. Anything too long is cut instead.
+    // a table. Each card cuts its own content to the width it is given.
     let w = area.width.saturating_sub(4) as usize;
-
-    let passes = get("learning");
-    lines.push(head("learning"));
-    if passes.is_empty() {
-        lines.push(quiet("nothing has run yet"));
-    }
-    for p in passes.iter().take(14) {
-        let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-        let n = p.get("samples").and_then(|v| v.as_i64()).unwrap_or(0);
-        let loss = p.get("loss").and_then(|v| v.as_f64());
-        let secs = p.get("seconds").and_then(|v| v.as_f64());
-        let note = p.get("note").and_then(|v| v.as_str()).unwrap_or("");
-        let when = p.get("ts").and_then(|v| v.as_f64()).map(ago).unwrap_or_default();
-        // A whole pass is the headline; the parts it is made of belong under it.
-        let whole = matches!(kind, "nap" | "night");
-        let name = if whole {
-            Style::default().fg(VIOLET).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(DIM)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {when:>8}  "), Style::default().fg(DIM)),
-            Span::styled(format!("{}{:<11}", if whole { "" } else { " " }, kind), name),
-            Span::styled(format!("{n:>5} samples  "), Style::default().fg(FG)),
-            Span::styled(
-                secs.map(|t| format!("{}  ", took(t))).unwrap_or_else(|| "        ".into()),
-                Style::default().fg(SKY),
-            ),
-            Span::styled(
-                loss.map(|l| format!("loss {l:.3}")).unwrap_or_else(|| "          ".into()),
-                Style::default().fg(MINT),
-            ),
-            Span::styled(
-                format!("  {}", clip(&summarise(note), w.saturating_sub(58))),
-                Style::default().fg(DIM),
-            ),
-        ]));
-    }
-
-    // Where the two numbers that matter are going. Loss should fall; feeling should not.
-    lines.push(Line::from(""));
-    lines.push(head("trend"));
-    let losses: Vec<f64> = passes.iter().rev().filter_map(|p| p.get("loss").and_then(|v| v.as_f64())).collect();
-    lines.push(spark("loss   ", &losses, MINT, w));
-    let valence: Vec<f64> = get("feelings")
-        .iter()
-        .filter_map(|x| x.get("valence").and_then(|v| v.as_f64()))
-        .collect();
-    lines.push(spark("feeling", &valence, AMBER, w));
-
-    lines.push(Line::from(""));
-    lines.push(head("turns"));
-    let turns = get("turns");
-    let shown = turns.iter().take(10);
-    if turns.is_empty() {
-        lines.push(quiet("none recorded"));
-    }
-    for t in shown {
-        let kind = t.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-        let secs = t.get("seconds").and_then(|v| v.as_f64());
-        let tools = t.get("tools").and_then(|v| v.as_i64()).unwrap_or(0);
-        let outcome = t.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
-        let flags = t.get("flags").and_then(|v| v.as_str()).unwrap_or("");
-        let when = t.get("started").and_then(|v| v.as_f64()).map(ago).unwrap_or_default();
-        let colour = if outcome == "ok" { FG } else { ROSE };
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {when:>8}  "), Style::default().fg(DIM)),
-            Span::styled(format!("{kind:<10}"), Style::default().fg(SKY)),
-            Span::styled(
-                secs.map(|s| format!("{s:>6.1}s ")).unwrap_or_else(|| "     \u{b7} ".into()),
-                Style::default().fg(FG),
-            ),
-            Span::styled(format!("{tools} tools  "), Style::default().fg(DIM)),
-            Span::styled(outcome.to_string(), Style::default().fg(colour)),
-            Span::styled(
-                format!(" {}", clip(flags, w.saturating_sub(42))),
-                Style::default().fg(ROSE),
-            ),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(head("commands"));
-    for t in get("tools").iter().take(8) {
-        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let used = t.get("used").and_then(|v| v.as_i64()).unwrap_or(0);
-        let failed = t.get("failed").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {name:<16}"), Style::default().fg(SKY)),
-            Span::styled(format!("{used:>5} runs  "), Style::default().fg(FG)),
-            Span::styled(
-                format!("{:.0}% failed", failed * 100.0),
-                Style::default().fg(if failed > 0.25 { ROSE } else { DIM }),
-            ),
-        ]));
-    }
+    let lines = crate::cards::stacked(ui, &crate::cards::operator(), w);
 
     // From the top, and never past the end, so scrolling down stops at the last row rather
     // than running off into blank space.
@@ -278,14 +186,14 @@ fn meta(f: &mut Frame, area: Rect, ui: &Ui) {
     );
 }
 
-fn head(text: &str) -> Line<'static> {
+pub fn head(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         format!(" {text}"),
         Style::default().fg(MOSS).add_modifier(Modifier::BOLD),
     ))
 }
 
-fn quiet(text: &str) -> Line<'static> {
+pub fn quiet(text: &str) -> Line<'static> {
     Line::from(Span::styled(format!("  {text}"), Style::default().fg(DIM)))
 }
 
@@ -293,7 +201,7 @@ fn quiet(text: &str) -> Line<'static> {
 ///
 /// Scaled between its own smallest and largest, so it shows the shape of the change rather
 /// than the size of it; the numbers themselves are on the rows above.
-fn spark(label: &str, v: &[f64], colour: Color, width: usize) -> Line<'static> {
+pub fn spark(label: &str, v: &[f64], colour: Color, width: usize) -> Line<'static> {
     const BARS: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
     if v.len() < 2 {
         return Line::from(vec![
@@ -327,7 +235,7 @@ fn spark(label: &str, v: &[f64], colour: Color, width: usize) -> Line<'static> {
 /// `{"scored": 1, "harvested": 2, "sft_steps": 1}` is a fact about the creature and should
 /// read like one. Anything that is not an object, or a value that is itself a structure, is
 /// left alone rather than mangled into something that looks like data and is not.
-fn summarise(note: &str) -> String {
+pub fn summarise(note: &str) -> String {
     let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(note) else {
         return note.to_string();
     };
@@ -352,16 +260,19 @@ fn summarise(note: &str) -> String {
 }
 
 /// How long something took, in the unit that suits it.
-fn took(seconds: f64) -> String {
+pub fn took(seconds: f64) -> String {
     match seconds {
         s if s < 1.0 => format!("{:>5.0}ms", s * 1000.0),
         s if s < 90.0 => format!("{s:>6.1}s"),
-        s => format!("{:>4.0}m{:02.0}s", (s / 60.0).floor(), s % 60.0),
+        // The smaller unit is truncated, never rounded: rounding 59.6 minutes gives "2h60m".
+        s if s < 5400.0 => format!("{:>4.0}m{:02.0}s", (s / 60.0).floor(), (s % 60.0).floor()),
+        s if s < 86_400.0 => format!("{:>4.0}h{:02.0}m", (s / 3600.0).floor(), ((s % 3600.0) / 60.0).floor()),
+        s => format!("{:>4.0}d{:02.0}h", (s / 86_400.0).floor(), ((s % 86_400.0) / 3600.0).floor()),
     }
 }
 
 /// How long ago, said the way a person would say it.
-fn ago(ts: f64) -> String {
+pub fn ago(ts: f64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -588,7 +499,7 @@ fn status(f: &mut Frame, area: Rect, ui: &Ui) {
     );
 }
 
-fn clip(s: &str, n: usize) -> String {
+pub fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
@@ -831,6 +742,11 @@ mod tests {
         assert_eq!(took(0.412).trim(), "412ms");
         assert_eq!(took(6.4).trim(), "6.4s");
         assert_eq!(took(184.2).trim(), "3m04s");
+        // Past an hour and a half, minutes stop being how anyone says it.
+        assert_eq!(took(10_800.0).trim(), "3h00m");
+        assert_eq!(took(7_431.0).trim(), "2h03m", "truncated, not rounded");
+        assert_eq!(took(200_000.0).trim(), "2d07h");
+        assert_eq!(took(7_199.0).trim(), "1h59m", "never a sixtieth minute");
     }
 
     #[test]
