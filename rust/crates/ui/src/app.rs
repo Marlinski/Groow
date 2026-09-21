@@ -214,8 +214,31 @@ pub async fn run(socket: std::path::PathBuf) -> anyhow::Result<()> {
         existing(info);
     }));
 
+    // Being killed is not the same as leaving, and the terminal does not know the difference:
+    // whatever happens, the escape codes that put it in this state have to be undone. A window
+    // whose body is rebuilt under it, or whose session is hung up, used to leave a terminal in
+    // the alternate screen with the mouse still captured and no way to type into it.
+    let signals = tokio::spawn(async move {
+        let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut hup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = hup.recv() => {}
+        }
+        give_the_terminal_back();
+        eprintln!("the window was stopped. It is still awake.");
+        std::process::exit(0);
+    });
+
     let mut term = Terminal::new(CrosstermBackend::new(out))?;
     let result = main_loop(&mut term, socket).await;
+    signals.abort();
 
     give_the_terminal_back();
     let _ = std::panic::take_hook();

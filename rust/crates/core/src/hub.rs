@@ -599,9 +599,13 @@ impl Hub {
             "learning": self.db.recent_learning(n).map_err(other)?,
             "turns": self.db.recent_turns(n).map_err(other)?,
             "feelings": self.db.recent_feelings(n).map_err(other)?,
-            "tools": self.db.tool_health().map_err(other)?
+            // A week, because what anyone wants to know is which of its tools it is failing
+            // to drive now, not which it once failed to drive.
+            "tools": self.db.tool_health(self.now() - 7.0 * 86400.0).map_err(other)?
                 .into_iter()
-                .map(|(name, used, failed)| json!({"name": name, "used": used, "failed": failed}))
+                .map(|(name, used, failed, last)| {
+                    json!({"name": name, "used": used, "failed": failed, "last": last})
+                })
                 .collect::<Vec<_>>(),
             "counters": self.db.counters().map_err(other)?,
             "turn_count": self.db.turn_count().unwrap_or(0),

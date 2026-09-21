@@ -57,6 +57,15 @@ pub fn running() -> bool {
         .unwrap_or(false)
 }
 
+/// Everything the window turns on in a terminal, turned off again.
+///
+/// The window runs inside the body, so the escape codes that put this terminal into its
+/// alternate screen with the mouse captured came from a process on the other side of a docker
+/// exec. When that process is killed rather than closed — the body rebuilt under it, the
+/// container recreated — it never gets to undo them, and what is left is a terminal you cannot
+/// type into. This side can always undo them, because it is still here.
+const PUT_IT_BACK: &str = "\x1b[?1049l\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h";
+
 /// Run the same command inside the body, as its owner, and take on its exit code.
 pub fn run_inside(args: &[String], interactive: bool) -> anyhow::Result<std::process::ExitStatus> {
     let dir = project().ok_or_else(|| anyhow::anyhow!("no docker-compose.yml above this directory"))?;
@@ -68,7 +77,14 @@ pub fn run_inside(args: &[String], interactive: bool) -> anyhow::Result<std::pro
     c.args(["-u", "0", "groow", "groow", "--home", HOME_INSIDE]);
     c.args(args);
     c.current_dir(&dir);
-    Ok(c.status()?)
+    let status = c.status()?;
+    if interactive {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(PUT_IT_BACK.as_bytes());
+        let _ = out.flush();
+    }
+    Ok(status)
 }
 
 /// Whether a home is the one the sandbox writes through its bind mount.

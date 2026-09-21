@@ -187,14 +187,19 @@ impl Db {
         Ok(())
     }
 
-    /// How often each tool is used and how often it fails, worst first. This is the table that
-    /// says which part of the toolset the mind has not learned to drive.
-    pub fn tool_health(&self) -> anyhow::Result<Vec<(String, i64, f64)>> {
+    /// How often each tool is used and how often it fails, worst first, and when each was last
+    /// reached for. This is the table that says which part of the toolset the mind has not
+    /// learned to drive.
+    ///
+    /// `since` keeps it about the present. Counting since birth means a tool that was removed
+    /// months ago still sits at the top of the list with its old failures, which reads as a
+    /// problem with something that no longer exists.
+    pub fn tool_health(&self, since: f64) -> anyhow::Result<Vec<(String, i64, f64, f64)>> {
         let mut st = self.conn.prepare(
-            "SELECT name, COUNT(*) AS n, AVG(CASE WHEN ok THEN 0.0 ELSE 1.0 END) AS fail
-             FROM tool_calls GROUP BY name ORDER BY fail DESC, n DESC",
+            "SELECT name, COUNT(*) AS n, AVG(CASE WHEN ok THEN 0.0 ELSE 1.0 END) AS fail, MAX(ts)
+             FROM tool_calls WHERE ts >= ?1 GROUP BY name ORDER BY fail DESC, n DESC",
         )?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows = st.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -428,11 +433,26 @@ mod tests {
         for _ in 0..3 {
             db.tool_call("t1", 1.0, "think", "main", false, 0.1).unwrap();
         }
-        let h = db.tool_health().unwrap();
+        let h = db.tool_health(0.0).unwrap();
         assert_eq!(h[0].0, "think");
         assert!((h[0].2 - 1.0).abs() < 1e-9, "think fails every time");
         assert_eq!(h[1].0, "shell");
         assert!(h[1].2 < 0.2);
+    }
+
+    #[test]
+    fn a_tool_nobody_has_touched_lately_falls_out_of_the_table() {
+        // Counting since birth means a tool removed months ago still sits at the top with its
+        // old failures, which reads as a problem with something that does not exist.
+        let db = Db::memory().unwrap();
+        db.tool_call("t1", 100.0, "focus", "main", false, 0.1).unwrap();
+        db.tool_call("t2", 900.0, "shell", "main", true, 0.1).unwrap();
+
+        let recent: Vec<String> = db.tool_health(500.0).unwrap().into_iter().map(|t| t.0).collect();
+        assert_eq!(recent, vec!["shell".to_string()], "only what has been used lately");
+
+        let (_, _, _, last) = db.tool_health(0.0).unwrap().into_iter().find(|t| t.0 == "focus").unwrap();
+        assert_eq!(last, 100.0, "and when it was last reached for is remembered");
     }
 
     #[test]

@@ -717,12 +717,19 @@ impl Card for Commands {
                 let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let used = t.get("used").and_then(|v| v.as_i64()).unwrap_or(0);
                 let failed = t.get("failed").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let last = t.get("last").and_then(|v| v.as_f64());
                 Line::from(vec![
-                    Span::styled(format!("  {name:<16}"), Style::default().fg(SKY)),
+                    Span::styled(format!("  {name:<10}"), Style::default().fg(SKY)),
                     Span::styled(format!("{used:>5} runs  "), Style::default().fg(FG)),
                     Span::styled(
-                        format!("{:.0}% failed", failed * 100.0),
+                        format!("{:>3.0}% failed  ", failed * 100.0),
                         Style::default().fg(if failed > 0.25 { ROSE } else { DIM }),
+                    ),
+                    // When it was last reached for, because a tool nobody has used for days
+                    // is history rather than a problem.
+                    Span::styled(
+                        last.map(|l| format!("last {} ago", ago(l))).unwrap_or_default(),
+                        Style::default().fg(DIM),
                     ),
                 ])
             })
