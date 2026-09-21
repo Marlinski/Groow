@@ -98,7 +98,7 @@ pub enum Cmd {
     /// The brain is learning rather than answering. Nothing else runs meanwhile.
     Napping { what: Option<String> },
     /// Whether the brain is answering at all. A turn needs it, so nothing starts without it.
-    BrainState { up: bool },
+    BrainState { up: bool, version: Option<String> },
 
     Say { text: String, kind: SignalKind, meta: Value, reply: Answer<Value> },
     Think { goal: String, max_steps: u32, reply: Answer<Value> },
@@ -173,8 +173,8 @@ impl Handle {
     pub async fn napping(&self, what: Option<&str>) {
         self.tell(Cmd::Napping { what: what.map(|s| s.to_string()) }).await
     }
-    pub async fn brain_state(&self, up: bool) {
-        self.tell(Cmd::BrainState { up }).await
+    pub async fn brain_state(&self, up: bool, version: Option<String>) {
+        self.tell(Cmd::BrainState { up, version }).await
     }
     pub async fn say(&self, text: &str, kind: SignalKind, meta: Value) -> Result<Value, WireError> {
         let text = text.to_string();
@@ -242,6 +242,10 @@ pub struct Hub {
     /// Consecutive idle nudges, so the mind is left alone for longer the less is happening.
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
+    /// Which creature its weights are, as the brain last said: `base.merges.passes`. Every
+    /// learning pass moves it, so it is what a line in the log has to be stamped with if the
+    /// log is to mean anything a week later.
+    version: String,
     /// Thoughts a process has been asked for but which have not claimed one yet.
     starting: std::collections::HashSet<String>,
     /// What it is doing, and what each thing that happens to it means. Every decision about
@@ -315,6 +319,7 @@ impl Hub {
             subscribers: Vec::new(),
             active: None,
             epoch: Epoch(0),
+            version: String::new(),
             starting: std::collections::HashSet::new(),
             stem: Brainstem::default(),
             fail_streak: 0,
@@ -384,7 +389,10 @@ impl Hub {
             }
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
             Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
-            Cmd::BrainState { up } => {
+            Cmd::BrainState { up, version } => {
+                if let Some(v) = version {
+                    self.version = v;
+                }
                 self.feel(Stimulus::Brain { loaded: up });
             }
             Cmd::Napping { what } => {
@@ -487,6 +495,7 @@ impl Hub {
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
             "state": self.stem.state().as_str(),
+            "version": self.version,
             "napping": self.stem.pass(),
             "brain": self.stem.state() != crate::brainstem::State::Waking,
             "age": self.birth.age_text(now),
@@ -778,6 +787,7 @@ impl Hub {
             at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
             flags: out.flags.clone(), outcome: "ok".into(),
             tokens: out.tokens, thinking: out.thinking_seconds,
+            version: self.version.clone(),
         });
         let _ = self.inbox.ack(&a.signal);
         self.fail_streak = 0;
@@ -1508,7 +1518,7 @@ mod tests {
         assert_eq!(s["brain"], false);
         assert_eq!(s["state"], "waking");
 
-        h.handle(Cmd::BrainState { up: true });
+        h.handle(Cmd::BrainState { up: true, version: None });
         clock.advance(1.0);
         match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
             Duty::Turn(s, _) => assert_eq!(s.text, "hello", "and it is still there when the brain wakes"),

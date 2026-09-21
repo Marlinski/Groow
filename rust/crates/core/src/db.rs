@@ -33,6 +33,8 @@ pub struct Ended {
     /// to "why was that slow".
     pub tokens: u32,
     pub thinking: f64,
+    /// Which creature answered: the weights as they were, not as they are now.
+    pub version: String,
 }
 
 impl Db {
@@ -77,7 +79,8 @@ impl Db {
                 flags     TEXT NOT NULL DEFAULT '',
                 outcome   TEXT,
                 tokens    INTEGER,
-                thinking  REAL
+                thinking  REAL,
+                version   TEXT
             );
             CREATE INDEX IF NOT EXISTS turns_started ON turns(started);
 
@@ -110,7 +113,8 @@ impl Db {
                 samples INTEGER NOT NULL DEFAULT 0,
                 loss    REAL,
                 seconds REAL,
-                note    TEXT
+                note    TEXT,
+                version TEXT
             );
 
             CREATE TABLE IF NOT EXISTS counters (
@@ -125,6 +129,8 @@ impl Db {
         let _ = conn.execute("ALTER TABLE learning ADD COLUMN seconds REAL", []);
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN tokens INTEGER", []);
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN thinking REAL", []);
+        let _ = conn.execute("ALTER TABLE turns ADD COLUMN version TEXT", []);
+        let _ = conn.execute("ALTER TABLE learning ADD COLUMN version TEXT", []);
         Ok(())
     }
 
@@ -143,9 +149,9 @@ impl Db {
     pub fn turn_ended(&self, id: &str, e: &Ended) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE turns SET ended=?2, seconds=?3, tools=?4, rounds=?5, flags=?6, outcome=?7, \
-             tokens=?8, thinking=?9 WHERE id=?1",
+             tokens=?8, thinking=?9, version=?10 WHERE id=?1",
             params![id, e.at, e.seconds, e.tools, e.rounds, e.flags.join(","), e.outcome,
-                    e.tokens, e.thinking],
+                    e.tokens, e.thinking, e.version],
         )?;
         Ok(())
     }
@@ -228,7 +234,8 @@ impl Db {
     /// The learning passes, most recent first. What ran, how much it practised, what it cost.
     pub fn recent_learning(&self, n: usize) -> anyhow::Result<Vec<Value>> {
         let mut st = self.conn.prepare(
-            "SELECT ts, kind, samples, loss, seconds, note FROM learning ORDER BY ts DESC LIMIT ?1",
+            "SELECT ts, kind, samples, loss, seconds, note, version \
+             FROM learning ORDER BY ts DESC LIMIT ?1",
         )?;
         let rows = st.query_map([n as i64], |r| {
             Ok(json!({
@@ -238,6 +245,7 @@ impl Db {
                 "loss": r.get::<_, Option<f64>>(3)?,
                 "seconds": r.get::<_, Option<f64>>(4)?,
                 "note": r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                "version": r.get::<_, Option<String>>(6)?.unwrap_or_default(),
             }))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -246,8 +254,8 @@ impl Db {
     /// The turns, most recent first, with how long each took and how it ended.
     pub fn recent_turns(&self, n: usize) -> anyhow::Result<Vec<Value>> {
         let mut st = self.conn.prepare(
-            "SELECT id, kind, started, seconds, tools, rounds, flags, outcome, tokens, thinking \
-             FROM turns ORDER BY started DESC LIMIT ?1",
+            "SELECT id, kind, started, seconds, tools, rounds, flags, outcome, tokens, thinking, \
+             version FROM turns ORDER BY started DESC LIMIT ?1",
         )?;
         let rows = st.query_map([n as i64], |r| {
             Ok(json!({
@@ -261,6 +269,7 @@ impl Db {
                 "outcome": r.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 "tokens": r.get::<_, Option<i64>>(8)?,
                 "thinking": r.get::<_, Option<f64>>(9)?,
+                "version": r.get::<_, Option<String>>(10)?.unwrap_or_default(),
             }))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())

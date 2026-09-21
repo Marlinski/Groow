@@ -180,6 +180,8 @@ class Server:
             on_progress=lambda m: self.send(job, {"progress": m}),
         )
         if report.get("consumed"):
+            # One pass, whatever it practised: this is the number in the creature's version.
+            self.brain.meta["passes"] = int(self.brain.meta.get("passes") or 0) + 1
             self.brain.save()
         self.trained += int(report.get("consumed") or 0)
         self.send(job, {"done": True, "report": report})
@@ -230,6 +232,7 @@ class Server:
         )
         if self.brain is not None:
             h.steps = int(self.brain.meta.get("steps") or 0)
+            h.version = self.brain.version
         return web.json_response(to_dict(h, full=True))
 
     async def h_train(self, request: web.Request) -> web.StreamResponse:

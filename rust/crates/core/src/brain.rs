@@ -70,13 +70,22 @@ impl Brain {
     }
 
     pub async fn healthy(&self) -> bool {
-        self.client
+        self.health().await.is_some()
+    }
+
+    /// What the brain says about itself, including which creature its weights are.
+    pub async fn health(&self) -> Option<Value> {
+        let r = self
+            .client
             .get(format!("{}/health", self.url))
             .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
+            .ok()?;
+        if !r.status().is_success() {
+            return None;
+        }
+        r.json::<Value>().await.ok()
     }
 
     /// Generate, calling `on_delta` for each piece as it arrives.

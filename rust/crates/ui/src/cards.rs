@@ -101,6 +101,8 @@ impl Card for Runs {
                 Span::styled(format!("{tag:<6}"), Style::default().fg(colour)),
                 Span::styled(format!("{:<9} ", clip(&r.tag, 9)), Style::default().fg(DIM)),
                 Span::styled(format!("{:<18}", clip(&cost, 18)), Style::default().fg(FG)),
+                // Which creature ran it. The weights are not the ones it has now.
+                Span::styled(format!("{:<8}", r.version), Style::default().fg(MOSS)),
                 Span::styled(
                     clip(&if r.what.is_empty() { format!("{} {}", r.outcome, r.flags) } else { r.what.clone() },
                          w.saturating_sub(46).max(10)),
@@ -129,6 +131,10 @@ impl Card for Inside {
             Span::styled(
                 format!("{} \u{b7} {}", if r.inner { "inner" } else { "main" }, stamp(r.at)),
                 Style::default().fg(DIM),
+            ),
+            Span::styled(
+                if r.version.is_empty() { String::new() } else { format!(" \u{b7} weights {}", r.version) },
+                Style::default().fg(MOSS),
             ),
         ])];
         if !r.what.is_empty() {
@@ -429,6 +435,7 @@ impl Card for Learning {
             .take(14)
             .map(|p| {
                 let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let version = p.get("version").and_then(|v| v.as_str()).unwrap_or("");
                 let n = p.get("samples").and_then(|v| v.as_i64()).unwrap_or(0);
                 let loss = p.get("loss").and_then(|v| v.as_f64());
                 let secs = p.get("seconds").and_then(|v| v.as_f64());
@@ -453,8 +460,9 @@ impl Card for Learning {
                         loss.map(|l| format!("loss {l:.3}")).unwrap_or_else(|| "          ".into()),
                         Style::default().fg(MINT),
                     ),
+                    Span::styled(format!("  {version:<8}"), Style::default().fg(MOSS)),
                     Span::styled(
-                        format!("  {}", clip(&summarise(note), w.saturating_sub(58))),
+                        format!("  {}", clip(&summarise(note), w.saturating_sub(68))),
                         Style::default().fg(DIM),
                     ),
                 ])
@@ -700,6 +708,23 @@ mod tests {
         assert!(s.contains("inner"), "{s}");
         assert!(s.contains("count the files"), "a thought shows its goal: {s}");
         assert!(s.contains("tool_error"), "a turn shows how it ended: {s}");
+    }
+
+    #[test]
+    fn a_run_says_which_creature_ran_it() {
+        // The weights move every time it sleeps, so a run from yesterday was not done by the
+        // thing you are talking to now, and a log that does not say so is misleading.
+        let mut u = ui();
+        u.stats = json!({"turns": [
+            {"id": "t1", "kind": "user", "started": 100.0, "seconds": 1.0, "outcome": "ok",
+             "flags": "", "version": "0.4.2"},
+        ]});
+        assert_eq!(u.runs()[0].version, "0.4.2");
+        assert!(text(&Runs.lines(&u, 120)).contains("0.4.2"));
+
+        u.opened = Some("t1".into());
+        u.inside = json!({"messages": []});
+        assert!(text(&Inside.lines(&u, 70)).contains("weights 0.4.2"));
     }
 
     #[test]

@@ -90,8 +90,15 @@ impl Core {
         loop {
             // A turn needs the brain. Loading the weights takes the best part of a minute, and
             // a turn started before then fails for a reason that is nothing to do with it.
-            let up = self.brain.healthy().await;
-            self.hub.brain_state(up).await;
+            let health = self.brain.health().await;
+            let version = health
+                .as_ref()
+                .and_then(|h| h.get("version"))
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string());
+            let up = health.is_some();
+            self.hub.brain_state(up, version).await;
             if !up {
                 if !said_waiting {
                     said_waiting = true;

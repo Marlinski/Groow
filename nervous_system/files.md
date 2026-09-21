@@ -88,3 +88,21 @@ mind has no tool that could.
 
 `state/identity.md` is the opposite: plain text the mind may rewrite, within limits, and which
 is folded into every prompt.
+
+## Which creature the weights are
+
+`state/brain.json` counts what has happened to them, and the brain reports it as one string:
+
+    base . merges . passes        e.g. 0.4.2
+
+- **base** — which pretrained model it was grown from. `0` is the one it was born on; it only
+  moves if the base is ever swapped, and then the other two start again, because what was
+  merged into the old base is not in the new one.
+- **merges** — how many times what it practised has been folded into the base weights. A night
+  ends in one of these, and it is the closest thing it has to a birthday.
+- **passes** — training passes since the last merge. Every nap adds one.
+
+So `0.4.2` and `0.4.3` differ by one pass, and `0.5.0` is everything `0.4.x` practised made
+permanent. Every turn and every learning pass is recorded with the version that ran it, which
+is what makes a week-old line in the log mean anything: the creature that answered then is not
+the one answering now.

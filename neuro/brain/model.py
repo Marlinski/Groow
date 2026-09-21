@@ -55,7 +55,8 @@ class Brain:
         self.model = None          # PeftModel
         self.opt = None
         self.scaler = None
-        self.meta = {"steps": 0, "consolidations": 0, "rank": cfg.lora_rank,
+        self.meta = {"steps": 0, "consolidations": 0, "passes": 0, "lineage": 0,
+                     "base": cfg.model_id, "rank": cfg.lora_rank,
                      "tokens_seen": 0, "born": time.time(), "growth": []}
         self._lock = threading.Lock()
         self.busy: str | None = None          # what is being done to the weights right now, if anything
@@ -94,6 +95,13 @@ class Brain:
             self.initialize()
         if self.meta_path.exists():
             self.meta.update(json.loads(self.meta_path.read_text()))
+        # A different base model is a different lineage, and what was merged into the old one
+        # is not in this one. The counting starts again, and the lineage says it did.
+        if self.meta.get("base") and self.meta["base"] != self.cfg.model_id:
+            self.meta["lineage"] = int(self.meta.get("lineage") or 0) + 1
+            self.meta["consolidations"] = 0
+            self.meta["passes"] = 0
+        self.meta["base"] = self.cfg.model_id
         self.tok = AutoTokenizer.from_pretrained(self.base_dir)
         self.tok.padding_side = "left"
         base = AutoModelForCausalLM.from_pretrained(
@@ -140,6 +148,20 @@ class Brain:
 
     def total_parameters(self) -> int:
         return sum(p.numel() for p in self.model.parameters())
+
+    @property
+    def version(self) -> str:
+        """Which creature these weights are: `base.consolidations.passes`.
+
+        Reading it is the point. `0.4.2` is the original base model, four merges into it, and
+        two training passes since the last one — so `0.4.2` and `0.4.3` differ by one pass, and
+        `0.5.0` is everything `0.4.x` practised, made permanent.
+        """
+        return "{}.{}.{}".format(
+            int(self.meta.get("lineage") or 0),
+            int(self.meta.get("consolidations") or 0),
+            int(self.meta.get("passes") or 0),
+        )
 
     # ------------------------------------------------------------------ persistence
     def save(self) -> None:
@@ -358,6 +380,8 @@ class Brain:
             self._prepare_trainable()
             self._make_optimizer()
             self.meta["consolidations"] += 1
+            # What was practised is in the base now, so the count since the last merge is nil.
+            self.meta["passes"] = 0
             self.meta["rank"] = rank
             self.meta_path.write_text(json.dumps(self.meta, indent=2))
             torch.cuda.empty_cache()

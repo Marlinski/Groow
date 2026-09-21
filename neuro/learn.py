@@ -29,6 +29,21 @@ from .limbic.feel import feel
 from .stats import Stats
 
 
+def version(cfg: Config) -> str | None:
+    """Which creature the weights are now, as the brain reports it.
+
+    Asked after a pass rather than before, so a row says what the pass produced rather than
+    what it started from: `0.4.2` on a train row is the creature that pass made.
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{brain_url(cfg)}/health", timeout=5) as r:
+            return (json.loads(r.read()) or {}).get("version") or None
+    except Exception:
+        return None
+
+
 def brain_url(cfg: Config) -> str:
     return f"http://127.0.0.1:{getattr(cfg, 'brain_port', 7374)}"
 
@@ -113,7 +128,7 @@ def train(cfg: Config, max_samples: int = 32) -> dict:
         if report.get("skipped_groups"):
             note["skipped"] = len(report["skipped_groups"])
         Stats(Path(cfg.state)).learned("train", report["consumed"], _cost(report), json.dumps(note),
-                                       seconds=round(time.time() - started, 2))
+                                       seconds=round(time.time() - started, 2), version=version(cfg))
     return report
 
 
@@ -127,7 +142,7 @@ def consolidate(cfg: Config) -> dict:
     report = ask_the_brain(cfg, "consolidate", {})
     if not report.get("error"):
         Stats(Path(cfg.state)).learned("consolidate", 0, None, json.dumps(report),
-                                       seconds=round(time.time() - started, 2))
+                                       seconds=round(time.time() - started, 2), version=version(cfg))
     return report
 
 
@@ -156,7 +171,7 @@ def _pass(cfg: Config, name: str, steps: list[tuple[str, object]]) -> dict:
     if any(r.get("error") for r in out.values() if isinstance(r, dict)):
         note["errors"] = [r["error"] for r in out.values() if isinstance(r, dict) and r.get("error")]
     Stats(Path(cfg.state)).learned(name, trained.get("consumed", 0), _cost(trained),
-                                   json.dumps(note), seconds=seconds)
+                                   json.dumps(note), seconds=seconds, version=version(cfg))
     out["seconds"] = seconds
     return out
 

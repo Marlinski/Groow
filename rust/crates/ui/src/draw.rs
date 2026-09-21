@@ -454,6 +454,8 @@ pub fn card(ui: &Ui, now: f64) -> Vec<Line<'static>> {
         ("born", g("born_text"), FG),
         ("age", age, AMBER),
         ("lineage", lineage, FG),
+        // Which creature these weights are. It moves every time it sleeps.
+        ("weights", if s("version").is_empty() { "\u{2014}".into() } else { s("version") }, MINT),
         ("body", g("hardware"), FG),
         ("mentor", g("mentor"), FG),
         ("turns", n("turns").to_string(), FG),

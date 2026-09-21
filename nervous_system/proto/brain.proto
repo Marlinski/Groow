@@ -80,4 +80,8 @@ message Health {
   uint32 generated = 6;
   uint32 trained = 7;
   optional uint32 steps = 8;
+  // Which creature these weights are, as `base.consolidations.passes`: the base model it was
+  // grown from, how many times what it practised has been merged into that base, and how many
+  // training passes have happened since the last merge. Every nap and every night moves it.
+  string version = 9;
 }

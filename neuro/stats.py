@@ -40,7 +40,8 @@ class Stats:
             (turn, ts, sensors, approval, valence))
         self.c.commit()
 
-    def learned(self, kind: str, samples: int, loss, note: str = "", seconds: float | None = None) -> None:
+    def learned(self, kind: str, samples: int, loss, note: str = "", seconds: float | None = None,
+                version: str | None = None) -> None:
         """Record one pass: what it was, how much it practised, what it cost, how long it took.
 
         `seconds` is wall clock, which is the number anyone actually wants: a night that takes
@@ -48,6 +49,7 @@ class Stats:
         same work.
         """
         self.c.execute(
-            "INSERT INTO learning (ts, kind, samples, loss, seconds, note) VALUES (?,?,?,?,?,?)",
-            (time.time(), kind, samples, loss, seconds, note))
+            "INSERT INTO learning (ts, kind, samples, loss, seconds, note, version) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (time.time(), kind, samples, loss, seconds, note, version))
         self.c.commit()

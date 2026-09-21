@@ -162,6 +162,8 @@ pub struct Run {
     pub flags: String,
     pub tokens: Option<u64>,
     pub tools: u64,
+    /// Which creature ran it. A run from before a merge was a different one.
+    pub version: String,
 }
 
 /// Everything on screen.
@@ -609,6 +611,7 @@ impl Ui {
                 flags: g("flags"),
                 tokens: t.get("tokens").and_then(|v| v.as_u64()),
                 tools: t.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+                version: g("version"),
             });
         }
         for t in self.thoughts.values() {
@@ -623,6 +626,7 @@ impl Ui {
                 flags: String::new(),
                 tokens: None,
                 tools: t.steps as u64,
+                version: String::new(),
             });
         }
         out.sort_by(|a, b| b.at.partial_cmp(&a.at).unwrap_or(std::cmp::Ordering::Equal));
