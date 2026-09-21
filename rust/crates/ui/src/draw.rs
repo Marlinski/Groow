@@ -173,17 +173,32 @@ fn meta(f: &mut Frame, area: Rect, ui: &Ui) {
         let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
         let n = p.get("samples").and_then(|v| v.as_i64()).unwrap_or(0);
         let loss = p.get("loss").and_then(|v| v.as_f64());
+        let secs = p.get("seconds").and_then(|v| v.as_f64());
         let note = p.get("note").and_then(|v| v.as_str()).unwrap_or("");
         let when = p.get("ts").and_then(|v| v.as_f64()).map(ago).unwrap_or_default();
+        // A whole pass is the headline; the parts it is made of belong under it.
+        let whole = matches!(kind, "nap" | "night");
+        let name = if whole {
+            Style::default().fg(VIOLET).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("  {when:>8}  "), Style::default().fg(DIM)),
-            Span::styled(format!("{kind:<12}"), Style::default().fg(VIOLET)),
+            Span::styled(format!("{}{:<11}", if whole { "" } else { " " }, kind), name),
             Span::styled(format!("{n:>5} samples  "), Style::default().fg(FG)),
             Span::styled(
-                loss.map(|l| format!("loss {l:.3}")).unwrap_or_default(),
+                secs.map(|t| format!("{}  ", took(t))).unwrap_or_else(|| "        ".into()),
+                Style::default().fg(SKY),
+            ),
+            Span::styled(
+                loss.map(|l| format!("loss {l:.3}")).unwrap_or_else(|| "          ".into()),
                 Style::default().fg(MINT),
             ),
-            Span::styled(format!("  {}", clip(note, w.saturating_sub(48))), Style::default().fg(DIM)),
+            Span::styled(
+                format!("  {}", clip(&summarise(note), w.saturating_sub(58))),
+                Style::default().fg(DIM),
+            ),
         ]));
     }
 
@@ -305,6 +320,44 @@ fn spark(label: &str, v: &[f64], colour: Color, width: usize) -> Line<'static> {
         Span::styled(bars, Style::default().fg(colour)),
         Span::styled(format!("  {lo:.3} \u{2192} {:.3}", v[v.len() - 1]), Style::default().fg(DIM)),
     ])
+}
+
+/// A pass's note, which is JSON, said as a person would read it.
+///
+/// `{"scored": 1, "harvested": 2, "sft_steps": 1}` is a fact about the creature and should
+/// read like one. Anything that is not an object, or a value that is itself a structure, is
+/// left alone rather than mangled into something that looks like data and is not.
+fn summarise(note: &str) -> String {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(note) else {
+        return note.to_string();
+    };
+    map.iter()
+        // The timings of the parts are on the parts' own rows; repeating them here would fill
+        // the line with what is already directly underneath it.
+        .filter(|(k, _)| k.as_str() != "parts")
+        .filter_map(|(k, v)| match v {
+            serde_json::Value::Bool(false) => None,
+            serde_json::Value::Bool(true) => Some(k.replace('_', " ")),
+            serde_json::Value::Number(n) if n.as_f64() == Some(0.0) => None,
+            serde_json::Value::Number(n) => Some(format!("{} {n}", k.replace('_', " "))),
+            serde_json::Value::String(t) if !t.is_empty() => Some(format!("{}: {t}", k.replace('_', " "))),
+            serde_json::Value::Array(a) if !a.is_empty() => Some(format!("{} {}", a.len(), k.replace('_', " "))),
+            serde_json::Value::Object(o) if !o.is_empty() => {
+                Some(o.iter().map(|(k2, v2)| format!("{k2} {v2}")).collect::<Vec<_>>().join(" "))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ")
+}
+
+/// How long something took, in the unit that suits it.
+fn took(seconds: f64) -> String {
+    match seconds {
+        s if s < 1.0 => format!("{:>5.0}ms", s * 1000.0),
+        s if s < 90.0 => format!("{s:>6.1}s"),
+        s => format!("{:>4.0}m{:02.0}s", (s / 60.0).floor(), s % 60.0),
+    }
 }
 
 /// How long ago, said the way a person would say it.
@@ -737,6 +790,63 @@ mod tests {
             assert!(inner.chars().count() <= 100, "a row spilled: {inner:?}");
         }
         assert!(s.contains("tool_error"), "and what fits is still shown: {s}");
+    }
+
+    #[test]
+    fn a_whole_pass_is_shown_with_what_it_cost_and_how_long_it_took() {
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        u.stats = json!({"learning": [
+            {"ts": 0.0, "kind": "night", "samples": 32, "loss": 0.71, "seconds": 184.2,
+             "note": "{\"merged\":true,\"sft_steps\":9}"},
+            {"ts": 0.0, "kind": "consolidate", "samples": 0, "seconds": 41.0, "note": ""},
+            {"ts": 0.0, "kind": "train", "samples": 32, "loss": 0.71, "seconds": 6.4, "note": ""},
+        ]});
+        let s = render(110, 40, &u);
+        assert!(s.contains("night"), "{s}");
+        assert!(s.contains("3m04s"), "a long pass is minutes and seconds: {s}");
+        assert!(s.contains("41.0s"), "{s}");
+        assert!(s.contains("6.4s"), "{s}");
+        assert!(s.contains("loss 0.710"), "{s}");
+    }
+
+    #[test]
+    fn a_note_reads_as_a_sentence_rather_than_as_json() {
+        // In the order the pass wrote them, which is the order they happened in.
+        assert_eq!(
+            summarise(r#"{"conversation": 1, "actions": 2}"#),
+            "conversation 1 \u{b7} actions 2"
+        );
+        // Nothing that did not happen is mentioned: a row of zeroes says less than nothing.
+        assert_eq!(
+            summarise(r#"{"sft_steps": 2, "pg_steps": 0, "merged": true, "scored": 0}"#),
+            "sft steps 2 \u{b7} merged"
+        );
+        assert_eq!(summarise("not json at all"), "not json at all", "left alone");
+        assert_eq!(summarise(""), "");
+    }
+
+    #[test]
+    fn how_long_something_took_is_said_in_the_unit_that_suits_it() {
+        assert_eq!(took(0.412).trim(), "412ms");
+        assert_eq!(took(6.4).trim(), "6.4s");
+        assert_eq!(took(184.2).trim(), "3m04s");
+    }
+
+    #[test]
+    fn a_pass_that_recorded_no_duration_still_lines_up() {
+        // A row written before there was a column for it must not shift everything after it.
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        u.stats = json!({"learning": [
+            {"ts": 0.0, "kind": "train", "samples": 8, "loss": 0.5, "seconds": 2.0, "note": ""},
+            {"ts": 0.0, "kind": "train", "samples": 8, "note": ""},
+        ]});
+        let s = render(110, 40, &u);
+        let rows: Vec<&str> = s.lines().filter(|l| l.contains("8 samples")).collect();
+        assert_eq!(rows.len(), 2);
+        let at = |l: &str| l.find("8 samples").unwrap();
+        assert_eq!(at(rows[0]), at(rows[1]), "the columns moved: {rows:?}");
     }
 
     #[test]

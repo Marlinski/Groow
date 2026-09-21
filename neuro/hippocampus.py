@@ -14,6 +14,7 @@ worth anything as the first, because an example is a recommendation.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from .config import Config
@@ -29,6 +30,7 @@ WORTH_IMITATING = 0.1
 
 def harvest(cfg: Config) -> dict:
     """Turn everything felt since last time into samples, and remember where we got to."""
+    started = time.time()
     state = Path(cfg.state)
     stats = Stats(state)
     sets = TrainingSets(state / "training")
@@ -81,5 +83,6 @@ def harvest(cfg: Config) -> dict:
 
     seen["harvested_ts"] = newest
     mark.write_text(json.dumps(seen, indent=1))
-    stats.learned("harvest", made["conversation"] + made["actions"], None, json.dumps(made))
+    stats.learned("harvest", made["conversation"] + made["actions"], None, json.dumps(made),
+                  seconds=round(time.time() - started, 2))
     return made

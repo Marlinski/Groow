@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from .config import Config
@@ -87,8 +88,20 @@ def _cost(report: dict):
     return sum(after) / len(after) if after else None
 
 
+def timed(f):
+    """Run something and say how long it took, in wall clock.
+
+    Every pass is recorded with its duration, because "it ran" and "it ran for nine minutes"
+    are different facts and only one of them tells you whether something is wrong.
+    """
+    started = time.time()
+    out = f()
+    return out, round(time.time() - started, 2)
+
+
 def train(cfg: Config, max_samples: int = 32) -> dict:
     """Turn pending samples into weight changes, in the process that holds the weights."""
+    started = time.time()
     report = ask_the_brain(cfg, "train", {"max_samples": max_samples})
     if report.get("consumed"):
         # What it practised and how hard, kept with the number: a loss on its own says nothing
@@ -99,7 +112,8 @@ def train(cfg: Config, max_samples: int = 32) -> dict:
             note["drilled"] = len(report["drilled"])
         if report.get("skipped_groups"):
             note["skipped"] = len(report["skipped_groups"])
-        Stats(Path(cfg.state)).learned("train", report["consumed"], _cost(report), json.dumps(note))
+        Stats(Path(cfg.state)).learned("train", report["consumed"], _cost(report), json.dumps(note),
+                                       seconds=round(time.time() - started, 2))
     return report
 
 
@@ -109,10 +123,42 @@ def consolidate(cfg: Config) -> dict:
     Nothing reloads afterwards. The process that merged them is the one that serves, so what
     it learned is what it answers from, from the next request onward.
     """
+    started = time.time()
     report = ask_the_brain(cfg, "consolidate", {})
     if not report.get("error"):
-        Stats(Path(cfg.state)).learned("consolidate", 0, None, json.dumps(report))
+        Stats(Path(cfg.state)).learned("consolidate", 0, None, json.dumps(report),
+                                       seconds=round(time.time() - started, 2))
     return report
+
+
+def _pass(cfg: Config, name: str, steps: list[tuple[str, object]]) -> dict:
+    """Run the steps of one pass in order, and record the pass itself as well as its parts.
+
+    The parts each write their own row as they go. This is the row for the whole thing: how
+    long the creature spent asleep, how much it practised, and what it cost — which is the
+    question anyone actually asks of an operator's log.
+    """
+    out: dict = {}
+    started = time.time()
+    for step_name, step in steps:
+        out[step_name], out[f"{step_name}_seconds"] = timed(lambda s=step: s(cfg))
+    seconds = round(time.time() - started, 2)
+
+    trained = out.get("train") or {}
+    note = {
+        "scored": (out.get("feel") or {}).get("scored", 0),
+        "harvested": sum(v for k, v in (out.get("harvest") or {}).items() if isinstance(v, int)),
+        "sft_steps": trained.get("sft_steps", 0),
+        "pg_steps": trained.get("pg_steps", 0),
+        "merged": bool(out.get("consolidate")),
+        "parts": {k.removesuffix("_seconds"): v for k, v in out.items() if k.endswith("_seconds")},
+    }
+    if any(r.get("error") for r in out.values() if isinstance(r, dict)):
+        note["errors"] = [r["error"] for r in out.values() if isinstance(r, dict) and r.get("error")]
+    Stats(Path(cfg.state)).learned(name, trained.get("consumed", 0), _cost(trained),
+                                   json.dumps(note), seconds=seconds)
+    out["seconds"] = seconds
+    return out
 
 
 def nap(cfg: Config) -> dict:
@@ -120,21 +166,21 @@ def nap(cfg: Config) -> dict:
 
     No merge and no long drills, because a person may speak at any moment.
     """
-    return {
-        "feel": feel(cfg),
-        "harvest": harvest(cfg),
-        "train": train(cfg, max_samples=cfg.nap_max_samples),
-    }
+    return _pass(cfg, "nap", [
+        ("feel", feel),
+        ("harvest", harvest),
+        ("train", lambda c: train(c, max_samples=c.nap_max_samples)),
+    ])
 
 
 def night(cfg: Config) -> dict:
     """The whole cycle, ending in the merge that makes it permanent."""
-    return {
-        "feel": feel(cfg),
-        "harvest": harvest(cfg),
-        "train": train(cfg, max_samples=cfg.idle_nap_max_samples),
-        "consolidate": consolidate(cfg),
-    }
+    return _pass(cfg, "night", [
+        ("feel", feel),
+        ("harvest", harvest),
+        ("train", lambda c: train(c, max_samples=c.idle_nap_max_samples)),
+        ("consolidate", consolidate),
+    ])
 
 
 PASSES = {"feel": feel, "harvest": harvest, "consolidate": consolidate, "nap": nap, "night": night}

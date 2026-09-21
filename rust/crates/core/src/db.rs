@@ -102,6 +102,7 @@ impl Db {
                 kind    TEXT NOT NULL,
                 samples INTEGER NOT NULL DEFAULT 0,
                 loss    REAL,
+                seconds REAL,
                 note    TEXT
             );
 
@@ -111,6 +112,10 @@ impl Db {
             );
             "#,
         )?;
+        // A creature older than this column keeps its history and gains the column empty.
+        // Sqlite has no ADD COLUMN IF NOT EXISTS, and the error for one that is already there
+        // is the expected outcome rather than a problem.
+        let _ = conn.execute("ALTER TABLE learning ADD COLUMN seconds REAL", []);
         Ok(())
     }
 
@@ -212,7 +217,7 @@ impl Db {
     /// The learning passes, most recent first. What ran, how much it practised, what it cost.
     pub fn recent_learning(&self, n: usize) -> anyhow::Result<Vec<Value>> {
         let mut st = self.conn.prepare(
-            "SELECT ts, kind, samples, loss, note FROM learning ORDER BY ts DESC LIMIT ?1",
+            "SELECT ts, kind, samples, loss, seconds, note FROM learning ORDER BY ts DESC LIMIT ?1",
         )?;
         let rows = st.query_map([n as i64], |r| {
             Ok(json!({
@@ -220,7 +225,8 @@ impl Db {
                 "kind": r.get::<_, String>(1)?,
                 "samples": r.get::<_, i64>(2)?,
                 "loss": r.get::<_, Option<f64>>(3)?,
-                "note": r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                "seconds": r.get::<_, Option<f64>>(4)?,
+                "note": r.get::<_, Option<String>>(5)?.unwrap_or_default(),
             }))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
