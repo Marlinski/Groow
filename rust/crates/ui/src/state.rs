@@ -539,6 +539,13 @@ impl Ui {
     }
 
     pub fn scroll(&mut self, by: i32) {
+        // The wheel moves whatever is being read, which in the journal is one of three lists
+        // and not the conversation behind them. It used to move the conversation from there,
+        // which looked like a wheel that did nothing.
+        if self.pane == Pane::Journal {
+            self.pick(by);
+            return;
+        }
         if self.pane == Pane::Admin {
             self.meta_scroll = (self.meta_scroll as i32 + by).clamp(0, 2000) as u16;
             return;
@@ -1097,6 +1104,31 @@ mod tests {
         u.loading = true;
         u.scroll(-5);
         assert!(!u.want_more, "one page at a time");
+    }
+
+    #[test]
+    fn the_wheel_moves_whichever_list_is_being_read() {
+        let mut u = ui();
+        u.stats = json!({"turns": (0..8).map(|i| json!({
+            "id": format!("t{i}"), "kind": "user", "started": 100.0 - i as f64,
+            "seconds": 1.0, "outcome": "ok", "flags": ""
+        })).collect::<Vec<_>>()});
+        u.pane = Pane::Journal;
+
+        u.scroll(3);
+        assert_eq!(u.picked, 3, "in the journal it walks the runs");
+
+        u.column = Column::Body;
+        u.scroll(5);
+        assert_eq!(u.body_scroll, 5, "and in the third column it moves the body");
+        assert_eq!(u.picked, 3, "without disturbing which run is open");
+
+        u.pane = Pane::Conversation;
+        for i in 0..9 {
+            u.push(Who::Human, "you", &format!("m{i}"));
+        }
+        u.scroll(-2);
+        assert_eq!(u.scroll_back, 2, "and elsewhere it is the conversation again");
     }
 
     #[test]
