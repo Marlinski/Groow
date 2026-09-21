@@ -28,7 +28,7 @@ use crate::paths::Paths;
 use crate::store::birth::Birth;
 use crate::store::identity::Identity;
 use crate::store::journal::{restore_window_without, Journal};
-use crate::life::Life;
+use crate::brainstem::{Brainstem, Reflex, Stimulus};
 use crate::store::inbox::{Inbox, Signal};
 use crate::store::schedule::Schedule;
 use crate::store::thoughts::{ThoughtStatus, Thoughts};
@@ -240,11 +240,11 @@ pub struct Hub {
     active: Option<Active>,
     epoch: Epoch,
     /// Consecutive idle nudges, so the mind is left alone for longer the less is happening.
-    idle_streak: u32,
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
-    /// What it is doing, in one place, derived from the facts rather than kept beside them.
-    life: Life,
+    /// What it is doing, and what each thing that happens to it means. Every decision about
+    /// beginning, resting, sleeping and stopping is its, not this file's.
+    stem: Brainstem,
     /// Whether the brain is answering. It takes a while to load the weights, and a turn that
     /// starts before then fails for a reason that has nothing to do with the turn.
     /// Consecutive turns that ended badly, and when the last one did. A brain that is down
@@ -313,8 +313,7 @@ impl Hub {
             subscribers: Vec::new(),
             active: None,
             epoch: Epoch(0),
-            idle_streak: 0,
-            life: Life::default(),
+            stem: Brainstem::default(),
             fail_streak: 0,
             last_failure: 0.0,
             since_learned,
@@ -355,8 +354,13 @@ impl Hub {
                 send(reply, Ok(rx));
             }
             // A turn says what it is doing as it goes, and the state follows.
+            // A turn says what it is doing as it goes, and the state follows.
             Cmd::Emit { event } => {
-                self.life.saw(&event.name);
+                match event.name.as_str() {
+                    "tool_call" => self.stem.feel(Stimulus::ToolCalled),
+                    "tool_result" => self.stem.feel(Stimulus::ToolReturned),
+                    _ => Reflex::Nothing,
+                };
                 self.fanout(event);
             }
             Cmd::NextDuty { reply } => {
@@ -378,13 +382,17 @@ impl Hub {
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
             Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
             Cmd::BrainState { up } => {
-                if self.life.awake() != up {
-                    self.life.brain(up);
+                let was = self.stem.state();
+                self.stem.feel(Stimulus::Brain { loaded: up });
+                if self.stem.state() != was {
                     self.fanout(Event::new(EventName::Status, self.status()));
                 }
             }
             Cmd::Napping { what } => {
-                self.life.asleep(what.clone());
+                match &what {
+                    Some(w) => self.stem.feel(Stimulus::SleepBegan { night: w == "night" }),
+                    None => self.stem.feel(Stimulus::SleepEnded),
+                };
                 self.fanout(Event::new(EventName::Status, self.status()));
             }
             Cmd::Say { text, kind, meta, reply } => {
@@ -431,6 +439,7 @@ impl Hub {
                 let _ = self.db.tool_call(&turn, groow_proto::event::now(), &name, &actor, ok, seconds);
             }
             Cmd::Shutdown { reply } => {
+                self.stem.feel(Stimulus::Stop);
                 self.running = false;
                 self.fanout(Event::new(EventName::Log, json!({"level": "info", "text": "going to sleep"})));
                 send(reply, Ok(json!({"ok": true})));
@@ -478,9 +487,9 @@ impl Hub {
         let (pain, pleasure) = self.db.mood(now, self.cfg.mood_halflife_s).unwrap_or((0.0, 0.0));
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
-            "state": self.life.state().as_str(),
-            "napping": self.life.asleep_with(),
-            "brain": self.life.awake(),
+            "state": self.stem.state().as_str(),
+            "napping": self.stem.pass(),
+            "brain": self.stem.state() != crate::brainstem::State::Waking,
             "mood": self.mood(),
             "age": self.birth.age_text(now),
             "born": self.birth.born,
@@ -490,11 +499,11 @@ impl Hub {
             "turns": self.db.turn_count().unwrap_or(0),
             "thoughts": self.thoughts.live().map(|v| v.len()).unwrap_or(0),
             "feeling": {"pain": pain, "pleasure": pleasure, "tone": tone},
-            "idle_streak": self.idle_streak,
+            "idle_streak": self.stem.unanswered(),
             // When curiosity will next wake it, which is the thing that nudges it all day and
             // was the one piece of what happens next that nothing outside could see.
             "idle_in": self.cfg.curiosity.then(|| {
-                let gap = idle_gap(self.idle_streak, self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
+                let gap = idle_gap(self.stem.unanswered(), self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
                 (self.last_human + gap - now).max(0.0)
             }),
         })
@@ -503,7 +512,7 @@ impl Hub {
     /// What it looks like it is doing, for the creature and the status line.
     /// What it is doing, asked of the one thing that knows.
     fn mood(&self) -> &'static str {
-        self.life.state().as_str()
+        self.stem.state().as_str()
     }
 
     /// Read the conversation back: the last `n`, or the `n` before a time already held.
@@ -556,7 +565,7 @@ impl Hub {
     /// For tests and for a dry run: say whether the brain is answering.
     #[doc(hidden)]
     pub fn set_brain_up(&mut self, up: bool) {
-        self.life.brain(up);
+        self.stem.feel(Stimulus::Brain { loaded: up });
     }
 
     /// Replace the clock. For tests, so time can be moved deliberately.
@@ -575,12 +584,13 @@ impl Hub {
     /// itself holds no policy and cannot drift out of step with the state.
     fn next_duty(&mut self) -> Result<Duty, WireError> {
         let now = self.now();
-        // Whether anything may be started is the state's to say, and only the state's. Asking
-        // the underlying facts here instead is how the word the creature shows and the rule it
-        // actually follows come apart.
-        if let Err((state, wait)) = self.life.may_begin() {
-            tracing::trace!(state = state.as_str(), "nothing started");
-            return Ok(Duty::Idle(wait));
+        // The scheduler does not decide anything: it says it is asking, and does what comes
+        // back. Every rule about when work may begin lives in the one state that was in when
+        // the question arrived.
+        match self.stem.feel(Stimulus::Asked) {
+            Reflex::Rest(seconds) => return Ok(Duty::Idle(seconds)),
+            Reflex::Halt => return Ok(Duty::Idle(3600.0)),
+            Reflex::Begin | Reflex::Nothing => {}
         }
         // After a failure, wait before trying again, longer each time. Without this, a brain
         // that is down becomes a loop that spawns a process as fast as the machine allows.
@@ -604,8 +614,7 @@ impl Hub {
         if let Some(sig) = self.inbox.pop().map_err(io)? {
             if sig.kind.is_human() {
                 self.last_human = now;
-                self.idle_streak = 0;
-                self.life.quiet_for(0);
+                self.stem.feel(Stimulus::Spoke);
             }
             let id = self.begin(sig.clone(), now);
             return Ok(Duty::Turn(Box::new(sig), id));
@@ -629,10 +638,9 @@ impl Hub {
 
         // Nothing to do. Consider being curious, but less and less often.
         if self.cfg.curiosity {
-            let gap = idle_gap(self.idle_streak, self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
+            let gap = idle_gap(self.stem.unanswered(), self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
             if now - self.last_human >= gap {
-                self.idle_streak += 1;
-                self.life.quiet_for(self.idle_streak);
+                self.stem.feel(Stimulus::Nudged);
                 self.last_human = now;
                 let sig = Signal::new(SignalKind::SignalIdle,
                     "Nothing is waiting for you. Pick something small you do not understand, look it up, and try it.");
@@ -670,7 +678,7 @@ impl Hub {
             id: id.clone(), epoch: self.epoch, kind: sig.kind, started: now,
             signal: sig, claimed: false, rounds: 0, pid: None,
         });
-        self.life.turn_began();
+        self.stem.feel(Stimulus::TurnBegan);
         id
     }
 
@@ -739,7 +747,7 @@ impl Hub {
         self.guard(&out.turn, Epoch(out.epoch))?;
         let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
-        self.life.turn_ended();
+        self.stem.feel(Stimulus::TurnEnded);
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
             at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
             flags: out.flags.clone(), outcome: "ok".into(),
@@ -784,7 +792,7 @@ impl Hub {
         let Some(a) = self.active.take() else {
             return Ok(json!({"ok": false, "why": "nothing is running"}));
         };
-        self.life.turn_ended();
+        self.stem.feel(Stimulus::TurnEnded);
         self.epoch = self.epoch.next();
         let now = self.now();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
@@ -806,7 +814,7 @@ impl Hub {
     fn abandon(&mut self, turn: &str, why: &str) {
         let Some(a) = self.active.as_ref().filter(|a| a.id == turn).cloned() else { return };
         self.active = None;
-        self.life.turn_ended();
+        self.stem.feel(Stimulus::TurnEnded);
         self.epoch = self.epoch.next();
         let now = self.now();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
@@ -853,8 +861,7 @@ impl Hub {
         self.inbox.push(&sig).map_err(io)?;
         if kind.is_human() {
             self.last_human = self.now();
-            self.idle_streak = 0;
-            self.life.quiet_for(0);
+            self.stem.feel(Stimulus::Spoke);
         }
         Ok(json!({"ok": true, "queued": kind.as_str()}))
     }

@@ -182,6 +182,7 @@ impl Mood {
         Some(match s {
             "idle" => Mood::Idle,
             "waking" => Mood::Repair,
+            "stopping" => Mood::Sleeping,
             "listening" => Mood::Listening,
             "thinking" => Mood::Thinking,
             "tooling" | "working" => Mood::Tooling,

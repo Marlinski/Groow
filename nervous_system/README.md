@@ -11,6 +11,7 @@ the GPU, and the mind owns nothing at all.
 | [socket.md](socket.md) | the Unix socket between the core and everything that is not the brain |
 | [brain.md](brain.md) | the loopback HTTP to the process that holds the weights |
 | [files.md](files.md) | the formats nobody sends over a wire |
+| [brainstem.md](brainstem.md) | what it is doing, and what each thing that happens to it means |
 
 ```
       a window
@@ -26,8 +27,8 @@ the GPU, and the mind owns nothing at all.
 ## Who may speak to whom
 
 - The **mind** speaks only to the core. It has no address for the brain and no handle on the
-  state. Generation is relayed by the core, which is how the core can stream tokens to a
-  window, count what a turn cost, and refuse a turn that is no longer current.
+  state. Generation is relayed by the core, which is how the core can count what a turn cost
+  and refuse a turn that is no longer current.
 - The **core** speaks to the mind, to windows, and to the brain.
 - The **passes** speak to the brain and write files. They never speak to the core; the core
   starts them and waits.
