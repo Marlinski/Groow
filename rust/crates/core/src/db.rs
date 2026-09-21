@@ -12,6 +12,7 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Value};
 
 pub struct Db {
     conn: Connection,
@@ -198,15 +199,6 @@ impl Db {
         Ok((pain, pleasure))
     }
 
-    pub fn question_asked(&self, id: &str, ts: f64) -> anyhow::Result<()> {
-        self.conn.execute(
-            "INSERT INTO questions (id, asked, status) VALUES (?1,?2,'open') ON CONFLICT(id) DO NOTHING",
-            params![id, ts],
-        )?;
-        Ok(())
-    }
-
-    /// The share of questions that ever got an answer. The mind's estimate of whether asking
     // ---------------------------------------------------------------- learning
     pub fn learned(&self, ts: f64, kind: &str, samples: u32, loss: Option<f64>, note: &str) -> anyhow::Result<()> {
         self.conn.execute(
@@ -217,6 +209,73 @@ impl Db {
     }
 
     // ---------------------------------------------------------------- counters
+    /// The learning passes, most recent first. What ran, how much it practised, what it cost.
+    pub fn recent_learning(&self, n: usize) -> anyhow::Result<Vec<Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT ts, kind, samples, loss, note FROM learning ORDER BY ts DESC LIMIT ?1",
+        )?;
+        let rows = st.query_map([n as i64], |r| {
+            Ok(json!({
+                "ts": r.get::<_, f64>(0)?,
+                "kind": r.get::<_, String>(1)?,
+                "samples": r.get::<_, i64>(2)?,
+                "loss": r.get::<_, Option<f64>>(3)?,
+                "note": r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            }))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// The turns, most recent first, with how long each took and how it ended.
+    pub fn recent_turns(&self, n: usize) -> anyhow::Result<Vec<Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, kind, started, seconds, tools, rounds, flags, outcome \
+             FROM turns ORDER BY started DESC LIMIT ?1",
+        )?;
+        let rows = st.query_map([n as i64], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "kind": r.get::<_, String>(1)?,
+                "started": r.get::<_, f64>(2)?,
+                "seconds": r.get::<_, Option<f64>>(3)?,
+                "tools": r.get::<_, i64>(4)?,
+                "rounds": r.get::<_, i64>(5)?,
+                "flags": r.get::<_, String>(6)?,
+                "outcome": r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            }))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// How turns felt, oldest first, which is the order a line is drawn in.
+    pub fn recent_feelings(&self, n: usize) -> anyhow::Result<Vec<Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT ts, sensors, approval, valence FROM feelings ORDER BY ts DESC LIMIT ?1",
+        )?;
+        let rows = st.query_map([n as i64], |r| {
+            Ok(json!({
+                "ts": r.get::<_, f64>(0)?,
+                "sensors": r.get::<_, f64>(1)?,
+                "approval": r.get::<_, Option<f64>>(2)?,
+                "valence": r.get::<_, f64>(3)?,
+            }))
+        })?;
+        let mut v: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+        v.reverse();
+        Ok(v)
+    }
+
+    /// Everything counted since it was born.
+    pub fn counters(&self) -> anyhow::Result<Value> {
+        let mut st = self.conn.prepare("SELECT key, value FROM counters ORDER BY key")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))?;
+        let mut out = serde_json::Map::new();
+        for (k, v) in rows.flatten() {
+            out.insert(k, json!(v));
+        }
+        Ok(Value::Object(out))
+    }
+
     pub fn bump(&self, key: &str, by: f64) -> anyhow::Result<f64> {
         self.conn.execute(
             "INSERT INTO counters (key, value) VALUES (?1, ?2)

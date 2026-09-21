@@ -232,7 +232,13 @@ impl Conn {
             }
             Op::Recall => {
                 let n = arg.get("n").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
-                self.hub.recall(n).await
+                // A window paging backwards says what it already holds; without it, the end.
+                let before = arg.get("before").and_then(|b| b.as_f64()).filter(|b| *b > 0.0);
+                self.hub.recall(n, before).await
+            }
+            Op::Stats => {
+                let n = arg.get("n").and_then(|v| v.as_u64()).unwrap_or(60) as usize;
+                self.hub.stats(n).await
             }
             Op::Schedule => {
                 let action = if s("action").is_empty() { "list".into() } else { s("action") };

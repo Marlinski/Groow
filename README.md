@@ -15,7 +15,8 @@ mentor when it is stuck. It has a birth certificate it cannot edit and an age th
 make start               wake it in the container it ships with. The first time this
                          builds its body and fetches its base model, which takes a
                          while and happens once.
-./groow ui               open the window onto it
+./groow ui               open the window onto it. F1 what was said, F2 every
+                         command it ran, F3 what the learning has been doing
 ./groow say "hello"      say something
 ./groow status           what it is doing. --json, on any of these, prints the
                          core's reply instead of something to read

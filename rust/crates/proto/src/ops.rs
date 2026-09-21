@@ -51,6 +51,8 @@ pub enum Op {
     ThoughtEnd,
     /// Read the conversation back, further than the window reaches.
     Recall,
+    /// The measurements behind the creature: learning passes, turns, feeling, tool health.
+    Stats,
     /// Set or cancel an alarm.
     Schedule,
 
@@ -83,6 +85,7 @@ impl Op {
             "thought.append" => Op::ThoughtAppend,
             "thought.end" => Op::ThoughtEnd,
             "recall" => Op::Recall,
+            "stats" => Op::Stats,
             "schedule" => Op::Schedule,
             "say" => Op::Say,
             "command" => Op::Command,
@@ -108,6 +111,7 @@ impl Op {
             Op::ThoughtAppend => "thought.append",
             Op::ThoughtEnd => "thought.end",
             Op::Recall => "recall",
+            Op::Stats => "stats",
             Op::Schedule => "schedule",
             Op::Say => "say",
             Op::Command => "command",
@@ -159,7 +163,7 @@ mod tests {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
             Op::Complete, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
-            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Say, Op::Command,
+            Op::ThoughtEnd, Op::Recall, Op::Stats, Op::Schedule, Op::Say, Op::Command,
             Op::Consolidate, Op::Train, Op::Quit,
         ] {
             assert_eq!(Op::parse(op.name()), Some(op), "{} did not round trip", op.name());
@@ -206,7 +210,7 @@ mod tests {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
             Op::Complete, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
-            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Say, Op::Command,
+            Op::ThoughtEnd, Op::Recall, Op::Stats, Op::Schedule, Op::Say, Op::Command,
             Op::Consolidate, Op::Train, Op::Quit,
         ] {
             let any = [Role::Agent, Role::Viewer, Role::Mentor].iter().any(|r| op.allowed_for(*r));

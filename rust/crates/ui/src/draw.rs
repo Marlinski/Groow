@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::creature;
-use crate::state::{Ui, Who};
+use crate::state::{Bubble, Pane, Ui, Who};
 
 pub const MINT: Color = Color::Rgb(0x7e, 0xe8, 0xc8);
 pub const AMBER: Color = Color::Rgb(0xf2, 0xc9, 0x7d);
@@ -34,27 +34,70 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(4), Constraint::Length(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
         .split(area);
+
+    f.render_widget(Paragraph::new(tabs(ui)), rows[0]);
+    let body = rows[1];
 
     if area.width >= NARROW {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(30), Constraint::Length(SIDE)])
-            .split(rows[0]);
-        conversation(f, cols[0], ui);
+            .split(body);
+        pane(f, cols[0], ui);
         side(f, cols[1], ui);
     } else {
         // On a narrow terminal the creature gives way to the words.
-        conversation(f, rows[0], ui);
+        pane(f, body, ui);
     }
-    input(f, rows[1], ui);
-    status(f, rows[2], ui);
+    input(f, rows[2], ui);
+    status(f, rows[3], ui);
 }
 
-fn conversation(f: &mut Frame, area: Rect, ui: &Ui) {
+/// Whichever view is being looked at, in the same frame, so switching costs nothing.
+fn pane(f: &mut Frame, area: Rect, ui: &Ui) {
+    match ui.pane {
+        Pane::Conversation => conversation(f, area, ui, ui.bubbles.iter().collect()),
+        Pane::Tools => conversation(f, area, ui, ui.tool_lines()),
+        Pane::Admin => meta(f, area, ui),
+    }
+}
+
+/// The tab bar: which pane is on screen, and how to reach the others.
+fn tabs(ui: &Ui) -> Line<'static> {
+    let mut spans = vec![Span::styled(" ", Style::default().fg(DIM))];
+    for (i, p) in Pane::ALL.iter().enumerate() {
+        let on = *p == ui.pane;
+        let style = if on {
+            Style::default().fg(MINT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
+        spans.push(Span::styled(format!("F{} {} ", i + 1, p.title()), style));
+    }
+    Line::from(spans)
+}
+
+fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
     let mut lines: Vec<Line> = Vec::new();
-    for b in &ui.bubbles {
+    if ui.loading {
+        lines.push(Line::from(Span::styled(
+            "reading further back…",
+            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+        )));
+    } else if !ui.more_history && ui.pane == Pane::Conversation {
+        lines.push(Line::from(Span::styled(
+            "\u{2015} the beginning \u{2015}",
+            Style::default().fg(DIM),
+        )));
+    }
+    for b in bubbles {
         let (colour, label) = match b.who {
             Who::Human => (AMBER, b.label.as_str()),
             Who::Groow => (MINT, b.label.as_str()),
@@ -83,9 +126,9 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui) {
     let view: Vec<Line> = lines[start.min(total)..end.min(total)].to_vec();
 
     let title = if ui.scroll_back > 0 {
-        format!(" conversation \u{b7} scrolled back {} ", ui.scroll_back)
+        format!(" {} \u{b7} back {} ", ui.pane.title(), ui.scroll_back)
     } else {
-        " conversation ".to_string()
+        format!(" {} ", ui.pane.title())
     };
     f.render_widget(
         Paragraph::new(view)
@@ -98,6 +141,176 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui) {
             ),
         area,
     );
+}
+
+/// The meta pane: what the processes the mind never sees have been doing.
+///
+/// Everything here comes out of the statistics database, which only the core can open. It is
+/// deliberately the plainest view in the window: a list of what ran and how long it took, and
+/// two lines showing where the numbers are going. A graph that flatters is worse than no graph.
+fn meta(f: &mut Frame, area: Rect, ui: &Ui) {
+    let mut lines: Vec<Line> = Vec::new();
+    let get = |k: &str| ui.stats.get(k).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    // Nothing here wraps: these are rows, and a row that folds onto the next line stops being
+    // a table. Anything too long is cut instead.
+    let w = area.width.saturating_sub(4) as usize;
+
+    let passes = get("learning");
+    lines.push(head("learning"));
+    if passes.is_empty() {
+        lines.push(quiet("nothing has run yet"));
+    }
+    for p in passes.iter().take(14) {
+        let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let n = p.get("samples").and_then(|v| v.as_i64()).unwrap_or(0);
+        let loss = p.get("loss").and_then(|v| v.as_f64());
+        let note = p.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        let when = p.get("ts").and_then(|v| v.as_f64()).map(ago).unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {when:>8}  "), Style::default().fg(DIM)),
+            Span::styled(format!("{kind:<12}"), Style::default().fg(VIOLET)),
+            Span::styled(format!("{n:>5} samples  "), Style::default().fg(FG)),
+            Span::styled(
+                loss.map(|l| format!("loss {l:.3}")).unwrap_or_default(),
+                Style::default().fg(MINT),
+            ),
+            Span::styled(format!("  {}", clip(note, w.saturating_sub(48))), Style::default().fg(DIM)),
+        ]));
+    }
+
+    // Where the two numbers that matter are going. Loss should fall; feeling should not.
+    lines.push(Line::from(""));
+    lines.push(head("trend"));
+    let losses: Vec<f64> = passes.iter().rev().filter_map(|p| p.get("loss").and_then(|v| v.as_f64())).collect();
+    lines.push(spark("loss   ", &losses, MINT, w));
+    let valence: Vec<f64> = get("feelings")
+        .iter()
+        .filter_map(|x| x.get("valence").and_then(|v| v.as_f64()))
+        .collect();
+    lines.push(spark("feeling", &valence, AMBER, w));
+
+    lines.push(Line::from(""));
+    lines.push(head("turns"));
+    let turns = get("turns");
+    let shown = turns.iter().take(10);
+    if turns.is_empty() {
+        lines.push(quiet("none recorded"));
+    }
+    for t in shown {
+        let kind = t.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let secs = t.get("seconds").and_then(|v| v.as_f64());
+        let tools = t.get("tools").and_then(|v| v.as_i64()).unwrap_or(0);
+        let outcome = t.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
+        let flags = t.get("flags").and_then(|v| v.as_str()).unwrap_or("");
+        let when = t.get("started").and_then(|v| v.as_f64()).map(ago).unwrap_or_default();
+        let colour = if outcome == "ok" { FG } else { ROSE };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {when:>8}  "), Style::default().fg(DIM)),
+            Span::styled(format!("{kind:<10}"), Style::default().fg(SKY)),
+            Span::styled(
+                secs.map(|s| format!("{s:>6.1}s ")).unwrap_or_else(|| "     \u{b7} ".into()),
+                Style::default().fg(FG),
+            ),
+            Span::styled(format!("{tools} tools  "), Style::default().fg(DIM)),
+            Span::styled(outcome.to_string(), Style::default().fg(colour)),
+            Span::styled(
+                format!(" {}", clip(flags, w.saturating_sub(42))),
+                Style::default().fg(ROSE),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(head("commands"));
+    for t in get("tools").iter().take(8) {
+        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let used = t.get("used").and_then(|v| v.as_i64()).unwrap_or(0);
+        let failed = t.get("failed").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {name:<16}"), Style::default().fg(SKY)),
+            Span::styled(format!("{used:>5} runs  "), Style::default().fg(FG)),
+            Span::styled(
+                format!("{:.0}% failed", failed * 100.0),
+                Style::default().fg(if failed > 0.25 { ROSE } else { DIM }),
+            ),
+        ]));
+    }
+
+    // From the top, and never past the end, so scrolling down stops at the last row rather
+    // than running off into blank space.
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let total = lines.len();
+    let start = (ui.meta_scroll as usize).min(total.saturating_sub(inner_h.min(total)));
+    let view: Vec<Line> = lines[start..(start + inner_h).min(total)].to_vec();
+
+    f.render_widget(
+        Paragraph::new(view).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(EDGE))
+                .title(Span::styled(" meta ", Style::default().fg(DIM))),
+        ),
+        area,
+    );
+}
+
+fn head(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(" {text}"),
+        Style::default().fg(MOSS).add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn quiet(text: &str) -> Line<'static> {
+    Line::from(Span::styled(format!("  {text}"), Style::default().fg(DIM)))
+}
+
+/// A line of numbers as eight heights, oldest on the left.
+///
+/// Scaled between its own smallest and largest, so it shows the shape of the change rather
+/// than the size of it; the numbers themselves are on the rows above.
+fn spark(label: &str, v: &[f64], colour: Color, width: usize) -> Line<'static> {
+    const BARS: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    if v.len() < 2 {
+        return Line::from(vec![
+            Span::styled(format!("  {label}  "), Style::default().fg(DIM)),
+            Span::styled("not enough yet", Style::default().fg(DIM)),
+        ]);
+    }
+    // Only as many bars as there is room for, taking the most recent, so the line never wraps
+    // and what is shown is the part anyone is actually asking about.
+    let room = width.saturating_sub(label.len() + 22).max(8);
+    let v = &v[v.len().saturating_sub(room)..];
+    let lo = v.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let span = (hi - lo).max(f64::EPSILON);
+    let bars: String = v
+        .iter()
+        .map(|x| {
+            let i = (((x - lo) / span) * (BARS.len() - 1) as f64).round() as usize;
+            BARS[i.min(BARS.len() - 1)]
+        })
+        .collect();
+    Line::from(vec![
+        Span::styled(format!("  {label}  "), Style::default().fg(DIM)),
+        Span::styled(bars, Style::default().fg(colour)),
+        Span::styled(format!("  {lo:.3} \u{2192} {:.3}", v[v.len() - 1]), Style::default().fg(DIM)),
+    ])
+}
+
+/// How long ago, said the way a person would say it.
+fn ago(ts: f64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let s = (now - ts).max(0.0) as u64;
+    match s {
+        0..=90 => format!("{s}s"),
+        91..=5400 => format!("{}m", s / 60),
+        5401..=172_800 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86400),
+    }
 }
 
 /// How tall the creature is when it is drawn: twelve rows of pixels, a line for the breath,
@@ -395,7 +608,88 @@ mod tests {
         }
         u.scroll(-60);
         let s = render(100, 30, &u);
-        assert!(s.contains("scrolled back"), "a person should know they are not at the present");
+        assert!(s.contains("back 60"), "a person should know they are not at the present: {s}");
+    }
+
+    #[test]
+    fn the_panes_are_named_and_the_one_in_front_is_marked() {
+        let mut u = ui();
+        let s = render(100, 30, &u);
+        assert!(s.contains("F1 conversation"), "{s}");
+        assert!(s.contains("F2 commands"), "{s}");
+        assert!(s.contains("F3 meta"), "{s}");
+
+        u.pane = Pane::Tools;
+        assert!(render(100, 30, &u).contains(" commands "), "the pane's own title should change");
+    }
+
+    #[test]
+    fn the_commands_pane_shows_what_was_run_and_nothing_else() {
+        let mut u = ui();
+        u.push(Who::Human, "you", "what is in this directory?");
+        u.push(Who::Tool, "", "\u{2699} shell(ls -1 | wc -l)");
+        u.push(Who::System, "", "  6");
+        u.push(Who::Groow, "groow", "There are six.");
+
+        u.pane = Pane::Tools;
+        let s = render(100, 30, &u);
+        assert!(s.contains("shell(ls -1"), "{s}");
+        assert!(!s.contains("There are six"), "what was said belongs to the other pane: {s}");
+    }
+
+    #[test]
+    fn the_meta_pane_shows_what_the_mind_never_sees() {
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        u.stats = json!({
+            "learning": [
+                {"ts": 1.0, "kind": "night", "samples": 42, "loss": 0.31, "note": "merged"},
+                {"ts": 0.0, "kind": "nap", "samples": 8, "loss": 0.44, "note": ""},
+            ],
+            "turns": [{"id": "t1", "kind": "user", "started": 0.0, "seconds": 3.5, "tools": 2,
+                       "rounds": 2, "flags": "", "outcome": "ok"}],
+            "feelings": [{"ts": 0.0, "valence": 0.1}, {"ts": 1.0, "valence": 0.4}],
+            "tools": [{"name": "shell", "used": 91, "failed": 0.12}],
+            "counters": {},
+        });
+        let s = render(110, 40, &u);
+        assert!(s.contains("night"), "{s}");
+        assert!(s.contains("42 samples"), "{s}");
+        assert!(s.contains("loss 0.310"), "{s}");
+        assert!(s.contains("91 runs"), "{s}");
+        assert!(s.contains("12% failed"), "{s}");
+    }
+
+    #[test]
+    fn nothing_in_the_meta_pane_folds_onto_the_next_line() {
+        // A row that wraps stops being a row. Long flags and long notes are cut instead.
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        let flags = "tool_error,".repeat(20);
+        u.stats = json!({
+            "learning": [{"ts": 0.0, "kind": "train", "samples": 8, "loss": 0.2,
+                          "note": "x".repeat(300)}],
+            "turns": [{"id": "t1", "kind": "idle", "started": 0.0, "seconds": 1.0, "tools": 6,
+                       "rounds": 6, "flags": flags, "outcome": "ok"}],
+            "feelings": (0..400).map(|i| json!({"ts": i as f64, "valence": (i % 7) as f64 / 7.0}))
+                                .collect::<Vec<_>>(),
+            "tools": [], "counters": {},
+        });
+        let s = render(100, 30, &u);
+        for line in s.lines().filter(|l| l.contains('│')) {
+            let inner: String = line.chars().skip_while(|c| *c != '│').skip(1).collect();
+            let inner = inner.split('│').next().unwrap_or("");
+            assert!(inner.chars().count() <= 100, "a row spilled: {inner:?}");
+        }
+        assert!(s.contains("tool_error"), "and what fits is still shown: {s}");
+    }
+
+    #[test]
+    fn a_trend_needs_more_than_one_number_before_it_says_anything() {
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        u.stats = json!({"learning": [{"ts": 0.0, "kind": "nap", "samples": 1, "loss": 0.5}]});
+        assert!(render(110, 40, &u).contains("not enough yet"));
     }
 
     #[test]

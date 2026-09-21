@@ -15,6 +15,52 @@ pub struct Bubble {
     pub who: Who,
     pub label: String,
     pub text: String,
+    /// When it happened, where that is known. History has it; a live event usually does not,
+    /// and something without a time is simply shown without one.
+    pub at: Option<f64>,
+}
+
+impl Bubble {
+    pub fn new(who: Who, label: &str, text: &str) -> Bubble {
+        Bubble { who, label: label.to_string(), text: text.to_string(), at: None }
+    }
+
+    pub fn at(mut self, ts: Option<f64>) -> Bubble {
+        self.at = ts;
+        self
+    }
+}
+
+/// Which view is on screen. The conversation is the creature; the other two are about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    /// What was said.
+    Conversation,
+    /// Every command it has run, and what came back.
+    Tools,
+    /// The meta-processes: what learning ran, how long it took, where the feeling is going.
+    Admin,
+}
+
+impl Pane {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Pane::Conversation => "conversation",
+            Pane::Tools => "commands",
+            Pane::Admin => "meta",
+        }
+    }
+
+    /// Left to right, which is also the order the function keys are in.
+    pub const ALL: [Pane; 3] = [Pane::Conversation, Pane::Tools, Pane::Admin];
+
+    pub fn next(&self) -> Pane {
+        match self {
+            Pane::Conversation => Pane::Tools,
+            Pane::Tools => Pane::Admin,
+            Pane::Admin => Pane::Conversation,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,14 +105,38 @@ pub struct Ui {
     echoed: Option<String>,
     /// How far back the conversation is scrolled; zero is the newest.
     pub scroll_back: u16,
+    /// How far down the meta pane is scrolled; zero is the top. A conversation is read from
+    /// the bottom because the newest matters most, and a table from the top because the
+    /// heading does, so the two do not share a number.
+    pub meta_scroll: u16,
     /// Set when the person asks to leave.
     pub done: bool,
     /// The last thing that went wrong, shown once.
     pub trouble: Option<String>,
+    /// Which view is on screen.
+    pub pane: Pane,
+    /// The measurements behind the creature, as the core last reported them.
+    pub stats: Value,
+    /// The time of the oldest thing loaded, which is where reading further back starts.
+    oldest: Option<f64>,
+    /// Whether there is more history behind what is loaded.
+    pub more_history: bool,
+    /// Set when the view has been scrolled to the top and there is more to fetch. The run loop
+    /// clears it by asking; keeping the request out of here keeps this file free of sockets.
+    pub want_more: bool,
+    /// True between asking for a page and being given it, so one scroll does not ask twice.
+    pub loading: bool,
 }
 
 /// The most messages kept on screen. Older ones are still in the journal.
-const KEEP: usize = 400;
+///
+/// High enough that a day of conversation fits without paging, because the commonest thing
+/// anyone does with this window is read back what happened.
+const KEEP: usize = 4000;
+
+/// How close to the top counts as the top, in messages. A page is asked for before the ceiling
+/// is actually reached, so scrolling does not stop and wait.
+const NEARLY_TOP: usize = 20;
 
 impl Default for Ui {
     fn default() -> Self {
@@ -83,8 +153,15 @@ impl Default for Ui {
             said: None,
             echoed: None,
             scroll_back: 0,
+            meta_scroll: 0,
             done: false,
             trouble: None,
+            pane: Pane::Conversation,
+            stats: Value::Null,
+            oldest: None,
+            more_history: true,
+            want_more: false,
+            loading: false,
         }
     }
 }
@@ -94,7 +171,7 @@ impl Ui {
         if text.trim().is_empty() && who != Who::Groow {
             return;
         }
-        self.bubbles.push(Bubble { who, label: label.to_string(), text: text.to_string() });
+        self.bubbles.push(Bubble::new(who, label, text));
         if self.bubbles.len() > KEEP {
             let cut = self.bubbles.len() - KEEP;
             self.bubbles.drain(..cut);
@@ -146,11 +223,7 @@ impl Ui {
                         self.bubbles[i].text.push_str(delta);
                     }
                     _ => {
-                        self.bubbles.push(Bubble {
-                            who: Who::Groow,
-                            label: self.name().to_lowercase(),
-                            text: delta.to_string(),
-                        });
+                        self.bubbles.push(Bubble::new(Who::Groow, &self.name().to_lowercase(), delta));
                         self.speaking = Some(self.bubbles.len() - 1);
                     }
                 }
@@ -289,8 +362,95 @@ impl Ui {
     }
 
     pub fn scroll(&mut self, by: i32) {
+        if self.pane == Pane::Admin {
+            self.meta_scroll = (self.meta_scroll as i32 + by).clamp(0, 2000) as u16;
+            return;
+        }
         let next = self.scroll_back as i32 - by;
         self.scroll_back = next.clamp(0, self.bubbles.len() as i32) as u16;
+        // Near the top with more behind it: say so, and let the run loop do the asking. The
+        // margin means the page is on its way before the ceiling is actually hit.
+        if self.pane == Pane::Conversation
+            && self.more_history
+            && !self.loading
+            && self.scroll_back as usize + NEARLY_TOP >= self.bubbles.len()
+        {
+            self.want_more = true;
+        }
+    }
+
+    /// Where reading further back starts: the time of the oldest thing loaded.
+    pub fn oldest(&self) -> Option<f64> {
+        self.oldest
+    }
+
+    /// Take a page of the journal.
+    ///
+    /// `older` is a page from before what is already held, which goes on top; anything else is
+    /// the first load. Either way the view does not move: a person reading something does not
+    /// want it to jump because more arrived above it.
+    pub fn history(&mut self, v: &Value, older: bool) {
+        self.loading = false;
+        let records = v.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+        self.more_history = v.get("more").and_then(|m| m.as_bool()).unwrap_or(false);
+        if records.is_empty() {
+            return;
+        }
+        if let Some(first) = records.first().and_then(|r| r.get("ts")).and_then(|t| t.as_f64()) {
+            self.oldest = Some(match self.oldest {
+                Some(o) if o < first => o,
+                _ => first,
+            });
+        }
+
+        let mut made: Vec<Bubble> = Vec::new();
+        let me = self.name().to_lowercase();
+        for r in &records {
+            let get = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let at = r.get("ts").and_then(|t| t.as_f64());
+            let body = groow_harness::parse::visible(get("content"));
+            match get("role") {
+                "user" => made.push(Bubble::new(Who::Human, "you", &body).at(at)),
+                "assistant" => {
+                    if !body.trim().is_empty() {
+                        made.push(Bubble::new(Who::Groow, &me, &body).at(at));
+                    }
+                    for c in r.get("tool_calls").and_then(|c| c.as_array()).into_iter().flatten() {
+                        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        let args = c.get("arguments").map(compact).unwrap_or_default();
+                        made.push(
+                            Bubble::new(Who::Tool, "", &format!("\u{2699} {name}({})", clip(&args, 200)))
+                                .at(at),
+                        );
+                    }
+                }
+                // What a command printed. Shown as the interface shows a live one, so reading
+                // back looks like watching it happen.
+                "tool" => made.push(
+                    Bubble::new(Who::System, "", &format!("  {}", clip(&body, 400))).at(at),
+                ),
+                _ => {}
+            }
+        }
+
+        if older {
+            let grew = made.len();
+            made.append(&mut self.bubbles);
+            self.bubbles = made;
+            // Hold the view where it was: everything that was on screen is now that much
+            // further from the bottom.
+            self.scroll_back = self.scroll_back.saturating_add(grew as u16);
+            self.speaking = self.speaking.map(|i| i + grew);
+            self.said = self.said.map(|i| i + grew);
+        } else {
+            made.append(&mut self.bubbles);
+            self.bubbles = made;
+        }
+    }
+
+    /// Only the commands, which is what the second pane shows.
+    pub fn tool_lines(&self) -> Vec<&Bubble> {
+        self.bubbles.iter().filter(|b| b.who == Who::Tool || b.who == Who::System).collect()
     }
 }
 
@@ -463,6 +623,92 @@ mod tests {
         u.on_event("turn_end", &json!({"turn": "t1", "final": "There are six."}));
         assert_eq!(u.bubbles.last().unwrap().text, "There are six.");
         assert_eq!(u.bubbles.iter().filter(|b| b.who == Who::Groow).count(), 1);
+    }
+
+    #[test]
+    fn opening_the_window_shows_what_was_said_before_it_was_opened() {
+        let mut u = ui();
+        u.history(&json!({"more": true, "messages": [
+            {"role": "user", "content": "what is in this directory?", "ts": 100.0},
+            {"role": "assistant", "content": "", "ts": 101.0,
+             "tool_calls": [{"name": "shell", "arguments": {"command": "ls -1 | wc -l"}}]},
+            {"role": "tool", "name": "shell", "content": "6", "ts": 102.0},
+            {"role": "assistant", "content": "There are six.", "ts": 103.0},
+        ]}), false);
+
+        let said: Vec<(Who, &str)> = u.bubbles.iter().map(|b| (b.who, b.text.as_str())).collect();
+        assert_eq!(said[0], (Who::Human, "what is in this directory?"));
+        assert_eq!(said[1].0, Who::Tool);
+        assert!(said[1].1.contains("shell(command: ls -1 | wc -l)"), "history reads like the live view: {said:?}");
+        assert_eq!(said[3], (Who::Groow, "There are six."));
+        assert_eq!(u.oldest(), Some(100.0), "the oldest is where reading further back starts");
+        assert!(u.more_history);
+    }
+
+    #[test]
+    fn reading_past_the_top_asks_for_the_page_before() {
+        let mut u = ui();
+        u.history(&json!({"more": true, "messages":
+            (0..40).map(|i| json!({"role": "user", "content": format!("m{i}"), "ts": 100.0 + i as f64}))
+                   .collect::<Vec<_>>()}), false);
+        assert!(!u.want_more, "nothing is asked for while the newest is in view");
+
+        u.scroll(-60);
+        assert!(u.want_more, "scrolling past the top should ask for more");
+
+        // What comes back goes on top, and what was being read stays where it was.
+        u.loading = true;
+        let was = u.bubbles.len();
+        u.history(&json!({"more": false, "messages":
+            (0..10).map(|i| json!({"role": "user", "content": format!("old{i}"), "ts": 50.0 + i as f64}))
+                   .collect::<Vec<_>>()}), true);
+        assert_eq!(u.bubbles[0].text, "old0", "the older page goes above");
+        assert_eq!(u.bubbles.len(), was + 10);
+        assert_eq!(u.oldest(), Some(50.0));
+        assert!(!u.more_history, "and it is told there is no more");
+        assert!(!u.loading);
+    }
+
+    #[test]
+    fn nothing_is_asked_for_twice_while_a_page_is_on_its_way() {
+        let mut u = ui();
+        u.history(&json!({"more": true, "messages":
+            (0..40).map(|i| json!({"role": "user", "content": format!("m{i}"), "ts": 100.0 + i as f64}))
+                   .collect::<Vec<_>>()}), false);
+        u.scroll(-60);
+        u.want_more = false;
+        u.loading = true;
+        u.scroll(-5);
+        assert!(!u.want_more, "one page at a time");
+    }
+
+    #[test]
+    fn the_meta_pane_is_read_from_the_top_and_the_conversation_from_the_bottom() {
+        let mut u = ui();
+        for i in 0..50 {
+            u.push(Who::Human, "you", &format!("m{i}"));
+        }
+        u.scroll(-5);
+        assert_eq!(u.scroll_back, 5, "the conversation scrolls back from the newest");
+
+        u.pane = Pane::Admin;
+        assert_eq!(u.meta_scroll, 0, "a table starts at its heading");
+        u.scroll(4);
+        assert_eq!(u.meta_scroll, 4, "and scrolling down moves down it");
+        u.scroll(-10);
+        assert_eq!(u.meta_scroll, 0, "never above the top");
+        assert_eq!(u.scroll_back, 5, "and the conversation kept its own place");
+    }
+
+    #[test]
+    fn the_commands_pane_is_the_conversation_with_the_words_taken_out() {
+        let mut u = ui();
+        u.push(Who::Human, "you", "what is in this directory?");
+        u.push(Who::Tool, "", "\u{2699} shell(ls)");
+        u.push(Who::System, "", "  6");
+        u.push(Who::Groow, "groow", "There are six.");
+        let only: Vec<&str> = u.tool_lines().iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(only, vec!["\u{2699} shell(ls)", "  6"]);
     }
 
     #[test]

@@ -101,7 +101,8 @@ pub enum Cmd {
     ThoughtAppend { id: String, msg: Box<Message>, reply: Answer<Value> },
     ThoughtEnd { id: String, final_text: String, flags: Vec<String>, reply: Answer<Value> },
     ScheduleAction { action: String, text: String, when: String, every: String, id: String, by: String, reply: Answer<Value> },
-    Recall { n: usize, reply: Answer<Value> },
+    Recall { n: usize, before: Option<f64>, reply: Answer<Value> },
+    Stats { n: usize, reply: Answer<Value> },
     ToolRan { turn: String, name: String, actor: String, ok: bool, seconds: f64 },
     Shutdown { reply: Answer<Value> },
 }
@@ -198,8 +199,11 @@ impl Handle {
         let (every, id, by) = (every.to_string(), id.to_string(), by.to_string());
         self.ask(|reply| Cmd::ScheduleAction { action, text, when, every, id, by, reply }).await
     }
-    pub async fn recall(&self, n: usize) -> Result<Value, WireError> {
-        self.ask(|reply| Cmd::Recall { n, reply }).await
+    pub async fn recall(&self, n: usize, before: Option<f64>) -> Result<Value, WireError> {
+        self.ask(|reply| Cmd::Recall { n, before, reply }).await
+    }
+    pub async fn stats(&self, n: usize) -> Result<Value, WireError> {
+        self.ask(|reply| Cmd::Stats { n, reply }).await
     }
     pub async fn tool_ran(&self, turn: &str, name: &str, actor: &str, ok: bool, seconds: f64) {
         self.tell(Cmd::ToolRan {
@@ -391,8 +395,12 @@ impl Hub {
                 let r = self.schedule_action(&action, &text, &when, &every, &id, &by);
                 send(reply, r);
             }
-            Cmd::Recall { n, reply } => {
-                let r = self.recall(n);
+            Cmd::Recall { n, before, reply } => {
+                let r = self.recall(n, before);
+                send(reply, r);
+            }
+            Cmd::Stats { n, reply } => {
+                let r = self.stats(n);
                 send(reply, r);
             }
             Cmd::ToolRan { turn, name, actor, ok, seconds } => {
@@ -476,9 +484,37 @@ impl Hub {
         }
     }
 
-    fn recall(&self, n: usize) -> Result<Value, WireError> {
-        let recs = self.journal.tail(n.min(500)).map_err(io)?;
-        Ok(json!({"messages": recs}))
+    /// Read the conversation back: the last `n`, or the `n` before a time already held.
+    ///
+    /// Paging backwards is what lets a window show a day rather than a screenful. `more` is
+    /// false when nothing older came back, which is how the window knows to stop asking.
+    fn recall(&self, n: usize, before: Option<f64>) -> Result<Value, WireError> {
+        let n = n.clamp(1, 500);
+        let recs = match before {
+            Some(ts) => self.journal.before(ts, n).map_err(io)?,
+            None => self.journal.tail(n).map_err(io)?,
+        };
+        Ok(json!({"messages": recs, "more": recs.len() >= n}))
+    }
+
+    /// What the meta-processes have been doing: the learning passes, the turns behind them and
+    /// how they felt. Read straight out of the database, which only the core can open.
+    ///
+    /// This is the one view the mind is not given. How it is being scored is not its business,
+    /// and a mind that could read its own reward would learn to read it rather than to earn it.
+    fn stats(&self, n: usize) -> Result<Value, WireError> {
+        let n = n.clamp(1, 500);
+        Ok(json!({
+            "learning": self.db.recent_learning(n).map_err(other)?,
+            "turns": self.db.recent_turns(n).map_err(other)?,
+            "feelings": self.db.recent_feelings(n).map_err(other)?,
+            "tools": self.db.tool_health().map_err(other)?
+                .into_iter()
+                .map(|(name, used, failed)| json!({"name": name, "used": used, "failed": failed}))
+                .collect::<Vec<_>>(),
+            "counters": self.db.counters().map_err(other)?,
+            "turn_count": self.db.turn_count().unwrap_or(0),
+        }))
     }
 
     // ------------------------------------------------------------ scheduling
@@ -1460,6 +1496,51 @@ mod tests {
             every: String::new(), id: String::new(), by: "mentor".into(), reply,
         }, &mut h).unwrap_err();
         assert!(e.to_string().contains("burn"), "the error should say what was wrong: {e}");
+    }
+
+    #[test]
+    fn the_conversation_can_be_read_back_a_page_at_a_time() {
+        // What a window does when someone scrolls past the top: ask for what came before the
+        // oldest line it holds, until nothing older comes back.
+        let (mut h, _d) = hub();
+        for i in 0..25 {
+            let mut m = Message::assistant(format!("line {i}"));
+            m.ts = Some(1000.0 + i as f64);
+            h.journal.append_message(&m).unwrap();
+        }
+
+        let first = take(|reply| Cmd::Recall { n: 10, before: None, reply }, &mut h).unwrap();
+        let newest = first["messages"].as_array().unwrap();
+        assert_eq!(newest.len(), 10);
+        assert_eq!(newest[9]["content"], "line 24", "the newest page ends at the newest line");
+        assert_eq!(first["more"], true);
+
+        let oldest_held = newest[0]["ts"].as_f64().unwrap();
+        let next = take(|reply| Cmd::Recall { n: 10, before: Some(oldest_held), reply }, &mut h).unwrap();
+        let page = next["messages"].as_array().unwrap();
+        assert_eq!(page[9]["content"], "line 14", "the page before it ends where the first began");
+
+        let rest = take(|reply| Cmd::Recall { n: 10, before: Some(1000.0), reply }, &mut h).unwrap();
+        assert!(rest["messages"].as_array().unwrap().is_empty());
+        assert_eq!(rest["more"], false, "and then it stops asking");
+    }
+
+    #[test]
+    fn what_the_meta_processes_did_is_readable_but_not_by_the_mind() {
+        let (mut h, _d) = hub();
+        h.db.learned(10.0, "night", 12, Some(0.42), "merged the overlay").unwrap();
+        h.db.learned(20.0, "nap", 4, Some(0.31), "").unwrap();
+        h.db.felt("t1", 21.0, 0.2, Some(0.9), 0.5).unwrap();
+
+        let v = take(|reply| Cmd::Stats { n: 10, reply }, &mut h).unwrap();
+        let passes = v["learning"].as_array().unwrap();
+        assert_eq!(passes[0]["kind"], "nap", "most recent first");
+        assert_eq!(passes[1]["note"], "merged the overlay");
+        assert_eq!(v["feelings"].as_array().unwrap()[0]["valence"], 0.5);
+
+        // The mind must never be able to read how it is being scored.
+        assert!(!groow_proto::ops::Op::Stats.allowed_for(groow_proto::ops::Role::Agent));
+        assert!(!groow_proto::ops::Op::Stats.allowed_for(groow_proto::ops::Role::Viewer));
     }
 
     #[test]

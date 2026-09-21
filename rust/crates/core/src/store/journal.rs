@@ -144,6 +144,36 @@ impl Journal {
         Ok(out)
     }
 
+    /// The last `n` records written strictly before `ts`, oldest first.
+    ///
+    /// This is how a window reads further back than it has: it asks for what came before the
+    /// oldest line it holds, and keeps asking until nothing comes back. Reading the files
+    /// newest first means a long history costs only the pages actually looked at.
+    pub fn before(&self, ts: f64, n: usize) -> std::io::Result<Vec<Value>> {
+        let mut out: Vec<Value> = Vec::new();
+        for f in self.files()?.into_iter().rev() {
+            let text = fs::read_to_string(&f)?;
+            for line in text.lines().rev() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                // A record without a time cannot be placed, so it is not offered as history.
+                let Some(at) = v.get("ts").and_then(|t| t.as_f64()) else { continue };
+                if at >= ts {
+                    continue;
+                }
+                out.push(v);
+                if out.len() >= n {
+                    out.reverse();
+                    return Ok(out);
+                }
+            }
+        }
+        out.reverse();
+        Ok(out)
+    }
+
     pub fn count(&self) -> std::io::Result<usize> {
         let mut total = 0;
         for f in self.files()? {
