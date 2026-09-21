@@ -341,28 +341,63 @@ fn focused(title: &str, on: bool) -> Block<'static> {
     }
 }
 
-/// The operator's view: a column of cards, scrolled from the top.
+/// The operator's view: each card in its own box, laid out so the two that grow get the room.
 ///
-/// It knows which cards it shows and nothing about what any of them contains. Moving one to
-/// its own tab, or putting two side by side, is a change to `cards::operator()` and to the
-/// layout here, and to nothing else.
+/// It was one long column with headings in it, which meant a heading could be anywhere and the
+/// eye had to find it. A box says where a thing begins and ends without being read.
 fn meta(f: &mut Frame, area: Rect, ui: &Ui) {
     // Nothing here wraps: these are rows, and a row that folds onto the next line stops being
     // a table. Each card cuts its own content to the width it is given.
+    let wide = area.width >= 100;
+    let cols = if wide {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area)
+    } else {
+        Layout::default().direction(Direction::Horizontal).constraints([Constraint::Min(10)]).split(area)
+    };
+
+    // What is happening now is short and fixed; what has been happening grows, so it takes
+    // whatever is left.
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(NOW_H), Constraint::Min(6)])
+        .split(cols[0]);
+    box_of(f, left[0], ui, &crate::cards::Ticker);
+    box_of_from(f, left[1], ui, &crate::cards::Learning, ui.meta_scroll as usize);
+
+    if !wide {
+        return;
+    }
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(TREND_H), Constraint::Min(6), Constraint::Length(COMMANDS_H)])
+        .split(cols[1]);
+    box_of(f, right[0], ui, &crate::cards::Trend);
+    box_of(f, right[1], ui, &crate::cards::Turns);
+    box_of(f, right[2], ui, &crate::cards::Commands);
+}
+
+/// What is ticking: four facts and the alarms under them.
+const NOW_H: u16 = 12;
+/// Two lines and their headings.
+const TREND_H: u16 = 4;
+/// A handful of tools, and room to say there are none.
+const COMMANDS_H: u16 = 8;
+
+/// Draw one card in its own frame.
+fn box_of(f: &mut Frame, area: Rect, ui: &Ui, card: &dyn crate::cards::Card) {
+    box_of_from(f, area, ui, card, 0);
+}
+
+fn box_of_from(f: &mut Frame, area: Rect, ui: &Ui, card: &dyn crate::cards::Card, from: usize) {
     let w = area.width.saturating_sub(4) as usize;
-    let lines = crate::cards::stacked(ui, &crate::cards::operator(), w);
-
-    // From the top, and never past the end, so scrolling down stops at the last row rather
-    // than running off into blank space.
-    let inner_h = area.height.saturating_sub(2) as usize;
-    let total = lines.len();
-    let start = (ui.meta_scroll as usize).min(total.saturating_sub(inner_h.min(total)));
-    let view: Vec<Line> = lines[start..(start + inner_h).min(total)].to_vec();
-
-    f.render_widget(
-        Paragraph::new(view).block(framed(label("meta"))),
-        area,
-    );
+    let lines = card.lines(ui, w);
+    let tall = area.height.saturating_sub(2) as usize;
+    let from = from.min(lines.len().saturating_sub(tall.min(lines.len())));
+    let view: Vec<Line> = lines[from..(from + tall).min(lines.len())].to_vec();
+    f.render_widget(Paragraph::new(view).block(framed(label(card.title()))), area);
 }
 
 pub fn head(text: &str) -> Line<'static> {
@@ -888,7 +923,7 @@ mod tests {
             "tools": [{"name": "shell", "used": 91, "failed": 0.12}],
             "counters": {},
         });
-        let s = render(110, 40, &u);
+        let s = render(160, 40, &u);
         assert!(s.contains("night"), "{s}");
         assert!(s.contains("42 samples"), "{s}");
         assert!(s.contains("loss 0.310"), "{s}");
@@ -911,11 +946,11 @@ mod tests {
                                 .collect::<Vec<_>>(),
             "tools": [], "counters": {},
         });
-        let s = render(100, 30, &u);
+        let s = render(160, 30, &u);
         for line in s.lines().filter(|l| l.contains('│')) {
             let inner: String = line.chars().skip_while(|c| *c != '│').skip(1).collect();
             let inner = inner.split('│').next().unwrap_or("");
-            assert!(inner.chars().count() <= 100, "a row spilled: {inner:?}");
+            assert!(inner.chars().count() <= 160, "a row spilled: {inner:?}");
         }
         assert!(s.contains("tool_error"), "and what fits is still shown: {s}");
     }
@@ -930,7 +965,7 @@ mod tests {
             {"ts": 0.0, "kind": "consolidate", "samples": 0, "seconds": 41.0, "note": ""},
             {"ts": 0.0, "kind": "train", "samples": 32, "loss": 0.71, "seconds": 6.4, "note": ""},
         ]});
-        let s = render(110, 40, &u);
+        let s = render(160, 40, &u);
         assert!(s.contains("night"), "{s}");
         assert!(s.contains("3m04s"), "a long pass is minutes and seconds: {s}");
         assert!(s.contains("41.0s"), "{s}");
@@ -980,6 +1015,30 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let at = |l: &str| l.find("8 samples").unwrap();
         assert_eq!(at(rows[0]), at(rows[1]), "the columns moved: {rows:?}");
+    }
+
+    #[test]
+    fn each_thing_in_the_operators_view_has_its_own_box() {
+        // It was one long column with headings in it, so a heading could be anywhere and the
+        // eye had to find it. A box says where a thing begins and ends without being read.
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        let s = render(160, 40, &u);
+        for title in ["now", "learning", "trend", "turns", "commands"] {
+            assert!(s.contains(&format!("\u{256d} {title} ")), "{title} has no box of its own:\n{s}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_operators_view_keeps_the_two_that_matter() {
+        // Half the width is one column, and what it keeps is what is happening now and what
+        // has been happening — the other three are about those two.
+        let mut u = ui();
+        u.pane = Pane::Admin;
+        let s = render(70, 40, &u);
+        assert!(s.contains("now"), "{s}");
+        assert!(s.contains("learning"), "{s}");
+        assert!(!s.contains("commands"), "there is no room for it: {s}");
     }
 
     #[test]

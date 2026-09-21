@@ -118,6 +118,15 @@ impl Pane {
             Pane::Admin => Pane::Conversation,
         }
     }
+
+    /// The other way round, for shift-tab. Both wrap, so neither direction is a dead end.
+    pub fn prev(&self) -> Pane {
+        match self {
+            Pane::Conversation => Pane::Admin,
+            Pane::Journal => Pane::Conversation,
+            Pane::Admin => Pane::Journal,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

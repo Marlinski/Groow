@@ -128,6 +128,7 @@ pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
         KeyCode::F(2) => Action::Show(Pane::Journal),
         KeyCode::F(3) => Action::Show(Pane::Admin),
         KeyCode::Tab => Action::Show(ui.pane.next()),
+        KeyCode::BackTab => Action::Show(ui.pane.prev()),
         KeyCode::Char('l') if ctrl => {
             ui.bubbles.clear();
             Action::Redraw
@@ -513,9 +514,20 @@ mod tests {
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)), Action::Show(Pane::Journal));
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)), Action::Show(Pane::Admin));
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)), Action::Show(Pane::Conversation));
-        // Tab cycles from wherever it is, so one key reaches all three.
+        // Tab cycles from wherever it is, so one key reaches all three, and shift-tab goes
+        // back the way it came. Both wrap: neither direction is a dead end.
         ui.pane = Pane::Journal;
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)), Action::Show(Pane::Admin));
+        assert_eq!(
+            on_key(&mut ui, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            Action::Show(Pane::Conversation)
+        );
+        ui.pane = Pane::Conversation;
+        assert_eq!(
+            on_key(&mut ui, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            Action::Show(Pane::Admin),
+            "backwards from the first wraps to the last"
+        );
     }
 
     #[test]
