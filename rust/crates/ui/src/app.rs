@@ -10,8 +10,11 @@ use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent, KeyModifiers,
     MouseEventKind,
 };
+use crossterm::cursor::MoveTo;
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -130,15 +133,38 @@ pub async fn run(socket: std::path::PathBuf) -> anyhow::Result<()> {
     // Take the wheel, so scrolling reads the conversation rather than the terminal's own
     // scrollback, which in here holds nothing.
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-    let mut term = Terminal::new(CrosstermBackend::new(out))?;
 
+    // A panic in here would otherwise leave the terminal in raw mode with the mouse still
+    // captured: no echo, no line editing, and a spray of escape codes at every click. Whatever
+    // went wrong, the terminal is given back first and the panic is printed afterwards.
+    let existing = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        give_the_terminal_back();
+        existing(info);
+    }));
+
+    let mut term = Terminal::new(CrosstermBackend::new(out))?;
     let result = main_loop(&mut term, socket).await;
 
-    disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    term.show_cursor()?;
+    give_the_terminal_back();
+    let _ = std::panic::take_hook();
     println!("Window closed. It is still awake; `groow ui` comes back, `groow stop` puts it to sleep.");
     result
+}
+
+/// Put the terminal back exactly as it was found, whatever happened.
+///
+/// Nothing here can fail the caller: every step is attempted even if an earlier one did not
+/// work, because the alternative is a shell nobody can type into. The screen is cleared before
+/// the alternate one is left so that a terminal without alternate screens is wiped rather than
+/// left with the window painted across the prompt.
+fn give_the_terminal_back() {
+    let mut out = io::stdout();
+    let _ = execute!(out, Clear(ClearType::All), MoveTo(0, 0));
+    let _ = execute!(out, DisableMouseCapture);
+    let _ = execute!(out, LeaveAlternateScreen);
+    let _ = crossterm::execute!(out, crossterm::cursor::Show);
+    let _ = disable_raw_mode();
 }
 
 async fn main_loop<B: ratatui::backend::Backend>(
