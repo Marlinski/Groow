@@ -156,6 +156,50 @@ impl Editor {
         text
     }
 
+    /// Remember a line somebody else already sent, as if it had been typed here.
+    ///
+    /// What "up" should give is everything you have said to it, not only what you have said
+    /// since this window was opened. The conversation is loaded when the window opens, and the
+    /// lines in it that came from a person are exactly that history.
+    pub fn remember(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() || self.history.last().map(|l| l == line).unwrap_or(false) {
+            return;
+        }
+        self.history.push(line.to_string());
+        if self.history.len() > REMEMBERED {
+            self.history.remove(0);
+            self.place = self.place.map(|i| i.saturating_sub(1));
+        }
+    }
+
+    /// Remember lines older than everything remembered so far, which is what arrives when the
+    /// window reads further back. Where you are in the history does not move.
+    pub fn remember_older(&mut self, lines: Vec<String>) {
+        let mut older: Vec<String> = Vec::new();
+        for l in lines {
+            let l = l.trim().to_string();
+            if l.is_empty() || older.last().map(|p| *p == l).unwrap_or(false) {
+                continue;
+            }
+            older.push(l);
+        }
+        if older.is_empty() {
+            return;
+        }
+        if older.last() == self.history.first() {
+            older.pop();
+        }
+        let grew = older.len();
+        older.append(&mut self.history);
+        self.history = older;
+        self.place = self.place.map(|i| i + grew);
+        while self.history.len() > REMEMBERED {
+            self.history.remove(0);
+            self.place = self.place.map(|i| i.saturating_sub(1));
+        }
+    }
+
     /// Back through what was said before. The line being written is kept, so coming forward
     /// through the end of the history gives it back rather than an empty line.
     pub fn earlier(&mut self) {
@@ -318,6 +362,47 @@ mod tests {
         assert_eq!(e.text(), "news");
         e.earlier();
         assert_eq!(e.text(), "news", "there is only one of them");
+    }
+
+    #[test]
+    fn what_was_said_before_this_window_was_opened_is_there_too() {
+        // Opening a window is not the start of the conversation, so it is not the start of the
+        // history either. Everything a person said is loaded with it.
+        let mut e = Editor::default();
+        e.remember("read the news");
+        e.remember("what did you learn today?");
+
+        e.earlier();
+        assert_eq!(e.text(), "what did you learn today?");
+        e.earlier();
+        assert_eq!(e.text(), "read the news");
+    }
+
+    #[test]
+    fn reading_further_back_lengthens_the_history_without_losing_your_place() {
+        let mut e = Editor::default();
+        e.remember("the newest");
+        e.earlier();
+        assert_eq!(e.text(), "the newest");
+
+        // A page from earlier in the conversation arrives while you are looking at it.
+        e.remember_older(vec!["much older".into(), "older".into()]);
+        assert_eq!(e.text(), "the newest", "what is on screen does not change under you");
+        e.earlier();
+        assert_eq!(e.text(), "older");
+        e.earlier();
+        assert_eq!(e.text(), "much older");
+    }
+
+    #[test]
+    fn a_page_that_ends_where_the_history_begins_does_not_repeat_the_join() {
+        let mut e = Editor::default();
+        e.remember("one");
+        e.remember_older(vec!["zero".into(), "one".into()]);
+        e.earlier();
+        assert_eq!(e.text(), "one");
+        e.earlier();
+        assert_eq!(e.text(), "zero", "the shared line is not there twice");
     }
 
     #[test]

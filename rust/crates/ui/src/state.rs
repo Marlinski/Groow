@@ -405,13 +405,23 @@ impl Ui {
         }
 
         let mut made: Vec<Bubble> = Vec::new();
+        // What a person said is also what "up" should give in the input line: opening a window
+        // is not the start of the conversation, so it is not the start of the history either.
+        let mut said_by_a_person: Vec<String> = Vec::new();
         let me = self.name().to_lowercase();
         for r in &records {
             let get = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
             let at = r.get("ts").and_then(|t| t.as_f64());
             let body = groow_harness::parse::visible(get("content"));
             match get("role") {
-                "user" => made.push(Bubble::new(Who::Human, "you", &body).at(at)),
+                "user" => {
+                    // Only what a person actually typed. An alarm going off and an idle nudge
+                    // are journalled as user messages too, and they were nobody's prompt.
+                    if matches!(get("kind"), "user" | "") {
+                        said_by_a_person.push(body.clone());
+                    }
+                    made.push(Bubble::new(Who::Human, "you", &body).at(at));
+                }
                 "assistant" => {
                     if !body.trim().is_empty() {
                         made.push(Bubble::new(Who::Groow, &me, &body).at(at));
@@ -435,6 +445,7 @@ impl Ui {
         }
 
         if older {
+            self.input.remember_older(said_by_a_person);
             let grew = made.len();
             made.append(&mut self.bubbles);
             self.bubbles = made;
@@ -444,6 +455,9 @@ impl Ui {
             self.speaking = self.speaking.map(|i| i + grew);
             self.said = self.said.map(|i| i + grew);
         } else {
+            for line in said_by_a_person {
+                self.input.remember(&line);
+            }
             made.append(&mut self.bubbles);
             self.bubbles = made;
         }
@@ -644,6 +658,27 @@ mod tests {
         assert_eq!(said[3], (Who::Groow, "There are six."));
         assert_eq!(u.oldest(), Some(100.0), "the oldest is where reading further back starts");
         assert!(u.more_history);
+    }
+
+    #[test]
+    fn opening_a_window_gives_you_back_what_you_have_already_said() {
+        // The commonest thing anyone does on opening it is repeat or amend their last message,
+        // and having to retype it because the window is new is nobody's idea of a history.
+        let mut u = ui();
+        u.history(&json!({"more": false, "messages": [
+            {"role": "user", "kind": "user", "content": "read the news", "ts": 1.0},
+            {"role": "assistant", "content": "I read it.", "ts": 2.0},
+            {"role": "user", "kind": "alarm", "content": "[an alarm you set earlier] check the news", "ts": 3.0},
+            {"role": "user", "kind": "idle", "content": "Nothing is waiting for you.", "ts": 4.0},
+            {"role": "user", "kind": "user", "content": "what did you learn?", "ts": 5.0},
+        ]}), false);
+
+        u.input.earlier();
+        assert_eq!(u.input.text(), "what did you learn?");
+        u.input.earlier();
+        assert_eq!(u.input.text(), "read the news", "an alarm and a nudge were nobody's prompt");
+        u.input.earlier();
+        assert_eq!(u.input.text(), "read the news", "and there is nothing older");
     }
 
     #[test]
