@@ -243,7 +243,6 @@ pub struct Hub {
     idle_streak: u32,
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
-    napping: Option<String>,
     /// What it is doing, in one place, derived from the facts rather than kept beside them.
     life: Life,
     /// Whether the brain is answering. It takes a while to load the weights, and a turn that
@@ -315,7 +314,6 @@ impl Hub {
             active: None,
             epoch: Epoch(0),
             idle_streak: 0,
-            napping: None,
             life: Life::default(),
             fail_streak: 0,
             last_failure: 0.0,
@@ -386,7 +384,6 @@ impl Hub {
                 }
             }
             Cmd::Napping { what } => {
-                self.napping = what.clone();
                 self.life.asleep(what.clone());
                 self.fanout(Event::new(EventName::Status, self.status()));
             }
@@ -482,7 +479,7 @@ impl Hub {
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
             "state": self.life.state().as_str(),
-            "napping": self.napping,
+            "napping": self.life.asleep_with(),
             "brain": self.life.awake(),
             "mood": self.mood(),
             "age": self.birth.age_text(now),
@@ -578,21 +575,12 @@ impl Hub {
     /// itself holds no policy and cannot drift out of step with the state.
     fn next_duty(&mut self) -> Result<Duty, WireError> {
         let now = self.now();
-        if self.active.is_some() {
-            // A turn is already running. Say so with a short wait rather than queueing a
-            // second one; two conscious turns at once is the thing this design forbids.
-            return Ok(Duty::Idle(0.5));
-        }
-        // Asleep. A turn would need the brain, and the brain is busy becoming different.
-        // Whatever arrives meanwhile waits in the queue, which is what sleeping means here.
-        if self.napping.is_some() {
-            return Ok(Duty::Idle(1.0));
-        }
-        // Not there yet. Loading the weights takes the best part of a minute, and a turn
-        // started in that window fails for a reason that has nothing to do with the turn: it
-        // would be counted against the message and the message eventually set down.
-        if !self.life.awake() {
-            return Ok(Duty::Idle(2.0));
+        // Whether anything may be started is the state's to say, and only the state's. Asking
+        // the underlying facts here instead is how the word the creature shows and the rule it
+        // actually follows come apart.
+        if let Err((state, wait)) = self.life.may_begin() {
+            tracing::trace!(state = state.as_str(), "nothing started");
+            return Ok(Duty::Idle(wait));
         }
         // After a failure, wait before trying again, longer each time. Without this, a brain
         // that is down becomes a loop that spawns a process as fast as the machine allows.
@@ -1716,6 +1704,44 @@ mod tests {
             "eight turns in, across a restart, it is owed a nap"
         );
         assert_eq!(h.since_learned, 0, "and the count starts again");
+    }
+
+    #[test]
+    fn the_state_is_what_holds_a_message_back_and_what_lets_it_through() {
+        // The same knowledge refuses the work and names what it is doing. If a creature says
+        // it is asleep, nothing is running; if it says it is listening, nothing is holding a
+        // message back. Those cannot be two different answers.
+        let (mut h, _d) = hub();
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+
+        h.handle(Cmd::Napping { what: Some("night".into()) });
+        let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
+        assert_eq!(s["state"], "sleeping");
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)));
+
+        h.handle(Cmd::Napping { what: None });
+        let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
+        assert_eq!(s["state"], "listening");
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Turn(_, _)),
+            "it says it is free, so the message must go through");
+
+        // And once it is in a turn, the state says so and nothing else starts.
+        assert_eq!(take(|reply| Cmd::Status { reply }, &mut h).unwrap()["state"], "thinking");
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)));
+    }
+
+    #[test]
+    fn a_turn_running_a_command_says_so_rather_than_still_thinking() {
+        let (mut h, _d) = hub();
+        take(|reply| Cmd::Say { text: "count the files".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        assert_eq!(take(|reply| Cmd::Status { reply }, &mut h).unwrap()["state"], "thinking");
+
+        h.handle(Cmd::Emit { event: Event::new(EventName::ToolCall, json!({"name": "shell"})) });
+        assert_eq!(take(|reply| Cmd::Status { reply }, &mut h).unwrap()["state"], "working");
+
+        h.handle(Cmd::Emit { event: Event::new(EventName::ToolResult, json!({"ok": true})) });
+        assert_eq!(take(|reply| Cmd::Status { reply }, &mut h).unwrap()["state"], "thinking");
     }
 
     #[test]

@@ -108,6 +108,33 @@ impl Life {
         self.brain_up
     }
 
+    /// Whether anything new may be started now; if not, the state that says no and how long to
+    /// wait before asking again.
+    ///
+    /// This is the point of having a state at all. A state that is only a word for the window
+    /// is decoration; the same knowledge has to be what refuses work, or the refusal and the
+    /// word drift apart and the creature says one thing while doing another.
+    pub fn may_begin(&self) -> Result<(), (State, f64)> {
+        match self.state() {
+            // Loading the weights takes the best part of a minute, and a turn started in that
+            // window fails for a reason that has nothing to do with the turn: it would be
+            // counted against the message, and the message eventually set down.
+            State::Waking => Err((State::Waking, 2.0)),
+            // A turn would need the brain, and the brain is busy becoming different. Whatever
+            // arrives meanwhile waits in the queue, which is what sleeping means here.
+            s @ (State::Napping | State::Sleeping) => Err((s, 1.0)),
+            // Already at it. One turn at a time is the whole reason the conversation is a
+            // single thread.
+            s if s.in_a_turn() => Err((s, 0.5)),
+            _ => Ok(()),
+        }
+    }
+
+    /// The learning pass under way, for anyone who needs to name it.
+    pub fn asleep_with(&self) -> Option<&str> {
+        self.asleep.as_deref()
+    }
+
     pub fn brain(&mut self, up: bool) {
         self.brain_up = up;
     }
@@ -207,6 +234,36 @@ mod tests {
             l.saw(noise);
             assert_eq!(l.state(), State::Thinking, "{noise} moved the state");
         }
+    }
+
+    #[test]
+    fn the_state_is_what_refuses_work_and_not_only_what_describes_it() {
+        let mut l = Life::default();
+        assert_eq!(l.may_begin(), Err((State::Waking, 2.0)), "nothing before the weights");
+
+        l.brain(true);
+        assert_eq!(l.may_begin(), Ok(()));
+
+        l.turn_began();
+        assert!(matches!(l.may_begin(), Err((State::Thinking, _))), "one turn at a time");
+        l.saw("tool_call");
+        assert!(matches!(l.may_begin(), Err((State::Working, _))), "still that turn");
+        l.turn_ended();
+        assert_eq!(l.may_begin(), Ok(()));
+
+        l.asleep(Some("night".into()));
+        assert!(matches!(l.may_begin(), Err((State::Sleeping, _))));
+        l.asleep(None);
+        assert_eq!(l.may_begin(), Ok(()), "and when it wakes, straight back to work");
+    }
+
+    #[test]
+    fn what_it_is_asleep_doing_can_be_named() {
+        let mut l = Life::default();
+        l.brain(true);
+        assert_eq!(l.asleep_with(), None);
+        l.asleep(Some("nap".into()));
+        assert_eq!(l.asleep_with(), Some("nap"));
     }
 
     #[test]
