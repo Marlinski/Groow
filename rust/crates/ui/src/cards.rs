@@ -221,7 +221,7 @@ fn stamp(ts: f64) -> String {
 
 /// The cards beside the conversation, under the creature and its certificate.
 pub fn beside() -> Vec<Box<dyn Card>> {
-    vec![Box::new(Thoughts), Box::new(Alarms)]
+    vec![Box::new(Alarms)]
 }
 
 /// What it is working on by itself.
@@ -678,7 +678,6 @@ mod tests {
     fn the_panel_beside_the_conversation_is_cards_like_everything_else() {
         let u = ui();
         let s = text(&stacked(&u, &beside(), 34));
-        assert!(s.contains("inner thoughts"), "{s}");
         assert!(s.contains("alarms"), "{s}");
     }
 

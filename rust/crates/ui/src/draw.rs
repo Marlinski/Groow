@@ -41,7 +41,15 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
         area.width.saturating_sub(2) as usize,
         ui.input.cursor(),
     );
-    let input_h = (typing.rows.len() as u16 + 2).clamp(3, input_limit(area.height));
+    // The line you type in and the creature beside it belong to the conversation, not to the
+    // window. The journal and the operator's view are for reading, and they get the whole of
+    // it: a chat box under a log is a chat box in the way.
+    let talking = ui.pane == Pane::Conversation;
+    let input_h = if talking {
+        (typing.rows.len() as u16 + 2).clamp(3, input_limit(area.height))
+    } else {
+        0
+    };
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -56,7 +64,7 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
     f.render_widget(Paragraph::new(tabs(ui)), rows[0]);
     let body = rows[1];
 
-    if area.width >= NARROW {
+    if talking && area.width >= NARROW {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(30), Constraint::Length(SIDE)])
@@ -64,10 +72,13 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
         pane(f, cols[0], ui);
         side(f, cols[1], ui);
     } else {
-        // On a narrow terminal the creature gives way to the words.
+        // On a narrow terminal the creature gives way to the words, and everywhere but the
+        // conversation there was never anything beside them.
         pane(f, body, ui);
     }
-    input(f, rows[2], ui, &typing);
+    if talking {
+        input(f, rows[2], ui, &typing);
+    }
     status(f, rows[3], ui);
 }
 
@@ -405,9 +416,9 @@ fn side(f: &mut Frame, area: Rect, ui: &Ui) {
         );
         i += 1;
     }
-    // The rest of the panel is cards, like the operator's view: what it is thinking about on
-    // its own, and what is set to wake it. Both are lists that grow, so they share the space
-    // that is left and scroll off the bottom together rather than fighting over it.
+    // What is left of the panel is the alarms: what is going to happen to it next. What it is
+    // thinking about on its own used to be here too, squeezed into thirty characters where it
+    // could not be read; it is in the journal now, where a list belongs.
     let width = rows[i].width.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
     for (n, c) in crate::cards::beside().iter().enumerate() {
@@ -882,12 +893,33 @@ mod tests {
     }
 
     #[test]
-    fn inner_thoughts_are_listed_with_their_goals() {
+    fn inner_thoughts_are_listed_in_the_journal_where_there_is_room_for_them() {
+        // They used to be squeezed into the side panel, thirty characters wide, where a goal
+        // and a summary could not be read. The journal is where a list of runs belongs.
         let mut u = ui();
         u.on_event("thought", &json!({"id": "ab12", "status": "running", "goal": "read about rivers"}));
+        assert!(!render(120, 34, &u).contains("ab12"), "not beside the conversation any more");
+
+        u.pane = Pane::Journal;
         let s = render(120, 34, &u);
-        assert!(s.contains("ab12"));
-        assert!(s.contains("read about"));
+        assert!(s.contains("ab12"), "{s}");
+        assert!(s.contains("read about"), "{s}");
+    }
+
+    #[test]
+    fn reading_panes_get_the_whole_window() {
+        // The line you type in and the creature beside it are the conversation's, not the
+        // window's. A chat box under a log is a chat box in the way.
+        let mut u = ui();
+        u.push(Who::Human, "you", "hello");
+        assert!(render(120, 34, &u).contains("talk to it"), "the conversation has its box");
+
+        for p in [Pane::Journal, Pane::Admin] {
+            u.pane = p;
+            let s = render(120, 34, &u);
+            assert!(!s.contains("talk to it"), "{p:?} kept the chat box");
+            assert!(!s.contains("born     "), "{p:?} kept the certificate");
+        }
     }
 
     #[test]
@@ -906,19 +938,16 @@ mod tests {
     #[test]
     fn the_side_panel_sheds_the_least_important_things_first() {
         let mut u = ui();
-        u.on_event("thought", &json!({"id": "ab12", "status": "running", "goal": "read about rivers"}));
+        u.alarms = json!({"alarms": [{"id": "c59f2e", "text": "read the news",
+                                      "when": 1e12, "repeat_s": 10800.0, "by": "groow"}]});
         // Tall: everything, including the whole card.
         let tall = render(100, 36, &u);
         assert!(tall.contains("3f2a19cd"), "the id should be there");
         assert!(tall.contains("mentor"), "the whole card should fit");
-        assert!(tall.contains("ab12"));
-        // Middling: the creature and the thoughts survive, the card is trimmed.
-        let mid = render(100, 30, &u);
-        assert!(mid.contains("\u{2588}\u{2588}"), "the creature should still be there at 30 rows");
-        assert!(mid.contains("ab12"), "what it is thinking about must always be visible");
-        // Short: the creature goes, the thoughts stay.
-        let short = render(100, 16, &u);
-        assert!(short.contains("ab12"));
+        assert!(tall.contains("c59f2e"), "and what is set to wake it");
+        // Short: the creature goes first, and what is going to happen next stays.
+        let short = render(100, 20, &u);
+        assert!(short.contains("c59f2e"), "the alarms must always be visible");
     }
 
     #[test]
@@ -946,6 +975,6 @@ mod tests {
     fn with_nothing_going_on_the_panel_says_so() {
         let u = ui();
         let s = render(120, 34, &u);
-        assert!(s.contains("none just now"));
+        assert!(s.contains("none set"), "the alarms say there are none rather than showing blank");
     }
 }
