@@ -30,6 +30,7 @@ use crate::store::identity::Identity;
 use crate::store::journal::{restore_window_without, Journal};
 use crate::brainstem::{About, Brainstem, Reflex, Stimulus};
 use crate::store::inbox::{Inbox, Signal};
+use crate::store::trace::Traces;
 use crate::store::schedule::Schedule;
 use crate::store::thoughts::{ThoughtStatus, Thoughts};
 
@@ -109,6 +110,10 @@ pub enum Cmd {
     ThoughtEnd { id: String, final_text: String, flags: Vec<String>, reply: Answer<Value> },
     ScheduleAction { action: String, text: String, when: String, every: String, id: String, by: String, reply: Answer<Value> },
     Recall { n: usize, before: Option<f64>, turn: Option<String>, reply: Answer<Value> },
+    /// Write down one thing that happened during a run, exactly as it happened.
+    Trace { run: String, what: String, body: Box<Value> },
+    /// Read one run's trace back.
+    Traced { run: String, reply: Answer<Value> },
     Interrupt { reply: Answer<Value> },
     Stats { n: usize, reply: Answer<Value> },
     ToolRan { turn: String, name: String, actor: String, ok: bool, seconds: f64 },
@@ -213,6 +218,14 @@ impl Handle {
     pub async fn interrupt(&self) -> Result<Value, WireError> {
         self.ask(|reply| Cmd::Interrupt { reply }).await
     }
+    /// Write down one thing that happened during a run. Told, not asked: nothing waits on it.
+    pub async fn trace(&self, run: &str, what: &str, body: Value) {
+        self.tell(Cmd::Trace { run: run.to_string(), what: what.to_string(), body: Box::new(body) })
+            .await
+    }
+    pub async fn traced(&self, run: &str) -> Result<Value, WireError> {
+        self.ask(|reply| Cmd::Traced { run: run.to_string(), reply }).await
+    }
     pub async fn stats(&self, n: usize) -> Result<Value, WireError> {
         self.ask(|reply| Cmd::Stats { n, reply }).await
     }
@@ -242,6 +255,9 @@ pub struct Hub {
     /// Consecutive idle nudges, so the mind is left alone for longer the less is happening.
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
+    /// Exactly what was sent, for every request, so that afterwards there is something to
+    /// read instead of something to guess.
+    traces: Traces,
     /// Which creature its weights are, as the brain last said: `base.merges.passes`. Every
     /// learning pass moves it, so it is what a line in the log has to be stamped with if the
     /// log is to mean anything a week later.
@@ -319,6 +335,7 @@ impl Hub {
             subscribers: Vec::new(),
             active: None,
             epoch: Epoch(0),
+            traces: Traces::new(paths.traces(), cfg.trace_keep.max(1)),
             version: String::new(),
             starting: std::collections::HashSet::new(),
             stem: Brainstem::default(),
@@ -369,6 +386,18 @@ impl Hub {
                     "tool_result" => self.feel(Stimulus::ToolReturned),
                     _ => Reflex::Nothing,
                 };
+                // A command and what it printed, whole, beside the request that asked for it.
+                if self.cfg.trace && matches!(event.name.as_str(), "tool_call" | "tool_result") {
+                    let run = event
+                        .data
+                        .get("turn")
+                        .and_then(|t| t.as_str())
+                        .map(|t| t.to_string())
+                        .or_else(|| self.active.as_ref().map(|a| a.id.clone()))
+                        .unwrap_or_default();
+                    let now = self.now();
+                    self.traces.put(&run, &event.name, now, event.data.clone());
+                }
                 self.fanout(event);
             }
             Cmd::NextDuty { reply } => {
@@ -437,6 +466,14 @@ impl Hub {
             Cmd::Interrupt { reply } => {
                 let r = self.interrupt();
                 send(reply, r);
+            }
+            Cmd::Trace { run, what, body } => {
+                if self.cfg.trace {
+                    self.traces.put(&run, &what, self.now(), *body);
+                }
+            }
+            Cmd::Traced { run, reply } => {
+                send(reply, Ok(json!({"run": run.clone(), "trace": self.traces.of(&run)})));
             }
             Cmd::Stats { n, reply } => {
                 let r = self.stats(n);
@@ -783,6 +820,7 @@ impl Hub {
         let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
         self.feel(Stimulus::TurnEnded);
+        self.traces.prune();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
             at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
             flags: out.flags.clone(), outcome: "ok".into(),

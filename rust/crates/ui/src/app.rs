@@ -31,6 +31,9 @@ const PAGE: usize = 300;
 /// How many turns of measurements the meta pane asks for.
 const STATS: usize = 120;
 
+/// How far a held arrow moves in the journal. About a screenful.
+const STRIDE: i32 = 10;
+
 /// How often the meta pane is refreshed while it is the one being looked at.
 const STATS_EVERY: u64 = 20;
 
@@ -109,6 +112,8 @@ pub enum Action {
     Pick(i32),
     /// Show the journal a different way.
     Filter(crate::state::Filter),
+    /// Move the arrows to another of the journal's columns.
+    Sideways(bool),
 }
 
 /// Interpret one key. Kept separate from the terminal so it can be tested.
@@ -150,17 +155,28 @@ pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
         KeyCode::Delete if alt || ctrl => edit(ui, Editor::kill_word_right),
         KeyCode::Delete => edit(ui, Editor::delete),
 
+        // In the journal the sideways arrows choose which of the three lists the other two
+        // move in. There is no line being typed there to move about in.
+        KeyCode::Left if ui.pane == Pane::Journal => Action::Sideways(false),
+        KeyCode::Right if ui.pane == Pane::Journal => Action::Sideways(true),
         KeyCode::Left if alt || ctrl => edit(ui, Editor::word_left),
         KeyCode::Right if alt || ctrl => edit(ui, Editor::word_right),
         KeyCode::Left => edit(ui, Editor::left),
         KeyCode::Right => edit(ui, Editor::right),
+        // In the journal these belong to the list: it is what is being read, and the line is
+        // not even drawn there. Held with alt or ctrl the arrows stride, because a day is a
+        // lot of runs. Everywhere else they are all the line's own.
+        KeyCode::Home if ui.pane == Pane::Journal => Action::Pick(i32::MIN / 2),
+        KeyCode::End if ui.pane == Pane::Journal => Action::Pick(i32::MAX / 2),
         KeyCode::Home => edit(ui, Editor::home),
         KeyCode::End => edit(ui, Editor::end),
 
-        // In the journal, up and down walk the runs: it is a list, and that is what a list is
-        // read with. Everywhere else they are the line's own history.
+        KeyCode::Up if ui.pane == Pane::Journal && (alt || ctrl) => Action::Pick(-STRIDE),
+        KeyCode::Down if ui.pane == Pane::Journal && (alt || ctrl) => Action::Pick(STRIDE),
         KeyCode::Up if ui.pane == Pane::Journal => Action::Pick(-1),
         KeyCode::Down if ui.pane == Pane::Journal => Action::Pick(1),
+        KeyCode::PageUp if ui.pane == Pane::Journal => Action::Pick(-STRIDE),
+        KeyCode::PageDown if ui.pane == Pane::Journal => Action::Pick(STRIDE),
         KeyCode::Up => edit(ui, Editor::earlier),
         KeyCode::Down => edit(ui, Editor::later),
 
@@ -278,11 +294,9 @@ async fn main_loop<B: ratatui::backend::Backend>(
                 if ui.opened.as_deref() != Some(r.id.as_str()) {
                     ui.inside = serde_json::Value::Null;
                     ui.opened = None;
-                    pending.inside = if r.inner {
-                        l.send("thought", json!({"action": "read", "id": r.id})).await.ok()
-                    } else {
-                        l.send("recall", json!({"turn": r.id})).await.ok()
-                    };
+                    // Exactly what was sent during it, which is what the other two columns
+                    // are made of. A thought's trace is kept under its own id like a turn's.
+                    pending.inside = l.send("trace", json!({"turn": r.id})).await.ok();
                     pending.inside_of = Some(r.id);
                 }
             }
@@ -330,6 +344,7 @@ async fn main_loop<B: ratatui::backend::Backend>(
                             Action::Scroll(by) => ui.scroll(by),
                             Action::Pick(by) => ui.pick(by),
                             Action::Filter(f) => ui.show(f),
+                            Action::Sideways(right) => ui.sideways(right),
                             Action::Interrupt => match link.as_mut() {
                                 Some(l) => {
                                     if l.send("interrupt", json!({})).await.is_err() {
@@ -454,6 +469,42 @@ mod tests {
         p.forget(&mut ui);
         assert!(!ui.loading, "the core went away; nothing asked for is coming");
         assert_eq!(p.older, None);
+    }
+
+    #[test]
+    fn the_journal_walks_one_run_at_a_time_and_strides_when_asked() {
+        let mut ui = Ui::default();
+        ui.pane = Pane::Journal;
+        let down = |m| KeyEvent::new(KeyCode::Down, m);
+        assert_eq!(on_key(&mut ui, down(KeyModifiers::NONE)), Action::Pick(1));
+        assert_eq!(on_key(&mut ui, down(KeyModifiers::ALT)), Action::Pick(STRIDE));
+        assert_eq!(on_key(&mut ui, down(KeyModifiers::CONTROL)), Action::Pick(STRIDE));
+        assert_eq!(
+            on_key(&mut ui, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            Action::Pick(STRIDE)
+        );
+
+        // And in the conversation the same keys are the line's, as they always were.
+        ui.pane = Pane::Conversation;
+        assert_eq!(on_key(&mut ui, down(KeyModifiers::NONE)), Action::Redraw);
+        assert_eq!(
+            on_key(&mut ui, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            Action::Scroll(10)
+        );
+    }
+
+    #[test]
+    fn a_stride_past_either_end_of_the_journal_lands_on_the_end() {
+        let mut ui = Ui::default();
+        ui.stats = json!({"turns": (0..5).map(|i| json!({
+            "id": format!("t{i}"), "kind": "user", "started": 100.0 - i as f64,
+            "seconds": 1.0, "outcome": "ok", "flags": ""
+        })).collect::<Vec<_>>()});
+
+        ui.pick(i32::MAX / 2);
+        assert_eq!(ui.picked, 4, "the oldest, not past it");
+        ui.pick(i32::MIN / 2);
+        assert_eq!(ui.picked, 0, "and back to the newest");
     }
 
     #[test]

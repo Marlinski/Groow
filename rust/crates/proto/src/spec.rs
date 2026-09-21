@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 use crate::event::EventName;
 use crate::ops::{Op, Role};
 
-pub const ALL_OPS: [Op; 21] = [
+pub const ALL_OPS: [Op; 22] = [
     Op::Hello, Op::Status, Op::Watch,
     Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete,
     Op::ThoughtClaim, Op::ThoughtAppend, Op::ThoughtEnd,
-    Op::Think, Op::Thought, Op::Recall, Op::Stats, Op::Interrupt, Op::Schedule,
+    Op::Think, Op::Thought, Op::Recall, Op::Stats, Op::Interrupt, Op::Trace, Op::Schedule,
     Op::Say, Op::Command, Op::Consolidate, Op::Train, Op::Quit,
 ];
 
@@ -129,12 +129,12 @@ mod tests {
         for name in [
             "hello", "status", "watch", "turn.claim", "turn.append", "turn.end", "complete",
             "thought.claim", "thought.append", "thought.end", "think", "thought",
-            "recall", "stats", "interrupt", "schedule", "say", "command", "consolidate", "train", "quit",
+            "recall", "stats", "interrupt", "trace", "schedule", "say", "command", "consolidate", "train", "quit",
         ] {
             let op = Op::parse(name).unwrap_or_else(|| panic!("{name} is not an op"));
             assert!(ALL_OPS.contains(&op), "{name} is missing from ALL_OPS");
         }
-        assert_eq!(ALL_OPS.len(), 21);
+        assert_eq!(ALL_OPS.len(), 22);
     }
 
     #[test]

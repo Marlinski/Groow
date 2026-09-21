@@ -250,6 +250,10 @@ impl Conn {
                 }
                 r
             }
+            Op::Trace => {
+                let run = arg.get("turn").and_then(|t| t.as_str()).unwrap_or_default();
+                self.hub.traced(run).await
+            }
             Op::Stats => {
                 let n = arg.get("n").and_then(|v| v.as_u64()).unwrap_or(60) as usize;
                 self.hub.stats(n).await
@@ -333,6 +337,15 @@ impl Conn {
             }
         });
 
+        // Exactly what is being sent, written down before it is sent. A window rebuilt from
+        // the journal is a reconstruction; this is the thing itself, and they differ in
+        // precisely the cases anyone is investigating.
+        let run = arg.get("turn").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        let asked = std::time::Instant::now();
+        self.hub
+            .trace(&run, "request", serde_json::to_value(&req).unwrap_or_default())
+            .await;
+
         let result = self.brain.complete(&req, |d| { let _ = dtx.send(d.to_string()); }).await;
         drop(dtx);
         let _ = pump.await;
@@ -340,11 +353,18 @@ impl Conn {
 
         match result {
             Ok(g) => {
+                self.hub
+                    .trace(&run, "answer", json!({
+                        "text": g.text, "tokens": g.tokens, "seconds": g.seconds,
+                        "waited": asked.elapsed().as_secs_f64(),
+                    }))
+                    .await;
                 self.send(Frame::rep(id, json!({
                     "text": g.text, "tokens": g.tokens, "seconds": g.seconds,
                 }))).await;
             }
             Err(e) => {
+                self.hub.trace(&run, "failed", json!({"why": e.to_string()})).await;
                 self.hub.emit(Event::log("error", format!("generation failed: {e}"))).await;
                 self.send(Frame::err(id, &WireError::Internal(e.to_string()))).await;
             }

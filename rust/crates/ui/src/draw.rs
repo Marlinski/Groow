@@ -7,11 +7,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::creature;
-use crate::cards::Card;
 use crate::creature::Looks;
 use crate::state::{Bubble, Pane, Ui, Who};
 
@@ -25,6 +24,27 @@ pub const MOSS: Color = Color::Rgb(0x4e, 0x9a, 0x7a);
 pub const BG: Color = Color::Rgb(0x0b, 0x10, 0x16);
 pub const FG: Color = Color::Rgb(0xd7, 0xdd, 0xe3);
 pub const EDGE: Color = Color::Rgb(0x1e, 0x2a, 0x33);
+/// The row being pointed at in a list. Dark enough to read every colour on top of it.
+pub const PICKED: Color = Color::Rgb(0x1d, 0x2d, 0x3a);
+
+/// A frame, drawn the same way every time: soft corners, a quiet edge, a title that reads as a
+/// label rather than as content, and a column of air inside so nothing touches the wall.
+///
+/// Every box in the window comes from here. Four places each drawing their own was how the
+/// edges ended up ragged and the text ended up flush against them.
+fn framed(title: impl Into<Line<'static>>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(EDGE))
+        .padding(Padding::horizontal(1))
+        .title(title.into())
+}
+
+/// A title, in the one style titles are written in.
+fn label(text: &str) -> Line<'static> {
+    Line::from(Span::styled(format!(" {text} "), Style::default().fg(DIM)))
+}
 
 /// The side panel is fixed; below this width it is dropped so the conversation still fits.
 const SIDE: u16 = 36;
@@ -93,15 +113,20 @@ fn pane(f: &mut Frame, area: Rect, ui: &Ui) {
 
 /// The tab bar: which pane is on screen, and how to reach the others.
 fn tabs(ui: &Ui) -> Line<'static> {
-    let mut spans = vec![Span::styled(" ", Style::default().fg(DIM))];
+    let mut spans = vec![Span::raw(" ")];
     for (i, p) in Pane::ALL.iter().enumerate() {
         let on = *p == ui.pane;
-        let style = if on {
-            Style::default().fg(MINT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(DIM)
-        };
-        spans.push(Span::styled(format!("F{} {} ", i + 1, p.title()), style));
+        spans.push(Span::styled(
+            format!("  F{} {}  ", i + 1, p.title()),
+            if on {
+                // The one in front is lit, not merely a different colour: a tab bar where the
+                // current tab is only tinted is a tab bar you have to read to use.
+                Style::default().fg(BG).bg(MINT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            },
+        ));
+        spans.push(Span::raw(" "));
     }
     Line::from(spans)
 }
@@ -127,14 +152,28 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
             Who::Tool => (SKY, ""),
             Who::System => (DIM, ""),
         };
+        // Who said it, then what they said, set in from it. Both flush left at the same colour
+        // was why a long exchange read as one undifferentiated column of text.
         if !label.is_empty() {
-            lines.push(Line::from(Span::styled(
-                label.to_string(),
-                Style::default().fg(colour).add_modifier(Modifier::BOLD),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("\u{258f} ", Style::default().fg(colour)),
+                Span::styled(
+                    label.to_string(),
+                    Style::default().fg(colour).add_modifier(Modifier::BOLD),
+                ),
+            ]));
         }
+        let body = if label.is_empty() { FG } else { colour };
+        // Wrapped here rather than by the paragraph, so the second line of a long answer is
+        // indented like the first. Left to the widget, it wraps back to the wall and the
+        // indent stops meaning anything.
         for l in b.text.lines() {
-            lines.push(Line::from(Span::styled(l.to_string(), Style::default().fg(colour))));
+            for row in crate::line::wrap(l, area.width.saturating_sub(6) as usize, 0).rows {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(row, Style::default().fg(body)),
+                ]));
+            }
         }
         lines.push(Line::from(""));
     }
@@ -142,10 +181,16 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
     // when nothing else has happened.
     if ui.pane == Pane::Conversation {
         if let Some(note) = ui.waiting() {
-            lines.push(Line::from(Span::styled(
-                format!("\u{2026} {note}"),
-                Style::default().fg(AMBER).add_modifier(Modifier::ITALIC),
-            )));
+            for (n, row) in crate::line::wrap(&note, area.width.saturating_sub(6) as usize, 0)
+                .rows
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(Line::from(Span::styled(
+                    if n == 0 { format!("\u{2026} {row}") } else { format!("  {row}") },
+                    Style::default().fg(AMBER).add_modifier(Modifier::ITALIC),
+                )));
+            }
         }
     }
 
@@ -158,21 +203,11 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
     let view: Vec<Line> = lines[start.min(total)..end.min(total)].to_vec();
 
     let title = if ui.scroll_back > 0 {
-        format!(" {} \u{b7} back {} ", ui.pane.title(), ui.scroll_back)
+        format!("{} \u{b7} back {}", ui.pane.title(), ui.scroll_back)
     } else {
-        format!(" {} ", ui.pane.title())
+        ui.pane.title().to_string()
     };
-    f.render_widget(
-        Paragraph::new(view)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(EDGE))
-                    .title(Span::styled(title, Style::default().fg(DIM))),
-            ),
-        area,
-    );
+    f.render_widget(Paragraph::new(view).block(framed(label(&title))), area);
 }
 
 /// The meta pane: what the processes the mind never sees have been doing.
@@ -186,19 +221,40 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
 /// On a narrow terminal the detail gives way to the list, because a list you cannot read is
 /// worse than a detail you cannot see.
 fn journal(f: &mut Frame, area: Rect, ui: &Ui) {
-    // Wide enough for both only counts the pane, not the window: the side panel has
-    // already taken its share by the time this is drawn.
-    let wide = area.width >= 84 && ui.filter != crate::state::Filter::Commands;
-    let cols = if wide {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(area)
+    use crate::cards::Card;
+    use crate::state::Column;
+
+    // Three columns where there is room: the runs, what happened inside one, and that step
+    // exactly as it went over the wire. Two where there is not, and one on a narrow terminal,
+    // because a column too thin to read is worse than a column that is not there.
+    let listing = ui.filter == crate::state::Filter::Commands;
+    let room = if listing || area.width < 84 {
+        1
+    } else if area.width < 140 {
+        2
     } else {
-        Layout::default().direction(Direction::Horizontal).constraints([Constraint::Min(10)]).split(area)
+        3
+    };
+    let cols = match room {
+        3 => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+            ])
+            .split(area),
+        2 => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area),
+        _ => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(10)])
+            .split(area),
     };
 
-    // The filters, and which one is on, across the title.
+    // The filters, and which one is on, across the first title.
     let mut legend = vec![Span::styled(" runs ", Style::default().fg(DIM))];
     for fl in crate::state::Filter::ALL {
         let on = fl == ui.filter;
@@ -214,37 +270,75 @@ fn journal(f: &mut Frame, area: Rect, ui: &Ui) {
 
     let w = cols[0].width.saturating_sub(4) as usize;
     let lines = crate::cards::Runs.lines(ui, w);
-    // Keep what is pointed at on screen, whether it is at the top of a long list or the end.
-    let room = cols[0].height.saturating_sub(2) as usize;
-    let from = ui.picked.saturating_sub(room.saturating_sub(3).max(1));
-    let view: Vec<Line> = lines[from.min(lines.len())..(from + room).min(lines.len())].to_vec();
+    let tall = cols[0].height.saturating_sub(2) as usize;
+    let from = ui.picked.saturating_sub(tall.saturating_sub(3).max(1)).min(lines.len());
+    let view: Vec<Line> = lines[from..(from + tall).min(lines.len())].to_vec();
     f.render_widget(
-        Paragraph::new(view).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(EDGE))
-                .title(Line::from(legend)),
-        ),
+        Paragraph::new(view)
+            .block(focused("", ui.column == Column::Runs).title(Line::from(legend))),
         cols[0],
     );
 
-    if !wide {
+    if room == 1 {
         return;
     }
+
+    // With only two columns the second shows whichever of the other two is being read.
+    let show_steps = room == 3 || ui.column != Column::Body;
     let w = cols[1].width.saturating_sub(4) as usize;
-    let inside = crate::cards::Inside.lines(ui, w);
-    let room = cols[1].height.saturating_sub(2) as usize;
-    let from = inside.len().saturating_sub(room.max(1)).min(ui.meta_scroll as usize);
-    let view: Vec<Line> = inside[from.min(inside.len())..(from + room).min(inside.len())].to_vec();
+    let (lines, at, title, lit) = if show_steps {
+        (crate::cards::Steps.lines(ui, w), ui.step, "inside", ui.column == Column::Steps)
+    } else {
+        (
+            crate::cards::Exactly.lines(ui, w),
+            ui.body_scroll as usize,
+            "exactly",
+            ui.column == Column::Body,
+        )
+    };
+    let tall = cols[1].height.saturating_sub(2) as usize;
+    let from = at.saturating_sub(tall.saturating_sub(3).max(1)).min(lines.len());
+    let view: Vec<Line> = lines[from..(from + tall).min(lines.len())].to_vec();
+    f.render_widget(Paragraph::new(view).block(focused(title, lit)), cols[1]);
+
+    if room < 3 {
+        return;
+    }
+
+    // And that step, exactly as it went over the wire.
+    let w = cols[2].width.saturating_sub(4) as usize;
+    let lines = crate::cards::Exactly.lines(ui, w);
+    let tall = cols[2].height.saturating_sub(2) as usize;
+    let from = (ui.body_scroll as usize).min(lines.len().saturating_sub(tall.min(lines.len())));
+    let view: Vec<Line> = lines[from..(from + tall).min(lines.len())].to_vec();
     f.render_widget(
-        Paragraph::new(view).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(EDGE))
-                .title(Span::styled(" inside ", Style::default().fg(DIM))),
-        ),
-        cols[1],
+        Paragraph::new(view).block(focused("exactly", ui.column == Column::Body)),
+        cols[2],
     );
+}
+
+/// A frame that says whether the arrows are in it.
+///
+/// Three lists side by side and one pair of arrow keys: something has to show which list they
+/// are moving in, and the edge of the box is the quietest place to say it.
+fn focused(title: &str, on: bool) -> Block<'static> {
+    let b = framed(if title.is_empty() {
+        Line::from("")
+    } else {
+        Line::from(Span::styled(
+            format!(" {title} "),
+            if on {
+                Style::default().fg(MINT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            },
+        ))
+    });
+    if on {
+        b.border_style(Style::default().fg(MINT))
+    } else {
+        b
+    }
 }
 
 /// The operator's view: a column of cards, scrolled from the top.
@@ -266,12 +360,7 @@ fn meta(f: &mut Frame, area: Rect, ui: &Ui) {
     let view: Vec<Line> = lines[start..(start + inner_h).min(total)].to_vec();
 
     f.render_widget(
-        Paragraph::new(view).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(EDGE))
-                .title(Span::styled(" meta ", Style::default().fg(DIM))),
-        ),
+        Paragraph::new(view).block(framed(label("meta"))),
         area,
     );
 }
@@ -380,16 +469,16 @@ pub fn ago(ts: f64) -> String {
 /// and the caption underneath.
 const CREATURE_H: u16 = 14;
 /// The card is a fixed list of facts plus the rule above it.
-const CARD_H: u16 = 12;
+const CARD_H: u16 = 9;
 
 fn side(f: &mut Frame, area: Rect, ui: &Ui) {
     // What matters most when space runs out: what it is thinking about, then the creature
     // itself, then the facts on the card, which never change and can be trimmed.
     // Room for both lists, which is what the panel is mostly for once the card is drawn.
-    let thoughts_h: u16 = 8;
-    let show_creature = area.height >= CREATURE_H + thoughts_h + 3;
+    let thoughts_h: u16 = 6;
+    let show_creature = area.height >= CREATURE_H + thoughts_h + 4;
     let used = if show_creature { CREATURE_H } else { 0 } + thoughts_h;
-    let card_h = area.height.saturating_sub(used).min(CARD_H);
+    let card_h = area.height.saturating_sub(used + 2).min(CARD_H);
 
     let mut parts: Vec<Constraint> = Vec::new();
     if show_creature {
@@ -400,7 +489,15 @@ fn side(f: &mut Frame, area: Rect, ui: &Ui) {
     }
     parts.push(Constraint::Min(thoughts_h));
 
-    let rows = Layout::default().direction(Direction::Vertical).constraints(parts).split(area);
+    // One frame around the whole panel rather than three unframed strips, so its right edge is
+    // the window's right edge and the sections inside it are separated by a rule instead of by
+    // nothing at all.
+    let name = ui.birth.get("name").and_then(|v| v.as_str()).unwrap_or("groow").to_string();
+    let outer = framed(label(&name.to_lowercase()));
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
+    let rows = Layout::default().direction(Direction::Vertical).constraints(parts).split(inner);
     let now = groow_proto::event::now();
     let mut i = 0;
     if show_creature {
@@ -409,9 +506,7 @@ fn side(f: &mut Frame, area: Rect, ui: &Ui) {
     }
     if card_h >= 4 {
         f.render_widget(
-            Paragraph::new(card(ui, now)).block(
-                Block::default().borders(Borders::TOP).border_style(Style::default().fg(EDGE)),
-            ),
+            Paragraph::new(card(ui, now)),
             rows[i],
         );
         i += 1;
@@ -426,7 +521,7 @@ fn side(f: &mut Frame, area: Rect, ui: &Ui) {
             lines.push(Line::from(""));
         }
         lines.push(Line::from(Span::styled(
-            format!(" {} ", c.title()),
+            c.title().to_string(),
             Style::default().fg(DIM).add_modifier(Modifier::BOLD),
         )));
         lines.extend(c.lines(ui, width));
@@ -456,10 +551,8 @@ pub fn card(ui: &Ui, now: f64) -> Vec<Line<'static>> {
     let lineage = g("lineage");
     let lineage = lineage.rsplit('/').next().unwrap_or(&lineage).to_string();
 
-    let mut out = vec![Line::from(Span::styled(
-        g("name"),
-        Style::default().fg(MINT).add_modifier(Modifier::BOLD),
-    ))];
+    // The name is the panel's own title now, so the card is the facts and nothing else.
+    let mut out: Vec<Line> = Vec::new();
     for (label, value, colour) in [
         ("id", g("id"), FG),
         ("born", g("born_text"), FG),
@@ -470,12 +563,11 @@ pub fn card(ui: &Ui, now: f64) -> Vec<Line<'static>> {
         ("body", g("hardware"), FG),
         ("mentor", g("mentor"), FG),
         ("turns", n("turns").to_string(), FG),
-        ("thinking", n("thoughts").to_string(), FG),
         ("feeling", if s("tone").is_empty() { tone(ui) } else { s("tone") }, FG),
     ] {
         out.push(Line::from(vec![
-            Span::styled(format!("{label:<9}"), Style::default().fg(DIM)),
-            Span::styled(value, Style::default().fg(colour)),
+            Span::styled(format!("{label:<8}"), Style::default().fg(DIM)),
+            Span::styled(clip(&value, SIDE.saturating_sub(13) as usize), Style::default().fg(colour)),
         ]));
     }
     out
@@ -525,15 +617,29 @@ fn input(f: &mut Frame, area: Rect, ui: &Ui, typing: &crate::line::Wrapped) {
 
     f.render_widget(
         Paragraph::new(shown).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border)),
+            framed(label("say"))
+                .border_style(Style::default().fg(border))
+                .padding(Padding::new(2, 1, 0, 0)),
         ),
         area,
     );
+    // The prompt, drawn under the text rather than as part of it, so the cursor arithmetic
+    // stays about the line and nothing else. On a window too small to have an inside, there is
+    // nowhere to put it and nothing is drawn: a terminal that is merely too small must not be
+    // a terminal that crashes.
+    let mark = Rect { x: area.x + 1, y: area.y + 1, width: 1, height: 1 };
+    if area.width > 2 && area.height > 2 && mark.bottom() <= f.area().bottom() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "\u{203a}",
+                Style::default().fg(if ui.connected { MINT } else { MOSS }),
+            ))),
+            mark,
+        );
+    }
     // The cursor sits where the next character would go, which is not always the end of the
     // line: it is the only thing on screen saying where an edit will land.
-    let x = area.x + 1 + typing.col.min(area.width.saturating_sub(3) as usize) as u16;
+    let x = area.x + 2 + typing.col.min(area.width.saturating_sub(4) as usize) as u16;
     let y = area.y + 1 + (typing.row - first) as u16;
     f.set_cursor_position((x, y));
 }
@@ -571,12 +677,19 @@ fn status(f: &mut Frame, area: Rect, ui: &Ui) {
     );
 }
 
+/// Cut a string to fit, mark included: `clip(s, 9)` is nine columns wide, never ten.
+///
+/// It used to add the ellipsis after taking n characters, so anything clipped was one column
+/// wider than asked for — which is invisible in a sentence and pushes every column after it
+/// out of line in a table.
 pub fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}\u{2026}", s.chars().take(n).collect::<String>())
+        return s.to_string();
     }
+    if n == 0 {
+        return String::new();
+    }
+    format!("{}\u{2026}", s.chars().take(n - 1).collect::<String>())
 }
 
 #[cfg(test)]
@@ -633,7 +746,7 @@ mod tests {
         let s = render(120, 34, &u);
         assert!(s.contains("what is a river?"));
         assert!(s.contains("water going downhill"));
-        assert!(s.contains("Groow"), "the card should be there");
+        assert!(s.contains("groow"), "the panel is titled with its name");
         assert!(s.contains("3f2a19cd"), "the id is part of the card");
         assert!(s.contains("\u{2588}"), "the creature should be drawn");
     }
@@ -645,6 +758,18 @@ mod tests {
         let s = render(50, 20, &u);
         assert!(s.contains("still readable"));
         assert!(!s.contains("3f2a19cd"), "the card should give way on a small screen");
+    }
+
+    #[test]
+    fn a_clipped_word_is_exactly_as_wide_as_it_was_asked_to_be() {
+        // One column over is invisible in a sentence and pushes every column after it out of
+        // line in a table, which is what made the journal look crooked.
+        for n in 1..12 {
+            assert!(clip("thought_done", n).chars().count() <= n, "clip(_, {n}) was too wide");
+        }
+        assert_eq!(clip("thought_done", 9), "thought_\u{2026}");
+        assert_eq!(clip("idle", 9), "idle", "what fits is left alone");
+        assert_eq!(clip("anything", 0), "");
     }
 
     #[test]
@@ -901,9 +1026,9 @@ mod tests {
         assert!(!render(120, 34, &u).contains("ab12"), "not beside the conversation any more");
 
         u.pane = Pane::Journal;
-        let s = render(120, 34, &u);
+        let s = render(170, 34, &u);
         assert!(s.contains("ab12"), "{s}");
-        assert!(s.contains("read about"), "{s}");
+        assert!(s.contains("inner"), "tagged as its own kind of run: {s}");
     }
 
     #[test]
@@ -941,7 +1066,7 @@ mod tests {
         u.alarms = json!({"alarms": [{"id": "c59f2e", "text": "read the news",
                                       "when": 1e12, "repeat_s": 10800.0, "by": "groow"}]});
         // Tall: everything, including the whole card.
-        let tall = render(100, 36, &u);
+        let tall = render(100, 44, &u);
         assert!(tall.contains("3f2a19cd"), "the id should be there");
         assert!(tall.contains("mentor"), "the whole card should fit");
         assert!(tall.contains("c59f2e"), "and what is set to wake it");

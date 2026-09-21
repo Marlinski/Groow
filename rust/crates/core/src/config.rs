@@ -31,6 +31,8 @@ fn d_rehearsal() -> usize { 2 }
 fn d_ctx_kept() -> usize { 8 }
 fn d_probe_every() -> usize { 25 }
 fn d_nap_max() -> usize { 8 }
+fn d_trace() -> bool { true }
+fn d_trace_keep() -> usize { 200 }
 fn d_idle_nap_max() -> usize { 32 }
 fn d_sleep_steps() -> usize { 300 }
 fn d_sleep_hours() -> f64 { 12.0 }
@@ -91,6 +93,14 @@ pub struct Config {
 
     // active learning
     pub probe_every: usize,
+    /// Whether to write down exactly what was sent to the brain, for every request.
+    ///
+    /// On, because the cost is disk and the alternative is guessing about why it said
+    /// something. `trace_keep` is how many runs are worth keeping.
+    #[serde(default = "d_trace")]
+    pub trace: bool,
+    #[serde(default = "d_trace_keep")]
+    pub trace_keep: usize,
     pub nap_max_samples: usize,
     pub idle_nap_max_samples: usize,
 
@@ -168,6 +178,7 @@ impl Default for Config {
             passive_learning: d_true(), role_weights: d_role_weights(),
             learn_from_bad_turns: false, rehearsal_k: d_rehearsal(),
             context_messages_kept: d_ctx_kept(), probe_every: d_probe_every(),
+            trace: d_trace(), trace_keep: d_trace_keep(),
             nap_max_samples: d_nap_max(), idle_nap_max_samples: d_idle_nap_max(),
             sleep_every_steps: d_sleep_steps(), sleep_every_hours: d_sleep_hours(),
             sleep_replay_steps: d_sleep_replay(), sleep_max_drift: d_sleep_drift(),

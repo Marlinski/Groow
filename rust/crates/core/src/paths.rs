@@ -40,6 +40,7 @@ impl Paths {
     pub fn inbox_new(&self) -> PathBuf { self.inbox().join("new") }
     pub fn inbox_cur(&self) -> PathBuf { self.inbox().join("cur") }
     pub fn thoughts(&self) -> PathBuf { self.state.join("thoughts") }
+    pub fn traces(&self) -> PathBuf { self.state.join("traces") }
     pub fn training(&self) -> PathBuf { self.state.join("training") }
     pub fn limbic(&self) -> PathBuf { self.state.join("limbic") }
     pub fn logs(&self) -> PathBuf { self.state.join("log") }

@@ -146,6 +146,41 @@ pub struct ThoughtRow {
     pub ended: f64,
 }
 
+/// Which column of the journal the arrows belong to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    /// The runs.
+    Runs,
+    /// What happened inside the run being pointed at.
+    Steps,
+    /// The body of the step being pointed at, which can be longer than the screen.
+    Body,
+}
+
+impl Column {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Column::Runs => "runs",
+            Column::Steps => "inside",
+            Column::Body => "exactly",
+        }
+    }
+
+    pub fn right(&self) -> Column {
+        match self {
+            Column::Runs => Column::Steps,
+            Column::Steps | Column::Body => Column::Body,
+        }
+    }
+
+    pub fn left(&self) -> Column {
+        match self {
+            Column::Body => Column::Steps,
+            Column::Steps | Column::Runs => Column::Runs,
+        }
+    }
+}
+
 /// One run: a turn of the conversation, or an inner thought. The journal lists these.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Run {
@@ -188,8 +223,14 @@ pub struct Ui {
     pub scroll_back: u16,
     /// What the journal is showing.
     pub filter: Filter,
+    /// Which of the journal's three columns the arrows are moving in: the runs, the steps of
+    /// the run, or the body of the step.
+    pub column: Column,
     /// Which run the journal is pointing at, counting from the newest.
     pub picked: usize,
+    /// Which step within that run, and how far down its body.
+    pub step: usize,
+    pub body_scroll: u16,
     /// The run the journal has fetched the inside of, and what came back.
     pub opened: Option<String>,
     pub inside: Value,
@@ -293,6 +334,9 @@ impl Default for Ui {
             said: None,
             echoed: None,
             scroll_back: 0,
+            column: Column::Runs,
+            step: 0,
+            body_scroll: 0,
             filter: Filter::All,
             picked: 0,
             opened: None,
@@ -646,14 +690,51 @@ impl Ui {
         self.want_inside = true;
     }
 
-    /// Move the journal's pointer, and say that what it points at should be fetched.
+    /// Move whichever of the journal's columns the arrows are in.
+    ///
+    /// One key for three lists, because they are read the same way and which one is being read
+    /// is already on the screen.
     pub fn pick(&mut self, by: i32) {
-        let n = self.listed().len();
-        if n == 0 {
-            return;
+        match self.column {
+            Column::Runs => {
+                let n = self.listed().len();
+                if n == 0 {
+                    return;
+                }
+                // Saturating, so a stride off either end lands on the end, not at the other.
+                self.picked = (self.picked as i32).saturating_add(by).clamp(0, n as i32 - 1) as usize;
+                self.step = 0;
+                self.body_scroll = 0;
+                self.want_inside = true;
+            }
+            Column::Steps => {
+                let n = self.steps().len();
+                if n == 0 {
+                    return;
+                }
+                self.step = (self.step as i32).saturating_add(by).clamp(0, n as i32 - 1) as usize;
+                self.body_scroll = 0;
+            }
+            Column::Body => {
+                self.body_scroll = (self.body_scroll as i32).saturating_add(by).max(0) as u16;
+            }
         }
-        self.picked = (self.picked as i32 + by).clamp(0, n as i32 - 1) as usize;
-        self.want_inside = true;
+    }
+
+    /// Move to another column. The one on the far side of either end stays where it is.
+    pub fn sideways(&mut self, right: bool) {
+        self.column = if right { self.column.right() } else { self.column.left() };
+    }
+
+    /// What happened inside the run being pointed at, step by step: the requests as they were
+    /// sent, what came back, and every command in between.
+    pub fn steps(&self) -> Vec<Value> {
+        self.inside.get("trace").and_then(|t| t.as_array()).cloned().unwrap_or_default()
+    }
+
+    /// The step the journal is pointing at.
+    pub fn at_step(&self) -> Option<Value> {
+        self.steps().into_iter().nth(self.step)
     }
 
     /// The run the journal is pointing at.

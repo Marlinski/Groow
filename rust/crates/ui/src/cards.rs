@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::draw::{ago, clip, head, quiet, spark, summarise, took, AMBER, DIM, FG, MINT, MOSS, ROSE, SKY, VIOLET};
+use crate::draw::{ago, clip, head, quiet, spark, summarise, took, AMBER, DIM, FG, MINT, MOSS, PICKED, ROSE, SKY, VIOLET};
 use crate::state::{compact, Filter, Ui, Who};
 
 /// Something worth looking at, drawn wherever it is put.
@@ -92,12 +92,15 @@ impl Card for Runs {
             } else {
                 Style::default().fg(ROSE)
             };
-            out.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     mark.to_string(),
                     if here { Style::default().fg(MINT).add_modifier(Modifier::BOLD) } else { Style::default() },
                 ),
                 Span::styled(format!("{:>8} ", clock(r.at)), Style::default().fg(DIM)),
+                // The id, because it is the thing you would quote or look up, and it was
+                // nowhere on this screen.
+                Span::styled(format!("{:<10}", clip(&short_id(&r.id), 9)), Style::default().fg(MOSS)),
                 Span::styled(format!("{tag:<6}"), Style::default().fg(colour)),
                 Span::styled(format!("{:<9} ", clip(&r.tag, 9)), Style::default().fg(DIM)),
                 Span::styled(format!("{:<18}", clip(&cost, 18)), Style::default().fg(FG)),
@@ -108,13 +111,162 @@ impl Card for Runs {
                          w.saturating_sub(46).max(10)),
                     end,
                 ),
-            ]));
+            ];
+            // The whole row is what is being pointed at, so the whole row is lit. A mark on
+            // its own is easy to lose in a long list, and the eye follows a block, not a dot.
+            // Padded to the full width first, or the highlight stops where the words do.
+            if here {
+                let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                out.push(Line::from(spans).style(Style::default().bg(PICKED)));
+            } else {
+                out.push(Line::from(spans));
+            }
         }
         out
     }
 }
 
-/// What is inside the run the journal is pointing at: every line of it, in order.
+/// What is inside the run the journal is pointing at, step by step.
+///
+/// Read from the trace — what was actually sent and what actually came back — rather than from
+/// the conversation, because the conversation is the tidied version and this pane is for the
+/// times those two differ.
+pub struct Steps;
+
+impl Card for Steps {
+    fn title(&self) -> &'static str {
+        "inside"
+    }
+
+    fn lines(&self, ui: &Ui, w: usize) -> Vec<Line<'static>> {
+        let Some(r) = ui.pointing_at() else {
+            return vec![quiet("nothing to look into")];
+        };
+        if ui.opened.as_deref() != Some(r.id.as_str()) {
+            return vec![quiet("reading it\u{2026}")];
+        }
+        let steps = ui.steps();
+        if steps.is_empty() {
+            return vec![
+                quiet("nothing was traced for this one."),
+                quiet("older runs, or tracing turned off."),
+            ];
+        }
+        steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let here = i == ui.step && ui.column != crate::state::Column::Runs;
+                let what = s.get("what").and_then(|w| w.as_str()).unwrap_or("?");
+                let body = s.get("body").cloned().unwrap_or(Value::Null);
+                let (colour, said) = match what {
+                    "request" => (AMBER, format!(
+                        "{} messages \u{b7} {} tools",
+                        body.get("messages").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0),
+                        body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0),
+                    )),
+                    "answer" => (MINT, format!(
+                        "{} tokens in {}",
+                        body.get("tokens").and_then(|t| t.as_u64()).unwrap_or(0),
+                        took(body.get("seconds").and_then(|s| s.as_f64()).unwrap_or(0.0)).trim(),
+                    )),
+                    "tool_call" => (SKY, clip(&compact(body.get("args").unwrap_or(&Value::Null)), 40)),
+                    "tool_result" => (
+                        if body.get("ok").and_then(|o| o.as_bool()) == Some(false) { ROSE } else { DIM },
+                        clip(body.get("result").and_then(|r| r.as_str()).unwrap_or("").trim(), 40),
+                    ),
+                    _ => (DIM, String::new()),
+                };
+                let mut spans = vec![
+                    Span::styled(if here { "\u{25b8} " } else { "  " }, Style::default().fg(MINT)),
+                    Span::styled(
+                        format!("{:>8} ", s.get("at").and_then(|a| a.as_f64()).map(clock).unwrap_or_default()),
+                        Style::default().fg(DIM),
+                    ),
+                    Span::styled(format!("{what:<13}"), Style::default().fg(colour)),
+                    Span::styled(clip(&said, w.saturating_sub(25).max(8)), Style::default().fg(FG)),
+                ];
+                if here {
+                    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                    spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                    return Line::from(spans).style(Style::default().bg(PICKED));
+                }
+                Line::from(spans)
+            })
+            .collect()
+    }
+}
+
+/// One step, exactly as it went over the wire.
+///
+/// The whole request: the system prompt the model was given, every message of the window it was
+/// given with it, the tool schemas it could see, and the sampling settings. This is the answer
+/// to "why did it say that", and nothing reconstructed can be.
+pub struct Exactly;
+
+impl Card for Exactly {
+    fn title(&self) -> &'static str {
+        "exactly"
+    }
+
+    fn lines(&self, ui: &Ui, w: usize) -> Vec<Line<'static>> {
+        let Some(step) = ui.at_step() else {
+            return vec![quiet("pick a step on the left")];
+        };
+        let body = step.get("body").cloned().unwrap_or(Value::Null);
+        let mut out = Vec::new();
+
+        // A request is the one thing worth laying out rather than printing: it is mostly the
+        // messages, and the messages are what anyone came here to read.
+        if step.get("what").and_then(|w| w.as_str()) == Some("request") {
+            for (k, label) in [("temperature", "temperature"), ("top_p", "top p"), ("top_k", "top k"),
+                               ("max_new_tokens", "max tokens")] {
+                if let Some(v) = body.get(k) {
+                    out.push(Line::from(vec![
+                        Span::styled(format!("  {label:<12}"), Style::default().fg(DIM)),
+                        Span::styled(v.to_string(), Style::default().fg(FG)),
+                    ]));
+                }
+            }
+            out.push(Line::from(""));
+            for m in body.get("messages").and_then(|m| m.as_array()).into_iter().flatten() {
+                let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+                out.push(Line::from(Span::styled(
+                    format!("  {role}"),
+                    Style::default()
+                        .fg(match role {
+                            "system" => MOSS,
+                            "user" => AMBER,
+                            "assistant" => MINT,
+                            _ => SKY,
+                        })
+                        .add_modifier(Modifier::BOLD),
+                )));
+                let text = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                for line in text.lines() {
+                    for row in crate::line::wrap(line, w.saturating_sub(4).max(8), 0).rows {
+                        out.push(Line::from(Span::styled(format!("    {row}"), Style::default().fg(FG))));
+                    }
+                }
+                out.push(Line::from(""));
+            }
+            return out;
+        }
+
+        // Everything else is shown as it was written down, which for an answer or a command is
+        // exactly what anyone wants.
+        let text = serde_json::to_string_pretty(&body).unwrap_or_default();
+        for line in text.lines() {
+            for row in crate::line::wrap(line, w.saturating_sub(2).max(8), 0).rows {
+                out.push(Line::from(Span::styled(format!("  {row}"), Style::default().fg(FG))));
+            }
+        }
+        out
+    }
+}
+
+/// The heading of the run being pointed at.
 pub struct Inside;
 
 impl Card for Inside {
@@ -198,6 +350,15 @@ impl Card for Inside {
             }
         }
         out
+    }
+}
+
+/// A run's id, short enough for a column. A turn's is a timestamp and a counter, and the tail
+/// is the part that tells two of them apart.
+fn short_id(id: &str) -> String {
+    match id.rsplit_once('-') {
+        Some((head, tail)) => format!("{}-{tail}", &head[head.len().saturating_sub(4)..]),
+        None => id.chars().take(6).collect(),
     }
 }
 
@@ -705,6 +866,7 @@ mod tests {
         let s = text(&Runs.lines(&u, 100));
         assert!(s.contains("main"), "{s}");
         assert!(s.contains("inner"), "{s}");
+        assert!(s.contains("a97d91"), "a thought's id is the one it is known by: {s}");
         assert!(s.contains("count the files"), "a thought shows its goal: {s}");
         assert!(s.contains("tool_error"), "a turn shows how it ended: {s}");
     }

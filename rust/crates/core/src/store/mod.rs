@@ -1,6 +1,7 @@
 pub mod identity;
 pub mod birth;
 pub mod thoughts;
+pub mod trace;
 pub mod schedule;
 pub mod inbox;
 pub mod journal;

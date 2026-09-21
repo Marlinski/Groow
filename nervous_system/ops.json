@@ -64,6 +64,9 @@
       "agent",
       "mentor"
     ],
+    "trace": [
+      "mentor"
+    ],
     "train": [
       "mentor"
     ],

@@ -55,6 +55,8 @@ pub enum Op {
     Stats,
     /// Stop whatever turn is running, because a person said so.
     Interrupt,
+    /// Exactly what was sent to the brain during one run, and what came back.
+    Trace,
     /// Set or cancel an alarm.
     Schedule,
 
@@ -89,6 +91,7 @@ impl Op {
             "recall" => Op::Recall,
             "stats" => Op::Stats,
             "interrupt" => Op::Interrupt,
+            "trace" => Op::Trace,
             "schedule" => Op::Schedule,
             "say" => Op::Say,
             "command" => Op::Command,
@@ -116,6 +119,7 @@ impl Op {
             Op::Recall => "recall",
             Op::Stats => "stats",
             Op::Interrupt => "interrupt",
+            Op::Trace => "trace",
             Op::Schedule => "schedule",
             Op::Say => "say",
             Op::Command => "command",
@@ -167,7 +171,7 @@ mod tests {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
             Op::Complete, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
-            Op::ThoughtEnd, Op::Recall, Op::Stats, Op::Interrupt, Op::Schedule, Op::Say, Op::Command,
+            Op::ThoughtEnd, Op::Recall, Op::Stats, Op::Interrupt, Op::Trace, Op::Schedule, Op::Say, Op::Command,
             Op::Consolidate, Op::Train, Op::Quit,
         ] {
             assert_eq!(Op::parse(op.name()), Some(op), "{} did not round trip", op.name());
@@ -214,7 +218,7 @@ mod tests {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
             Op::Complete, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
-            Op::ThoughtEnd, Op::Recall, Op::Stats, Op::Interrupt, Op::Schedule, Op::Say, Op::Command,
+            Op::ThoughtEnd, Op::Recall, Op::Stats, Op::Interrupt, Op::Trace, Op::Schedule, Op::Say, Op::Command,
             Op::Consolidate, Op::Train, Op::Quit,
         ] {
             let any = [Role::Agent, Role::Viewer, Role::Mentor].iter().any(|r| op.allowed_for(*r));
