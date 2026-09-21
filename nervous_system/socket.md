@@ -67,7 +67,7 @@ The least role that may call each one. This table is checked against the code; s
 | `thought.append` | agent | record one message on that thought's own trace |
 | `thought.end` | agent | close out one step |
 | `think` | agent | start an inner thought |
-| `thought` | agent | read, pause, resume, kill, focus or finish a thought |
+| `thought` | agent | list, read, pause, resume, kill or finish a thought |
 | `recall` | viewer | read the conversation back, a page at a time |
 | `schedule` | agent | list, add or cancel an alarm |
 | `stats` | mentor | the measurements: learning passes, turns, feeling, tool health |

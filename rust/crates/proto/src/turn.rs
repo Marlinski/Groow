@@ -42,6 +42,8 @@ impl SignalKind {
         match self {
             SignalKind::SignalUser | SignalKind::SignalUnspecified => "user",
             SignalKind::SignalCommand => "command",
+            // Kept for reading back: a thought could once interrupt the main thread part
+            // way through, and conversations from then still have these in them.
             SignalKind::SignalFocus => "focus",
             SignalKind::SignalThoughtDone => "thought_done",
             SignalKind::SignalReminder => "reminder",

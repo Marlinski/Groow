@@ -280,13 +280,6 @@ async fn run_call(client: &mut Client, call: &Call, settings: &Settings) -> Tool
                 Err(e) => ToolResult::bad(format!("that thought could not be started: {e}")),
             }
         }
-        "focus" => {
-            let m = tools::arg_str(&call.args, "message");
-            match client.call("thought", json!({"action": "focus", "id": thought_id(), "text": m})).await {
-                Ok(_) => ToolResult::good("passed to the main thread"),
-                Err(e) => ToolResult::bad(format!("that did not reach the main thread: {e}")),
-            }
-        }
         "finish" => {
             let s = tools::arg_str(&call.args, "summary");
             match client.call("thought", json!({"action": "finish", "id": thought_id(), "text": s})).await {

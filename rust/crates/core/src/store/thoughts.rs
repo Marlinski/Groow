@@ -2,7 +2,7 @@
 //!
 //! Work the mind sets aside for itself and comes back to. Each one is a file holding its own
 //! conversation, run by its own process. The main thread spawns them and can pause, resume or
-//! kill them; they reach back with a focus message or a final summary.
+//! kill them; each reaches back once, with the summary it finishes on.
 //!
 //! Only the process running a thought writes its history. The core patches the few fields it
 //! owns, such as the status, so the two never fight over the same file.

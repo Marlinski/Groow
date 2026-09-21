@@ -7,7 +7,7 @@
 <p>The main thought is a single rolling conversation (one <code>Harness</code>, priority 0). It is the only thing that speaks to the person or to the mentor. It consumes <b>signals</b> from an inbox on disk (<code>state/inbox/</code>) in priority order and does nothing between them; inner thoughts run on their own and reach it only through that inbox. Every message of its conversation is journalled to <code>state/main/</code> as it happens, and the window is rebuilt from the journal after a reboot.</p>
 <table><tr><th>Priority</th><th>Signal</th><th>Framed to the model as</th></tr>
 <tr><td>0 USER</td><td>a human typed</td><td>the message itself</td></tr>
-<tr><td>1 FOCUS</td><td>a thought called <code>focus()</code> or finished</td><td><code>[inner thought a1b2 says] …</code> / <code>[inner thought a1b2 finished] …</code></td></tr>
+<tr><td>1 THOUGHT_DONE</td><td>an inner thought finished</td><td><code>[inner thought a1b2 finished] …</code></td></tr>
 <tr><td>2 REMINDER</td><td>every N steps of a running thought</td><td><code>[reminder, no reply needed] thought a1b2 is at step 6/12: … You may read_thought it, pause it, or ignore this.</code></td></tr>
 <tr><td>3 IDLE</td><td>nobody spoke for <code>sense_idle_minutes</code></td><td>the curiosity impulse (read the news)</td></tr>
 <tr><td>4 HOUSEKEEPING</td><td>a night is due</td><td>handled by the loop, not the model</td></tr></table>
@@ -28,8 +28,7 @@ stateDiagram-v2
 </pre>
 <h3>What a thought can do to the main thought</h3>
 <table><tr><th>From inside</th><th>Effect</th></tr>
-<tr><td><code>focus(message)</code></td><td>a FOCUS signal; main reads it as "[inner thought … says]" and decides whether to tell the person</td></tr>
-<tr><td><code>finish(summary)</code></td><td>status done, a FOCUS signal with the summary</td></tr>
+<tr><td><code>finish(summary)</code></td><td>status done, and one signal to the main thread carrying the summary. It is the only thing the main thread ever sees of a thought, which is what makes the summary the whole point of it</td></tr>
 <tr><td>every <code>thought_reminder_every</code> steps</td><td>a REMINDER signal, so main always knows something is running</td></tr>
 <tr><td>budget exhausted</td><td>status done, summary is its last text</td></tr>
 <tr><td>crash</td><td>status killed, the error reported as a FOCUS signal</td></tr></table>
@@ -61,13 +60,12 @@ sequenceDiagram
   T->>G: step 1 (batched, prio 2)
   P->>M: "quick: 23*19?"
   G-->>T: preempted, requeued
-  M->>G: prio 0, streaming
+  M->>G: prio 0
   M-->>P: "437"
   G-->>T: step 1 resumes
   T->>T: shell groow news, read, learn
-  T->>M: focus("48 dead, methanol. learned, source Guardian 18 Sep")
+  T->>M: finish("48 dead, methanol. learned, source Guardian 18 Sep")
   M-->>P: relays the finding
-  T->>M: finish(summary)
 </pre>
 <p class="note">Design choices worth knowing: thoughts do not passive-learn on their own monologue by default (<code>learn_from_thoughts: false</code>), because inner speech is the most self-distilling text there is. They do change weights through the learning tools they call, which is the point.</p>
 <footer>Groow · docs · mind</footer>

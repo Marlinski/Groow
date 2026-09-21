@@ -92,8 +92,8 @@ pub enum Stimulus {
     Brain { loaded: bool },
     /// Something arrived for it: a person's message, an alarm, a thought reporting back.
     Arrived { from_a_person: bool },
-    /// The scheduler asking what to do with itself.
-    Asked,
+    /// The scheduler asking whether it may begin something, and what.
+    Asked(About),
     /// A turn was opened for the next thing in the queue.
     TurnBegan,
     /// The turn sent a command out into the world.
@@ -112,6 +112,19 @@ pub enum Stimulus {
     Spoke,
     /// Asked to stop for good.
     Stop,
+}
+
+/// The two things the scheduler can be asking about.
+///
+/// They are not the same question. A conscious turn is the one thread of the conversation and
+/// there is only ever one; an inner thought is work set aside to run on its own, and making it
+/// queue behind the conversation is refusing to set it aside at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum About {
+    /// Opening a turn for the next thing in the queue.
+    Work,
+    /// Giving an inner thought its next step.
+    Thought,
 }
 
 /// What the body should do about a stimulus. The state decides; the caller carries it out.
@@ -192,7 +205,7 @@ impl Brainstem {
                 self.state = if self.unanswered > 0 { Idle } else { Listening };
                 Reflex::Nothing
             }
-            (Waking, S::Asked) => Reflex::Rest(2.0),
+            (Waking, S::Asked(_)) => Reflex::Rest(2.0),
             (Waking, _) => Reflex::Nothing,
 
             // ---------------------------------------------------------- asleep
@@ -209,7 +222,9 @@ impl Brainstem {
                 }
                 Reflex::Nothing
             }
-            (Napping | Sleeping, S::Asked) => Reflex::Rest(1.0),
+            // Nothing runs during a pass, thoughts included: they would need the brain, and
+            // the brain is busy becoming different.
+            (Napping | Sleeping, S::Asked(_)) => Reflex::Rest(1.0),
             (Napping | Sleeping, S::Brain { loaded: false }) => {
                 self.state = Waking;
                 self.pass = None;
@@ -234,14 +249,16 @@ impl Brainstem {
                 self.state = Waking;
                 Reflex::Nothing
             }
-            // One turn at a time is the reason the conversation is a single thread. Anything
-            // that arrives while one is running waits for it.
-            (Thinking | Working, S::Asked) => Reflex::Rest(0.5),
+            // One turn at a time is the reason the conversation is a single thread, so anything
+            // that arrives while one is running waits for it. An inner thought does not: it was
+            // set aside to run on its own, and it runs on its own.
+            (Thinking | Working, S::Asked(About::Work)) => Reflex::Rest(0.5),
+            (Thinking | Working, S::Asked(About::Thought)) => Reflex::Begin,
             (Thinking | Working, S::SleepBegan { .. }) => Reflex::Nothing,
             (Thinking | Working, _) => Reflex::Nothing,
 
             // ---------------------------------------------------------- free
-            (Idle | Listening, S::Asked) => Reflex::Begin,
+            (Idle | Listening, S::Asked(_)) => Reflex::Begin,
             (Idle | Listening, S::TurnBegan) => {
                 self.state = Thinking;
                 Reflex::Nothing
@@ -293,7 +310,8 @@ mod tests {
             S::Brain { loaded: false },
             S::Arrived { from_a_person: true },
             S::Arrived { from_a_person: false },
-            S::Asked,
+            S::Asked(About::Work),
+            S::Asked(About::Thought),
             S::TurnBegan,
             S::ToolCalled,
             S::ToolReturned,
@@ -322,25 +340,25 @@ mod tests {
     #[test]
     fn nothing_begins_before_the_weights_are_loaded() {
         let mut b = Brainstem::default();
-        assert_eq!(b.feel(S::Asked), Reflex::Rest(2.0));
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Rest(2.0));
         // What arrives is not lost: the queue is on disk and outlives all of this.
         assert_eq!(b.feel(S::Arrived { from_a_person: true }), Reflex::Nothing);
         assert_eq!(b.state(), State::Waking);
         b.feel(S::Brain { loaded: true });
-        assert_eq!(b.feel(S::Asked), Reflex::Begin, "and then it is taken");
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Begin, "and then it is taken");
     }
 
     #[test]
     fn a_turn_is_thinking_until_it_runs_something() {
         let mut b = awake();
-        assert_eq!(b.feel(S::Asked), Reflex::Begin);
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Begin);
         b.feel(S::TurnBegan);
         assert_eq!(b.state(), State::Thinking);
         b.feel(S::ToolCalled);
         assert_eq!(b.state(), State::Working, "waiting on the world, not on itself");
         b.feel(S::ToolReturned);
         assert_eq!(b.state(), State::Thinking);
-        assert_eq!(b.feel(S::Asked), Reflex::Rest(0.5), "one turn at a time");
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Rest(0.5), "one turn at a time");
         b.feel(S::TurnEnded);
         assert_eq!(b.state(), State::Listening);
     }
@@ -354,10 +372,10 @@ mod tests {
         assert_eq!(b.state(), State::Sleeping);
         assert_eq!(b.feel(S::Arrived { from_a_person: true }), Reflex::Nothing);
         assert_eq!(b.state(), State::Sleeping, "it is not woken early");
-        assert_eq!(b.feel(S::Asked), Reflex::Rest(1.0));
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Rest(1.0));
         b.feel(S::SleepEnded);
         assert_eq!(b.state(), State::Listening);
-        assert_eq!(b.feel(S::Asked), Reflex::Begin, "and then the message is taken");
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Begin, "and then the message is taken");
     }
 
     #[test]
@@ -404,7 +422,7 @@ mod tests {
             }
             b.feel(S::Brain { loaded: false });
             assert_eq!(b.state(), State::Waking, "after {reach:?}");
-            assert_eq!(b.feel(S::Asked), Reflex::Rest(2.0));
+            assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Rest(2.0));
         }
     }
 
@@ -422,6 +440,23 @@ mod tests {
                 assert_eq!(b.state(), State::Stopping, "something restarted a core on its way out");
             }
         }
+    }
+
+    #[test]
+    fn a_thought_runs_alongside_a_turn_and_a_turn_does_not_run_alongside_a_turn() {
+        // `think` is for setting work aside to run on its own. Making it wait for the
+        // conversation to fall silent is refusing to set it aside at all.
+        let mut b = awake();
+        b.feel(S::TurnBegan);
+        assert_eq!(b.feel(S::Asked(About::Work)), Reflex::Rest(0.5), "one conversation");
+        assert_eq!(b.feel(S::Asked(About::Thought)), Reflex::Begin, "but thinking on its own");
+
+        // Not while it is asleep, though: a thought needs the brain too, and the brain is
+        // busy becoming different. (A pass only ever begins when no turn is running, which is
+        // why the turn is ended here first rather than slept through.)
+        b.feel(S::TurnEnded);
+        b.feel(S::SleepBegan { night: false });
+        assert_eq!(b.feel(S::Asked(About::Thought)), Reflex::Rest(1.0));
     }
 
     #[test]
@@ -446,9 +481,15 @@ mod tests {
                 }
                 let before = b.state();
                 let reflex = b.feel(s.clone());
-                // Work is only ever begun when it is free to do it, whatever the path here.
+                // A turn is only ever begun when it is free to begin one. A thought may also
+                // begin during a turn, because that is what setting work aside means — but
+                // never while the weights are loading, during a pass, or on the way out.
                 if reflex == Reflex::Begin {
-                    assert!(before.free(), "{before:?} said Begin on {s:?}");
+                    let allowed = match s {
+                        S::Asked(About::Thought) => before.free() || before.in_a_turn(),
+                        _ => before.free(),
+                    };
+                    assert!(allowed, "{before:?} said Begin on {s:?}");
                 }
                 assert!(
                     State::parse(b.state().as_str()).is_some(),

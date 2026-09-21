@@ -41,7 +41,7 @@ pub enum Op {
     // ---- things the mind may do to itself -------------------------------------------
     /// Start an inner thought.
     Think,
-    /// Act on an existing inner thought: focus, finish, pause, resume, kill, read.
+    /// Act on an existing inner thought: list, read, finish, pause, resume, kill.
     Thought,
     /// Take the next step of an inner thought. Spoken only by a thought process.
     ThoughtClaim,

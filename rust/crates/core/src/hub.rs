@@ -28,7 +28,7 @@ use crate::paths::Paths;
 use crate::store::birth::Birth;
 use crate::store::identity::Identity;
 use crate::store::journal::{restore_window_without, Journal};
-use crate::brainstem::{Brainstem, Reflex, Stimulus};
+use crate::brainstem::{About, Brainstem, Reflex, Stimulus};
 use crate::store::inbox::{Inbox, Signal};
 use crate::store::schedule::Schedule;
 use crate::store::thoughts::{ThoughtStatus, Thoughts};
@@ -242,6 +242,8 @@ pub struct Hub {
     /// Consecutive idle nudges, so the mind is left alone for longer the less is happening.
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
+    /// Thoughts a process has been asked for but which have not claimed one yet.
+    starting: std::collections::HashSet<String>,
     /// What it is doing, and what each thing that happens to it means. Every decision about
     /// beginning, resting, sleeping and stopping is its, not this file's.
     stem: Brainstem,
@@ -313,6 +315,7 @@ impl Hub {
             subscribers: Vec::new(),
             active: None,
             epoch: Epoch(0),
+            starting: std::collections::HashSet::new(),
             stem: Brainstem::default(),
             fail_streak: 0,
             last_failure: 0.0,
@@ -589,10 +592,30 @@ impl Hub {
     /// itself holds no policy and cannot drift out of step with the state.
     fn next_duty(&mut self) -> Result<Duty, WireError> {
         let now = self.now();
+
+        // An inner thought first, and before the question about a turn, because the two are
+        // not the same question. Work set aside to run on its own runs on its own: it does not
+        // queue behind the conversation, which is what `think` is for. It is still refused
+        // while the weights are loading or a learning pass is running, and it is still one
+        // process per thought.
+        if matches!(self.feel(Stimulus::Asked(About::Thought)), Reflex::Begin) {
+            for id in self.thoughts.reap(pid_alive, now).map_err(io)? {
+                self.starting.remove(&id);
+                self.fanout(Event::new(EventName::Thought, json!({"id": id, "status": "paused", "why": "its process went away"})));
+            }
+            if let Some(t) = self.thoughts.ready(now).map_err(io)?.filter(|t| !self.starting.contains(&t.id)) {
+                // Spoken for, until its process claims it or fails to. Without this the
+                // scheduler would come round again in the moment before the process connects
+                // and start a second one for the same thought.
+                self.starting.insert(t.id.clone());
+                return Ok(Duty::Thought(t.id));
+            }
+        }
+
         // The scheduler does not decide anything: it says it is asking, and does what comes
         // back. Every rule about when work may begin lives in the one state that was in when
         // the question arrived.
-        match self.feel(Stimulus::Asked) {
+        match self.feel(Stimulus::Asked(About::Work)) {
             Reflex::Rest(seconds) => return Ok(Duty::Idle(seconds)),
             Reflex::Halt => return Ok(Duty::Idle(3600.0)),
             Reflex::Begin | Reflex::Nothing => {}
@@ -612,10 +635,6 @@ impl Hub {
             self.inbox.push(&sig).map_err(io)?;
         }
 
-        for id in self.thoughts.reap(pid_alive, now).map_err(io)? {
-            self.fanout(Event::new(EventName::Thought, json!({"id": id, "status": "paused", "why": "its process went away"})));
-        }
-
         if let Some(sig) = self.inbox.pop().map_err(io)? {
             if sig.kind.is_human() {
                 self.last_human = now;
@@ -623,10 +642,6 @@ impl Hub {
             }
             let id = self.begin(sig.clone(), now);
             return Ok(Duty::Turn(Box::new(sig), id));
-        }
-
-        if let Some(t) = self.thoughts.ready(now).map_err(io)? {
-            return Ok(Duty::Thought(t.id));
         }
 
         // With nothing waiting, this is the moment to digest what has happened. A night comes
@@ -889,8 +904,9 @@ impl Hub {
         }
         let system = format!(
             "You are one of Groow's inner thoughts, working alone on a single goal.\n\nGoal: {goal}\n\n\
-             Work in small concrete steps with your tools. Call `focus` to tell the main thread \
-             something it needs now, and `finish` with a summary when the goal is reached.");
+             Work in small concrete steps with your tools, and call `finish` with a summary \
+             when the goal is reached. That summary is the only thing the main thread will see, \
+             so it is what the whole thought is worth.");
         let t = self.thoughts.spawn(goal, max_steps, &system).map_err(io)?;
         self.fanout(Event::new(EventName::Thought, json!({
             "id": t.id, "status": "running", "goal": t.goal, "event": "spawn",
@@ -920,7 +936,7 @@ impl Hub {
                 "id": t.id, "goal": t.goal, "status": t.status.as_str(),
                 "steps": t.steps, "max_steps": t.max_steps, "summary": t.summary,
             }),
-            "pause" | "resume" | "kill" | "finish" | "focus" => {
+            "pause" | "resume" | "kill" | "finish" => {
                 if t.status.is_final() && (action == "pause" || action == "resume") {
                     return Err(WireError::BadArg(format!("thought {id} has already finished")));
                 }
@@ -939,10 +955,7 @@ impl Hub {
                     }
                 }).map_err(io)?;
                 // A thought that reached the main thread queues a signal for it.
-                if action == "focus" {
-                    let sig = Signal::new(SignalKind::SignalFocus, text).with_meta(json!({"thought": id}));
-                    self.inbox.push(&sig).map_err(io)?;
-                } else if action == "finish" {
+                if action == "finish" {
                     let sig = Signal::new(SignalKind::SignalThoughtDone, text).with_meta(json!({"thought": id}));
                     self.inbox.push(&sig).map_err(io)?;
                 }
@@ -963,6 +976,7 @@ impl Hub {
     /// what the person said has nothing to do with it. One process takes one step, which keeps
     /// every process short and leaves the core in charge of whether there is another.
     fn thought_claim(&mut self, id: &str, pid: u32) -> Result<TurnContext, WireError> {
+        self.starting.remove(id);
         let t = self.thoughts.get(id).map_err(io)?
             .ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
         if t.status != ThoughtStatus::Running {
@@ -1015,6 +1029,7 @@ impl Hub {
     /// Close out one step. The thought stops when it has spent its budget, and says so, rather
     /// than being cut off without a word.
     fn thought_end(&mut self, id: &str, final_text: &str, flags: &[String]) -> Result<Value, WireError> {
+        self.starting.remove(id);
         let t = self.thoughts.patch(id, |t| {
             t.steps += 1;
             t.attempts = 0;
@@ -1045,6 +1060,7 @@ impl Hub {
     /// A thought's process failed without taking a step. After a few of those it is parked,
     /// because respawning something that cannot start is a loop, not persistence.
     fn thought_failed(&mut self, id: &str, why: &str) {
+        self.starting.remove(id);
         let parked = self.thoughts.patch(id, |t| {
             t.pid = None;
             t.attempts += 1;
@@ -1174,6 +1190,18 @@ mod tests {
         let mut h = hub_for_test(d.path()).unwrap();
         h.set_brain_up(true);
         (h, d)
+    }
+
+    /// Make a thought look as though it has been sitting there a while.
+    ///
+    /// The thought store stamps `updated` from the wall clock while these tests run on one they
+    /// move by hand, so a freshly spawned thought is never "ready" to a test clock. Nothing in
+    /// the running system notices, because nothing there injects a clock.
+    fn left_a_while(h: &Hub, id: &str) {
+        let p = h.paths().thoughts().join(format!("{id}.json"));
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        v["updated"] = json!(0.0);
+        std::fs::write(&p, serde_json::to_string(&v).unwrap()).unwrap();
     }
 
     fn hub_at(at: f64) -> (Hub, Clock, tempfile::TempDir) {
@@ -1334,16 +1362,27 @@ mod tests {
     }
 
     #[test]
-    fn a_thought_reaching_back_queues_a_signal_for_the_main_thread() {
+    fn a_thought_reaches_the_main_thread_once_when_it_is_done() {
+        // It used to be able to interrupt at any point as well, with `focus`. In practice that
+        // was used to say the thing it then said again on finishing: two turns of the main
+        // thread spent on one piece of news. A thought says one thing, at the end.
         let (mut h, _d) = hub();
         let r = take(|reply| Cmd::Think { goal: "look into rivers".into(), max_steps: 5, reply }, &mut h).unwrap();
         let id = r["id"].as_str().unwrap().to_string();
-        take(|reply| Cmd::ThoughtAction { action: "focus".into(), id: id.clone(), text: "found something".into(), reply }, &mut h).unwrap();
-        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
-        match duty {
+
+        let refused = take(|reply| Cmd::ThoughtAction {
+            action: "focus".into(), id: id.clone(), text: "half of something".into(), reply,
+        }, &mut h);
+        assert!(refused.is_err(), "there is no interrupting the main thread part way through");
+
+        take(|reply| Cmd::ThoughtAction {
+            action: "finish".into(), id: id.clone(), text: "rivers run downhill".into(), reply,
+        }, &mut h).unwrap();
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
             Duty::Turn(s, _) => {
-                assert_eq!(s.kind, SignalKind::SignalFocus);
+                assert_eq!(s.kind, SignalKind::SignalThoughtDone);
                 assert_eq!(s.meta["thought"], id);
+                assert!(s.text.contains("rivers run downhill"));
             }
             other => panic!("the main thread was not woken: {other:?}"),
         }
@@ -1818,6 +1857,53 @@ mod tests {
         let said = e.to_string();
         assert!(said.contains("burn"), "{said}");
         assert!(said.contains("remove"), "an error should say what would have worked: {said}");
+    }
+
+    #[test]
+    fn a_thought_is_given_a_process_while_a_turn_is_running() {
+        // `think` is for setting work aside to run on its own. It used to wait for the
+        // conversation to fall silent, which is not setting anything aside.
+        let (mut h, clock, _d) = hub_at(1000.0);
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
+        assert_eq!(take(|reply| Cmd::Status { reply }, &mut h).unwrap()["state"], "thinking");
+
+        let id = take(|reply| Cmd::Think { goal: "look into rivers".into(), max_steps: 5, reply }, &mut h)
+            .unwrap()["id"].as_str().unwrap().to_string();
+        left_a_while(&h, &id);
+        clock.advance(60.0);
+
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+            Duty::Thought(got) => assert_eq!(got, id, "a different thought was offered"),
+            other => panic!("the thought waited for the conversation: {other:?}"),
+        }
+        // And not a second time before its process has connected, or two processes would be
+        // working on one thought.
+        assert!(
+            matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)),
+            "the same thought was handed out twice"
+        );
+    }
+
+    #[test]
+    fn a_thought_whose_process_never_arrived_is_offered_again() {
+        let (mut h, clock, _d) = hub_at(1000.0);
+        let id = take(|reply| Cmd::Think { goal: "look into rivers".into(), max_steps: 5, reply }, &mut h)
+            .unwrap()["id"].as_str().unwrap().to_string();
+        left_a_while(&h, &id);
+        clock.advance(60.0);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Thought(_)));
+
+        // Its process could not be started, so nothing is coming. It must not be stranded.
+        h.handle(Cmd::ThoughtFailed { id: id.clone(), why: "could not start".into() });
+        clock.advance(60.0);
+        left_a_while(&h, &id);
+        clock.advance(60.0);
+        match take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap() {
+            Duty::Thought(got) => assert_eq!(got, id),
+            other => panic!("a thought nobody picked up was left there: {other:?}"),
+        }
     }
 
     #[test]

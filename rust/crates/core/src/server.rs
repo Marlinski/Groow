@@ -158,12 +158,22 @@ impl Core {
                         }
                     }
                 }
+                // A thought is watched but not waited for. It was set aside to run on its
+                // own, and a scheduler that stands over it until it finishes has not set it
+                // aside at all: it would not start until the conversation fell silent, and a
+                // second thought would not start until the first was done.
+                //
+                // Nothing races on this. The hub is still the only thing that mutates state,
+                // and it has already marked the thought as spoken for, so the next round of
+                // the loop will not hand the same one out twice.
                 Duty::Thought(id) => match self.spawner.thought(&id) {
                     Ok(child) => {
-                        let ok = self.watch(child, "thought", Some(id.clone())).await;
-                        if !ok {
-                            self.hub.thought_failed(&id, "its process ended badly").await;
-                        }
+                        let core = self.clone();
+                        tokio::spawn(async move {
+                            if !core.watch(child, "thought", Some(id.clone())).await {
+                                core.hub.thought_failed(&id, "its process ended badly").await;
+                            }
+                        });
                     }
                     Err(e) => {
                         tracing::error!("could not start a thought: {e}");

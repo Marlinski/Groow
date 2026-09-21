@@ -82,17 +82,6 @@ It works alone and comes back to you when it has something worth saying."
         Surface::Thought => vec![
             shell,
             ToolSchema {
-                name: "focus".into(),
-                description: "Tell the main thread something it needs now, without waiting \
-until you are finished."
-                    .into(),
-                parameters: groow_proto::frame::to_struct(json!({
-                    "type": "object",
-                    "properties": {"message": {"type": "string"}},
-                    "required": ["message"],
-                })),
-            },
-            ToolSchema {
                 name: "finish".into(),
                 description: "You have reached the goal. Say what you found, in a sentence or \
 two, and stop."
@@ -235,7 +224,7 @@ mod tests {
     #[test]
     fn the_surface_is_small_and_differs_by_who_is_thinking() {
         assert_eq!(names(Surface::Main), ["shell", "think"]);
-        assert_eq!(names(Surface::Thought), ["shell", "focus", "finish"]);
+        assert_eq!(names(Surface::Thought), ["shell", "finish"]);
     }
 
     #[test]
