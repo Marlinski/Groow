@@ -36,6 +36,104 @@ pub fn operator() -> Vec<Box<dyn Card>> {
     ]
 }
 
+/// The cards beside the conversation, under the creature and its certificate.
+pub fn beside() -> Vec<Box<dyn Card>> {
+    vec![Box::new(Thoughts), Box::new(Alarms)]
+}
+
+/// What it is working on by itself.
+pub struct Thoughts;
+
+impl Card for Thoughts {
+    fn title(&self) -> &'static str {
+        "inner thoughts"
+    }
+
+    fn lines(&self, ui: &Ui, _w: usize) -> Vec<Line<'static>> {
+    if ui.thoughts.is_empty() {
+        return vec![Line::from(Span::styled("none just now", Style::default().fg(DIM)))];
+    }
+    let mut live: Vec<_> = ui.thoughts.values().filter(|t| t.status == "running" || t.status == "paused").collect();
+    let mut done: Vec<_> = ui.thoughts.values().filter(|t| t.status != "running" && t.status != "paused").collect();
+    live.sort_by(|a, b| a.id.cmp(&b.id));
+    done.sort_by(|a, b| a.id.cmp(&b.id));
+    // Only the last few finished ones; the rest are history, not status.
+    let tail = done.split_off(done.len().saturating_sub(3));
+
+    let mut out = Vec::new();
+    for t in live.into_iter().chain(tail) {
+        let (mark, colour) = match t.status.as_str() {
+            "running" => ("\u{25c9}", VIOLET),
+            "paused" => ("\u{25cc}", DIM),
+            "done" => ("\u{2713}", DIM),
+            "killed" => ("\u{2717}", DIM),
+            _ => ("\u{b7}", DIM),
+        };
+        out.push(Line::from(vec![
+            Span::styled(format!("{mark} {} ", t.id), Style::default().fg(colour)),
+            Span::styled(format!("{}", t.steps), Style::default().fg(DIM)),
+        ]));
+        out.push(Line::from(Span::styled(
+            format!("  {}", clip(&t.goal, 60)),
+            Style::default().fg(colour),
+        )));
+        if !t.note.is_empty() {
+            out.push(Line::from(Span::styled(
+                format!("  {}", clip(&t.note, 90)),
+                Style::default().fg(DIM),
+            )));
+        }
+    }
+    out
+}
+}
+
+/// Everything set to wake it, soonest first.
+///
+/// The same list the operator's view shows at the top, drawn here because it is the answer to
+/// "what is going to happen to it next" and that belongs beside the conversation.
+pub struct Alarms;
+
+impl Card for Alarms {
+    fn title(&self) -> &'static str {
+        "alarms"
+    }
+
+    fn lines(&self, ui: &Ui, w: usize) -> Vec<Line<'static>> {
+        let all = ui.alarms.get("alarms").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        if all.is_empty() {
+            return vec![quiet("none set")];
+        }
+        let mut due: Vec<&Value> = all.iter().collect();
+        due.sort_by(|a, b| when(a).partial_cmp(&when(b)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = Vec::new();
+        for a in due {
+            let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("??????");
+            let text = a.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let off = a.get("enabled").and_then(|v| v.as_bool()) == Some(false);
+            let every = match (a.get("repeat_s").and_then(|v| v.as_f64()), a.get("repeat_daily").and_then(|v| v.as_str())) {
+                (_, Some(at)) => format!("daily {at}"),
+                (Some(s), _) if s > 0.0 => format!("every {}", took(s).trim()),
+                _ => "once".to_string(),
+            };
+            out.push(Line::from(vec![
+                Span::styled(format!("{id} "), Style::default().fg(DIM)),
+                Span::styled(
+                    if off { "off".to_string() } else { format!("in {}", took(when(a)).trim()) },
+                    Style::default().fg(if off { DIM } else { AMBER }),
+                ),
+                Span::styled(format!(" \u{b7} {every}"), Style::default().fg(DIM)),
+            ]));
+            // The words, on their own line: the panel is narrow and this is what it is for.
+            out.push(Line::from(Span::styled(
+                format!("  {}", clip(text, w.saturating_sub(2).max(10))),
+                Style::default().fg(FG),
+            )));
+        }
+        out
+    }
+}
+
 /// What is happening now and what happens next: the turn in flight, the queue behind it, the
 /// alarms ticking, and when curiosity will next wake it.
 pub struct Ticker;
@@ -368,6 +466,35 @@ mod tests {
         let mut u = ui();
         u.status = json!({"queue": 0});
         assert!(text(&Ticker.lines(&u, 80)).contains("off; it waits to be spoken to"));
+    }
+
+    #[test]
+    fn the_alarms_are_listed_beside_the_conversation_soonest_first() {
+        let mut u = ui();
+        assert!(text(&Alarms.lines(&u, 30)).contains("none set"));
+
+        u.alarms = json!({"alarms": [
+            {"id": "0aea53", "text": "check the news", "when": now() + 7200.0, "repeat_s": 10800.0, "by": "groow", "enabled": true},
+            {"id": "c59f2e", "text": "read the paper", "when": now() + 60.0, "repeat_daily": "08:00", "by": "mentor", "enabled": true},
+            {"id": "b17c02", "text": "an old one", "when": now() + 30.0, "enabled": false, "by": "mentor"},
+        ]});
+        let s = text(&Alarms.lines(&u, 34));
+        assert!(s.contains("0aea53"), "the id is there to act on: {s}");
+        // Truncated, not rounded: something two hours out is 1h59m and a bit away, and a
+        // countdown that rounds up is a countdown that lies about having more time.
+        assert!(s.contains("in 1h59m"), "{s}");
+        assert!(s.contains("daily 08:00"), "{s}");
+        assert!(s.contains("off"), "a cancelled one says so rather than counting down: {s}");
+        let at = |t: &str| s.lines().position(|l| l.contains(t)).unwrap();
+        assert!(at("b17c02") < at("c59f2e") && at("c59f2e") < at("0aea53"), "soonest first:\n{s}");
+    }
+
+    #[test]
+    fn the_panel_beside_the_conversation_is_cards_like_everything_else() {
+        let u = ui();
+        let s = text(&stacked(&u, &beside(), 34));
+        assert!(s.contains("inner thoughts"), "{s}");
+        assert!(s.contains("alarms"), "{s}");
     }
 
     #[test]

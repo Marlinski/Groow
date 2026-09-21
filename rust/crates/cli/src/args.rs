@@ -73,6 +73,7 @@ pub enum Command {
         every: Option<String>,
     },
     /// Its alarms.
+    /// Its alarms: `schedule`, or `schedule remove <id>`.
     Schedule {
         #[arg(default_value = "list")]
         action: String,

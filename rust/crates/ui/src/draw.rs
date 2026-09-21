@@ -306,7 +306,8 @@ const CARD_H: u16 = 12;
 fn side(f: &mut Frame, area: Rect, ui: &Ui) {
     // What matters most when space runs out: what it is thinking about, then the creature
     // itself, then the facts on the card, which never change and can be trimmed.
-    let thoughts_h: u16 = 4;
+    // Room for both lists, which is what the panel is mostly for once the card is drawn.
+    let thoughts_h: u16 = 8;
     let show_creature = area.height >= CREATURE_H + thoughts_h + 3;
     let used = if show_creature { CREATURE_H } else { 0 } + thoughts_h;
     let card_h = area.height.saturating_sub(used).min(CARD_H);
@@ -336,16 +337,26 @@ fn side(f: &mut Frame, area: Rect, ui: &Ui) {
         );
         i += 1;
     }
+    // The rest of the panel is cards, like the operator's view: what it is thinking about on
+    // its own, and what is set to wake it. Both are lists that grow, so they share the space
+    // that is left and scroll off the bottom together rather than fighting over it.
+    let width = rows[i].width.saturating_sub(1) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for (n, c) in crate::cards::beside().iter().enumerate() {
+        if n > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {} ", c.title()),
+            Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(c.lines(ui, width));
+    }
     f.render_widget(
-        Paragraph::new(thoughts(ui))
+        Paragraph::new(lines)
             // Not trimmed: the indent is what shows a goal belongs to the line above it.
             .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(EDGE))
-                    .title(Span::styled(" inner thoughts ", Style::default().fg(DIM))),
-            ),
+            .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(EDGE))),
         rows[i],
     );
 }
@@ -398,43 +409,6 @@ fn tone(ui: &Ui) -> String {
         .to_string()
 }
 
-fn thoughts(ui: &Ui) -> Vec<Line<'static>> {
-    if ui.thoughts.is_empty() {
-        return vec![Line::from(Span::styled("none just now", Style::default().fg(DIM)))];
-    }
-    let mut live: Vec<_> = ui.thoughts.values().filter(|t| t.status == "running" || t.status == "paused").collect();
-    let mut done: Vec<_> = ui.thoughts.values().filter(|t| t.status != "running" && t.status != "paused").collect();
-    live.sort_by(|a, b| a.id.cmp(&b.id));
-    done.sort_by(|a, b| a.id.cmp(&b.id));
-    // Only the last few finished ones; the rest are history, not status.
-    let tail = done.split_off(done.len().saturating_sub(3));
-
-    let mut out = Vec::new();
-    for t in live.into_iter().chain(tail) {
-        let (mark, colour) = match t.status.as_str() {
-            "running" => ("\u{25c9}", VIOLET),
-            "paused" => ("\u{25cc}", DIM),
-            "done" => ("\u{2713}", DIM),
-            "killed" => ("\u{2717}", DIM),
-            _ => ("\u{b7}", DIM),
-        };
-        out.push(Line::from(vec![
-            Span::styled(format!("{mark} {} ", t.id), Style::default().fg(colour)),
-            Span::styled(format!("{}", t.steps), Style::default().fg(DIM)),
-        ]));
-        out.push(Line::from(Span::styled(
-            format!("  {}", clip(&t.goal, 60)),
-            Style::default().fg(colour),
-        )));
-        if !t.note.is_empty() {
-            out.push(Line::from(Span::styled(
-                format!("  {}", clip(&t.note, 90)),
-                Style::default().fg(DIM),
-            )));
-        }
-    }
-    out
-}
 
 /// How tall the input box may grow: a third of the window, so the conversation is never
 /// squeezed out by something being typed at it.

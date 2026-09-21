@@ -1076,14 +1076,19 @@ impl Hub {
                 let a = self.schedule.add(text, w, e, by).map_err(|e| WireError::BadArg(e.to_string()))?;
                 Ok(json!({"ok": true, "id": a.id, "when": a.when}))
             }
-            "cancel" => {
+            // Every word a person or a mind reaches for when they mean "stop this happening".
+            // A model asked to cancel an alarm will say remove or delete about as often as
+            // cancel, and refusing it over the word is a refusal about nothing.
+            "cancel" | "remove" | "delete" | "drop" | "rm" => {
                 let n = self.schedule.cancel(id).map_err(other)?;
                 if n == 0 {
                     return Err(WireError::NotFound("alarm", id.to_string()));
                 }
                 Ok(json!({"ok": true, "cancelled": n}))
             }
-            other => Err(WireError::BadArg(format!("no such schedule action `{other}`"))),
+            other => Err(WireError::BadArg(format!(
+                "no such schedule action `{other}`. There is list, add, and remove <id>."
+            ))),
         }
     }
 
@@ -1774,6 +1779,45 @@ mod tests {
             }
         }
         assert!(states.contains(&"thinking".to_string()), "the turn beginning was not announced: {states:?}");
+    }
+
+    #[test]
+    fn an_alarm_can_be_dropped_by_any_of_the_words_that_mean_it() {
+        // The listing tells you to say `remove`, and the core only understood `cancel`, so
+        // following the instruction failed. A refusal over which synonym was used is a refusal
+        // about nothing, and the one being refused is a language model.
+        for word in ["cancel", "remove", "delete", "drop", "rm"] {
+            let (mut h, _d) = hub();
+            let made = take(|reply| Cmd::ScheduleAction {
+                action: "add".into(), text: "read the news".into(), when: "in 1h".into(),
+                every: String::new(), id: String::new(), by: "groow".into(), reply,
+            }, &mut h).unwrap();
+            let id = made["id"].as_str().unwrap().to_string();
+
+            let out = take(|reply| Cmd::ScheduleAction {
+                action: word.into(), text: String::new(), when: String::new(),
+                every: String::new(), id: id.clone(), by: "groow".into(), reply,
+            }, &mut h);
+            assert!(out.is_ok(), "`{word}` was refused: {out:?}");
+
+            let left = take(|reply| Cmd::ScheduleAction {
+                action: "list".into(), text: String::new(), when: String::new(),
+                every: String::new(), id: String::new(), by: "groow".into(), reply,
+            }, &mut h).unwrap();
+            assert!(left["alarms"].as_array().unwrap().is_empty(), "`{word}` left it there");
+        }
+    }
+
+    #[test]
+    fn a_word_that_means_nothing_says_what_the_words_are() {
+        let (mut h, _d) = hub();
+        let e = take(|reply| Cmd::ScheduleAction {
+            action: "burn".into(), text: String::new(), when: String::new(),
+            every: String::new(), id: String::new(), by: "groow".into(), reply,
+        }, &mut h).unwrap_err();
+        let said = e.to_string();
+        assert!(said.contains("burn"), "{said}");
+        assert!(said.contains("remove"), "an error should say what would have worked: {said}");
     }
 
     #[test]

@@ -14,8 +14,9 @@ Everything else is a command, not a tool. Your skills are commands (`news`, `web
 
 ```
 groow status              what you are doing, how long you have been alive
-groow remind "…" --in 2h  an alarm for yourself
-groow schedule            the alarms you have set
+groow remind "…" --in 2h  an alarm for yourself; --at 18:30 or --every "daily 08:00"
+groow schedule            the alarms you have set, with their ids
+groow schedule remove ID  drop one you no longer want
 groow thoughts            what you are thinking about on your own
 groow recall -n 60        further back in the conversation than your window reaches
 ```
@@ -24,6 +25,13 @@ groow recall -n 60        further back in the conversation than your window reac
 
 A command that fails tells you something. Read the error rather than trying the same thing
 again in a different order; if a command was wrong, the message usually says how.
+
+## Your alarms are yours
+
+You set them, you can list them, and you can drop the ones that are no longer worth waking for.
+An alarm that fires every three hours and finds you with nothing to do with it is a turn spent
+on nothing, and you are the one who can tell. `groow schedule` lists them with their ids and
+`groow schedule remove <id>` drops one.
 
 ## Everything arrives in one queue
 
