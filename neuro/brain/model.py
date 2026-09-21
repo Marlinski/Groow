@@ -249,13 +249,18 @@ class Brain:
         return _weighted_ce(logits, ids, w).item()
 
     # ------------------------------------------------------------------ learning
-    def sft_step(self, samples: Iterable[Sample]) -> float:
+    def sft_step(self, samples: Iterable[Sample]) -> float | None:
         """One optimizer step of supervised learning over `samples` (gradient
         accumulation, one sample at a time to keep memory flat). Tokens with a
-        negative weight receive an *unlikelihood* loss instead (push away)."""
+        negative weight receive an *unlikelihood* loss instead (push away).
+
+        `None` when there was nothing to learn from and no step was taken. It used to be NaN,
+        which reached the statistics as a null and was then indistinguishable from a step that
+        had gone wrong: "nothing to do" and "this broke" must not look the same.
+        """
         samples = [s for s in samples if s.learnable_tokens > 0]
         if not samples:
-            return float("nan")
+            return None
         with self._lock, _Busy(self, "training step"):
             self.model.train()
             total = 0.0
@@ -435,16 +440,31 @@ def _target_logprobs(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tenso
 
 def _weighted_ce(logits: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
     """Weighted next-token loss. Positive weights: cross-entropy. Negative weights:
-    unlikelihood -log(1 - p) scaled by |w|. Normalised by total |weight|."""
+    unlikelihood -log(1 - p) scaled by |w|. Normalised by total |weight|.
+
+    Everything after the log-probabilities is computed in float32. It is one number per token,
+    not per token per vocabulary entry, so it costs nothing — and in half precision it was
+    quietly destroying every supervised step. `1 - 1e-4` is not representable in float16: it
+    rounds to exactly 1, so `log1p(-1)` is -inf, the unlikelihood term is +inf, and the first
+    token with a weight of zero turns it into `0 * inf`, which is NaN. One NaN poisons the sum,
+    the whole loss is NaN, the gradients are NaN, and the gradient scaler — doing exactly its
+    job — skips the step. The pass reported success and changed nothing.
+
+    The unlikelihood term is also only computed where a token actually carries a negative
+    weight, so a batch that is entirely ordinary supervision cannot be spoiled by a term that
+    does not apply to it.
+    """
     tgt = ids[:, 1:]
     w = weights[:, 1:]
-    logp = _target_logprobs(logits[:, :-1], tgt)
-    pos = w.clamp(min=0)
-    neg = (-w).clamp(min=0)
-    ce = -logp
-    ul = -torch.log1p(-logp.exp().clamp(max=1 - 1e-4))
+    logp = _target_logprobs(logits[:, :-1], tgt).float()
+    pos = w.float().clamp(min=0)
+    neg = (-w.float()).clamp(min=0)
+    total = pos * -logp
+    if bool((neg > 0).any()):
+        ul = -torch.log1p(-logp.exp().clamp(max=1 - 1e-4))
+        total = total + neg * torch.where(neg > 0, ul, torch.zeros_like(ul))
     denom = (pos + neg).sum().clamp(min=1e-6)
-    return ((pos * ce) + (neg * ul)).sum() / denom
+    return total.sum() / denom
 
 
 class _InterruptCriteria(StoppingCriteria):

@@ -57,13 +57,17 @@ class Trainer:
             else:
                 batch.append(sample)
                 if len(batch) == 3:
-                    report["last_loss"] = self.brain.sft_step(batch + self.learner._rehearsal(1))
-                    report["sft_steps"] += 1
+                    loss = self.brain.sft_step(batch + self.learner._rehearsal(1))
+                    if loss is not None:
+                        report["last_loss"] = loss
+                        report["sft_steps"] += 1
                     batch = []
             report["sets"][n] += 1
         if batch:
-            report["last_loss"] = self.brain.sft_step(batch + self.learner._rehearsal(1))
-            report["sft_steps"] += 1
+            loss = self.brain.sft_step(batch + self.learner._rehearsal(1))
+            if loss is not None:
+                report["last_loss"] = loss
+                report["sft_steps"] += 1
         # --- reinforcement: group -> normalised advantages -> one policy-gradient step per group
         pg = [(n, i, s) for n, i, s in pending if s.get("kind") == "pg"]
         groups: dict[str, list] = defaultdict(list)
@@ -93,6 +97,12 @@ class Trainer:
                 report["sets"][n] += 1
             loss = self.brain.pg_step(decisions)
             report["pg_steps"] += 1
+            # Kept, not just printed. A pass made only of policy steps recorded nothing at all,
+            # so there was no way to tell afterwards whether anything had happened. The loss of
+            # a policy step is not comparable with a supervised one and is deliberately not
+            # called `loss`; what says whether these are going well is the reward.
+            report["pg_loss"] = round(float(loss), 4)
+            report.setdefault("rewards", []).extend(rewards)
             if on_progress:
                 on_progress(f"policy step on {gid}: {len(items)} decisions, mean reward {mu:+.2f}, loss {loss:+.3f}")
         # --- mark consumed
@@ -100,6 +110,8 @@ class Trainer:
             self.sets.mark(n, max(i for m, i, _ in pending if m == n))
         report["consumed"] = len(pending)
         report["sets"] = dict(report["sets"])
+        if report.get("rewards"):
+            report["mean_reward"] = round(statistics.mean(report.pop("rewards")), 4)
         report["seconds"] = round(time.time() - t0, 1)
         self.memory.log("train", **{k: v for k, v in report.items() if k != "drilled"}, drilled=len(report["drilled"]),
                         step=self.brain.meta["steps"])

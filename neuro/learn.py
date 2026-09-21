@@ -66,11 +66,40 @@ def ask_the_brain(cfg: Config, what: str, payload: dict, quiet: bool = False) ->
     return out
 
 
+def _cost(report: dict):
+    """What this pass cost, as one number, whichever way it practised.
+
+    `last_loss` is set only by the batched path. A pass made entirely of samples drilled to a
+    target never touches it, and those are the passes that matter most, so the loss they ended
+    on is used instead. Without this every train row was recorded with no loss at all and there
+    was no way to see whether any of it was working.
+
+    A policy step's loss is not this number and is not returned here. It is not comparable with
+    a supervised loss, and putting the two in one column would make a graph that lies; what
+    says whether those passes are going well is the reward, which goes in the note.
+    """
+    import math
+
+    loss = report.get("last_loss")
+    if loss is not None and math.isfinite(float(loss)):
+        return float(loss)
+    after = [d["loss_after"] for d in report.get("drilled") or [] if d.get("loss_after") is not None]
+    return sum(after) / len(after) if after else None
+
+
 def train(cfg: Config, max_samples: int = 32) -> dict:
     """Turn pending samples into weight changes, in the process that holds the weights."""
     report = ask_the_brain(cfg, "train", {"max_samples": max_samples})
     if report.get("consumed"):
-        Stats(Path(cfg.state)).learned("train", report["consumed"], report.get("last_loss"), "")
+        # What it practised and how hard, kept with the number: a loss on its own says nothing
+        # about whether the pass was three easy samples or forty steps on one stubborn one.
+        note = {k: report[k] for k in ("sft_steps", "pg_steps", "pg_loss", "mean_reward", "sets")
+                if report.get(k) is not None and report.get(k) != 0}
+        if report.get("drilled"):
+            note["drilled"] = len(report["drilled"])
+        if report.get("skipped_groups"):
+            note["skipped"] = len(report["skipped_groups"])
+        Stats(Path(cfg.state)).learned("train", report["consumed"], _cost(report), json.dumps(note))
     return report
 
 
