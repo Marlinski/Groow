@@ -11,12 +11,16 @@ mod talk;
 use args::{Cli, Command};
 use clap::Parser;
 
+
 /// The exit code for a command the mind is not allowed to run.
 const NOT_YOURS: i32 = 3;
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => exit_on_bad_command(e),
+    };
 
     // The refusal comes before anything is loaded, so a command the mind may not run never
     // touches the state at all.
@@ -47,6 +51,51 @@ async fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Print what clap would have printed, unless we can say something more useful first.
+///
+/// The commonest mistake anyone makes here, the mind included, is to write `groow news` for a
+/// command that is simply `news`. Skills are executables on the path, not subcommands, and
+/// "unrecognized subcommand" does not say that. When the word names something runnable, say
+/// what to run instead; otherwise let clap speak, because its usage message is a good one.
+fn exit_on_bad_command(e: clap::Error) -> ! {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if e.kind() == ErrorKind::InvalidSubcommand {
+        if let Some(ContextValue::String(word)) = e.get(ContextKind::InvalidSubcommand) {
+            if let Some(found) = on_the_path(word) {
+                eprintln!(
+                    "`{word}` is a command, not part of `groow`: run it on its own.\n\
+                     \n    {word}\n\n\
+                     It is at {}. `groow --help` lists what groow itself does.",
+                    found.display()
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+    e.exit()
+}
+
+/// Where a name would be found if it were run, following the same path a turn is given.
+fn on_the_path(name: &str) -> Option<std::path::PathBuf> {
+    if name.contains('/') {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| is_runnable(p))
+}
+
+fn is_runnable(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
 }
 
 async fn run(cli: Cli, home: std::path::PathBuf, config: std::path::PathBuf) -> anyhow::Result<()> {
@@ -104,3 +153,22 @@ fn without_paths(args: Vec<String>) -> Vec<String> {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_skill_is_found_on_the_path_and_a_subcommand_is_not() {
+        // The distinction the error message rests on: `news` is an executable, `status` is
+        // part of groow and is not on the path at all.
+        assert!(on_the_path("sh").is_some(), "a real command should be found");
+        assert!(on_the_path("definitely-not-a-command-anywhere").is_none());
+        assert!(on_the_path("some/path").is_none(), "a path is not a bare name");
+    }
+
+    #[test]
+    fn a_directory_is_not_something_to_run() {
+        assert!(!is_runnable(std::path::Path::new("/usr/bin")));
+        assert!(is_runnable(std::path::Path::new("/bin/sh")));
+    }
+}

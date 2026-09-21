@@ -48,7 +48,6 @@ impl Paths {
     pub fn identity(&self) -> PathBuf { self.state.join("identity.md") }
     pub fn schedule(&self) -> PathBuf { self.state.join("schedule.json") }
     pub fn incidents(&self) -> PathBuf { self.state.join("incidents.jsonl") }
-    pub fn activity(&self) -> PathBuf { self.logs().join("activity.jsonl") }
     pub fn url_file(&self) -> PathBuf { self.state.join("groow.url") }
     pub fn socket(&self) -> PathBuf { self.state.join("core.sock") }
 

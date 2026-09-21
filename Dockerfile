@@ -27,6 +27,11 @@ ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 UV_LINK_MODE=copy \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3.12 python3.12-venv curl ca-certificates xz-utils git bash sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
+    # A skill is an ordinary executable and its shebang is resolved by the kernel against the
+    # PATH a turn is given, which is deliberately not the body's. Without this, every skill
+    # written as `#!/usr/bin/env python3` fails with "No such file or directory", and the mind
+    # is left to conclude that its own tools do not work.
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
     && install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
 

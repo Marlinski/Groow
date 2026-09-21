@@ -55,26 +55,26 @@ def _question(rng, level):
 
 
 def _drill(rounds=3, n=16, level=2, rng=None):
+    """Ask yourself questions you can check, and see how many you get right.
+
+    Nothing is written anywhere. This used to append every answer and the score it earned to an
+    activity log, back when a drill could feed its own reward into training; nothing reads that
+    log now, and a skill that writes its own score would be the mind grading itself, which is
+    the one thing it must not do. What it is for is the answer on the screen.
+    """
     rng = rng or random.Random()
-    logp = Path(os.environ.get("GROOW_STATE", "state")) / "log" / "activity.jsonl"
-    logp.parent.mkdir(parents=True, exist_ok=True)
     summary = []
     for r in range(rounds):
         qs = [_question(rng, level) for _ in range(n)]
         convs = [[{"role": "system", "content": SYSTEM}, {"role": "user", "content": f"What is {q}?"}] for q, _ in qs]
         outs = _complete(convs)
-        group, correct = uuid.uuid4().hex[:8], 0
-        with logp.open("a") as f:
-            for (q, ans), conv, out in zip(qs, convs, outs):
-                nums = re.findall(r"-?\d+", (out or "").replace(",", ""))
-                reward = -1.0 if not nums else (1.0 if int(nums[-1]) == ans else -0.5)
-                correct += reward == 1.0
-                f.write(json.dumps({"ts": time.time(), "kind": "decision", "skill": "arithmetic", "prompt": conv,
-                                    "completion": (out or "").strip()[:20], "reward": reward, "group": group,
-                                    "tags": ["drill", "arithmetic", f"level{level}"]}) + "\n")
+        correct = 0
+        for (q, ans), out in zip(qs, outs):
+            nums = re.findall(r"-?\d+", (out or "").replace(",", ""))
+            correct += bool(nums) and int(nums[-1]) == ans
         summary.append({"round": r + 1, "accuracy": round(correct / n, 3)})
-    return {"rounds": summary, "logged_to": str(logp),
-            "note": "your answers and their scores are in your activity log; you learn from them at your next nap"}
+    return {"rounds": summary,
+            "note": "how many you got right, now. Nothing here is recorded or trained on."}
 
 
 def main(argv: list) -> dict:

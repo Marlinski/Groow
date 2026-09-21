@@ -19,7 +19,7 @@ Each item gives its source, its date, a summary and a link. Reading the article 
 
 ## Your own sources
 
-The feeds are a plain list in `state/senses/feeds.txt`, one URL a line. It is yours to edit. If
+The feeds are a plain list in `~/senses/feeds.txt`, one URL a line. It is yours to edit. If
 you find a source worth following, add it; if one turns out to be noise, take it out.
 
 ## What it remembers

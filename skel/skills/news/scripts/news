@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""News: `news [--items N]` prints fresh headlines from your feeds (state/senses/feeds.txt), remembering what you have seen."""
+"""News: `news [--items N]` prints fresh headlines from your feeds (~/senses/feeds.txt), remembering what you have seen."""
 import hashlib
 import html
 import json
@@ -24,10 +24,20 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 
-def _dir() -> Path:
-    d = Path(os.environ.get("GROOW_STATE", "state")) / "senses"
+def _mine(*parts) -> Path:
+    """Somewhere this skill can actually write.
+
+    A skill is the mind's own, and so is everything it keeps. The state directory belongs to
+    the core and is read-only here, so anything written there fails with a permission error
+    that looks, from inside a turn, like the skill itself being broken.
+    """
+    d = Path(os.environ.get("HOME", ".")).joinpath(*parts)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _dir() -> Path:
+    return _mine("senses")
 
 
 def _feeds() -> list:
@@ -116,7 +126,7 @@ def _fetch(max_items: int = 8) -> dict:
 def main(argv: list) -> dict:
     """news [--items N] [--json]: fresh headlines you have not seen, from your feeds."""
     if argv and argv[0] in ("-h", "--help"):
-        return {"text": "usage: news [--items N] [--json]   fresh headlines from state/senses/feeds.txt (edit it to change sources)"}
+        return {"text": "usage: news [--items N] [--json]   fresh headlines from ~/senses/feeds.txt (edit it to change sources)"}
     if argv and argv[0] == "--selftest":
         return {"ok": True}
     n, as_json = 8, False

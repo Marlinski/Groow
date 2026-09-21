@@ -113,10 +113,14 @@ class Game:
 
 
 def _play(rounds=3, episodes=16, explore=0.25, rng=None):
-    """Self-play; every decision with its reward is logged to the activity log."""
+    """Play yourself, and see how it went.
+
+    Nothing is written anywhere. Every move and the reward it earned used to be appended to an
+    activity log that training read; nothing reads it now, and a skill writing its own rewards
+    would be the mind scoring itself, which is the one thing it must not do. What this is for
+    is the number on the screen: how often it plays an illegal move, and whether that falls.
+    """
     rng = rng or random.Random()
-    logp = Path(os.environ.get("GROOW_STATE", "state")) / "log" / "activity.jsonl"
-    logp.parent.mkdir(parents=True, exist_ok=True)
     summary = []
     for r in range(rounds):
         games = [Game(rng=rng) for _ in range(episodes)]
@@ -129,19 +133,14 @@ def _play(rounds=3, episodes=16, explore=0.25, rng=None):
                     g.act(str(rng.choice(free) + 1), explored=True)
                 else:
                     g.act(o)
-        group, n, total = uuid.uuid4().hex[:8], 0, 0.0
-        with logp.open("a") as f:
-            for g in games:
-                for (who, prompt, text, _), reward in zip(g.moves, g.credits()):
-                    m = re.search(r"[1-9]", text or "")
-                    f.write(json.dumps({"ts": time.time(), "kind": "decision", "skill": "tictactoe", "prompt": prompt,
-                                        "completion": m.group() if m else (text or "?")[:3], "reward": reward, "group": group,
-                                        "tags": ["game", "tictactoe", g.result or ""]}, ensure_ascii=False) + "\n")
-                    n += 1; total += reward
+        n, total = 0, 0.0
+        for g in games:
+            for _, reward in zip(g.moves, g.credits()):
+                n += 1; total += reward
         illegal = sum(1 for g in games if str(g.result).startswith("illegal"))
         summary.append({"round": r + 1, "decisions": n, "mean_reward": round(total / max(1, n), 3), "illegal_games": illegal})
-    return {"rounds": summary, "logged_to": str(logp),
-            "note": "your moves and their rewards are in your activity log; you learn from them at your next nap"}
+    return {"rounds": summary,
+            "note": "how these games went, now. Nothing here is recorded or trained on."}
 
 
 def _evaluate(n=24, rng=None):
@@ -158,10 +157,20 @@ def _evaluate(n=24, rng=None):
     return res
 
 
-def _game_path():
-    d = Path(os.environ.get("GROOW_STATE", "state")) / "games"
+def _mine(*parts) -> Path:
+    """Somewhere this skill can actually write.
+
+    A skill is the mind's own, and so is everything it keeps. The state directory belongs to
+    the core and is read-only here, so anything written there fails with a permission error
+    that looks, from inside a turn, like the skill itself being broken.
+    """
+    d = Path(os.environ.get("HOME", ".")).joinpath(*parts)
     d.mkdir(parents=True, exist_ok=True)
-    return d / "tictactoe.json"
+    return d
+
+
+def _game_path():
+    return _mine("games") / "tictactoe.json"
 
 
 def _board_text(b, player):
