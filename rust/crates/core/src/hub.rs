@@ -68,6 +68,8 @@ struct Active {
     signal: Signal,
     claimed: bool,
     rounds: u32,
+    /// The process working on it, so it can be stopped when a person says to.
+    pid: Option<u32>,
 }
 
 pub enum Cmd {
@@ -102,6 +104,7 @@ pub enum Cmd {
     ThoughtEnd { id: String, final_text: String, flags: Vec<String>, reply: Answer<Value> },
     ScheduleAction { action: String, text: String, when: String, every: String, id: String, by: String, reply: Answer<Value> },
     Recall { n: usize, before: Option<f64>, reply: Answer<Value> },
+    Interrupt { reply: Answer<Value> },
     Stats { n: usize, reply: Answer<Value> },
     ToolRan { turn: String, name: String, actor: String, ok: bool, seconds: f64 },
     Shutdown { reply: Answer<Value> },
@@ -201,6 +204,9 @@ impl Handle {
     }
     pub async fn recall(&self, n: usize, before: Option<f64>) -> Result<Value, WireError> {
         self.ask(|reply| Cmd::Recall { n, before, reply }).await
+    }
+    pub async fn interrupt(&self) -> Result<Value, WireError> {
+        self.ask(|reply| Cmd::Interrupt { reply }).await
     }
     pub async fn stats(&self, n: usize) -> Result<Value, WireError> {
         self.ask(|reply| Cmd::Stats { n, reply }).await
@@ -397,6 +403,10 @@ impl Hub {
             }
             Cmd::Recall { n, before, reply } => {
                 let r = self.recall(n, before);
+                send(reply, r);
+            }
+            Cmd::Interrupt { reply } => {
+                let r = self.interrupt();
                 send(reply, r);
             }
             Cmd::Stats { n, reply } => {
@@ -646,7 +656,7 @@ impl Hub {
         })));
         self.active = Some(Active {
             id: id.clone(), epoch: self.epoch, kind: sig.kind, started: now,
-            signal: sig, claimed: false, rounds: 0,
+            signal: sig, claimed: false, rounds: 0, pid: None,
         });
         id
     }
@@ -667,6 +677,7 @@ impl Hub {
             return Err(WireError::Busy(format!("turn {} already has a process", a.id)));
         }
         a.claimed = true;
+        a.pid = Some(pid);
         tracing::debug!(turn = %a.id, pid, "turn claimed");
         Ok(TurnContext {
             turn: a.id.clone(),
@@ -743,6 +754,37 @@ impl Hub {
 
     /// The turn's process died. The signal goes back in the queue so nothing is lost, and the
     /// epoch moves so a late message from the corpse is refused.
+    /// Stop what is running now, because a person said so.
+    ///
+    /// Not the same as abandoning a turn whose process died. That one is a failure and the
+    /// message goes back in the queue to be tried again; this one is a decision, so the
+    /// message is set down and not retried. Nothing is counted against the mind either: it did
+    /// not fail, it was stopped.
+    ///
+    /// The epoch moves, so anything the old process says afterwards is refused, and the pid
+    /// comes back so the caller can stop the process itself rather than leave it running a
+    /// command nobody is waiting for.
+    fn interrupt(&mut self) -> Result<Value, WireError> {
+        let Some(a) = self.active.take() else {
+            return Ok(json!({"ok": false, "why": "nothing is running"}));
+        };
+        self.epoch = self.epoch.next();
+        let now = self.now();
+        let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
+            at: now, seconds: now - a.started, tools: 0, rounds: a.rounds,
+            flags: vec!["interrupted".into()], outcome: "interrupted".into(),
+        });
+        let _ = self.inbox.ack(&a.signal);
+
+        let note = Message::assistant("[stopped by your mentor]");
+        let _ = self.write_record(&note, &a.id);
+        self.fanout(Event::new(EventName::TurnEnd, json!({
+            "turn": a.id, "kind": a.kind.as_str(), "final": note.text(),
+            "tools_used": 0, "seconds": now - a.started, "flags": ["interrupted"],
+        })));
+        Ok(json!({"ok": true, "turn": a.id, "pid": a.pid}))
+    }
+
     fn abandon(&mut self, turn: &str, why: &str) {
         let Some(a) = self.active.as_ref().filter(|a| a.id == turn).cloned() else { return };
         self.active = None;
@@ -1541,6 +1583,46 @@ mod tests {
         // The mind must never be able to read how it is being scored.
         assert!(!groow_proto::ops::Op::Stats.allowed_for(groow_proto::ops::Role::Agent));
         assert!(!groow_proto::ops::Op::Stats.allowed_for(groow_proto::ops::Role::Viewer));
+    }
+
+    #[test]
+    fn stopping_a_turn_sets_the_message_down_rather_than_trying_it_again() {
+        // A process that dies is a failure and the message goes back in the queue. This is a
+        // person saying stop, so it does not come back, and nothing is counted against the
+        // mind: it did not fail, it was stopped.
+        let (mut h, _d) = hub();
+        take(|reply| Cmd::Say { text: "read the news".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+        let ctx = take(|reply| Cmd::Claim { pid: 4242, reply }, &mut h).unwrap();
+
+        let out = take(|reply| Cmd::Interrupt { reply }, &mut h).unwrap();
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["pid"], 4242, "the process working on it comes back, to be stopped");
+
+        // Anything the stopped process says afterwards is refused.
+        let late = take(|reply| Cmd::Append {
+            turn: ctx.turn.clone(), epoch: Epoch(ctx.epoch),
+            msg: Box::new(Message::assistant("I was still talking")), reply,
+        }, &mut h);
+        assert!(matches!(late, Err(WireError::StaleEpoch(_))));
+
+        // And it is not handed straight back out as the next thing to do.
+        clock_free(&mut h);
+        assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)), "a stopped message must not be handed straight back");
+        assert_eq!(h.fail_streak, 0, "being stopped is not a failure");
+    }
+
+    /// Let the scheduler past its own backoff, so what it offers next is about the queue.
+    fn clock_free(h: &mut Hub) {
+        h.last_failure = 0.0;
+    }
+
+    #[test]
+    fn stopping_when_nothing_is_running_says_so_rather_than_failing() {
+        let (mut h, _d) = hub();
+        let out = take(|reply| Cmd::Interrupt { reply }, &mut h).unwrap();
+        assert_eq!(out["ok"], false);
+        assert!(out["why"].as_str().unwrap().contains("nothing"));
     }
 
     #[test]

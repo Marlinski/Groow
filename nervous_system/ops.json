@@ -17,6 +17,9 @@
       "mentor",
       "viewer"
     ],
+    "interrupt": [
+      "mentor"
+    ],
     "quit": [
       "mentor"
     ],

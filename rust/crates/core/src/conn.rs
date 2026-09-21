@@ -236,6 +236,18 @@ impl Conn {
                 let before = arg.get("before").and_then(|b| b.as_f64()).filter(|b| *b > 0.0);
                 self.hub.recall(n, before).await
             }
+            Op::Interrupt => {
+                let r = self.hub.interrupt().await;
+                // The turn is already over as far as the core is concerned; this stops the
+                // process still working on it, which may be halfway through a slow command
+                // that nobody is waiting for any more.
+                if let Ok(v) = &r {
+                    if let Some(pid) = v.get("pid").and_then(|p| p.as_u64()) {
+                        stop_process(pid as u32);
+                    }
+                }
+                r
+            }
             Op::Stats => {
                 let n = arg.get("n").and_then(|v| v.as_u64()).unwrap_or(60) as usize;
                 self.hub.stats(n).await
@@ -334,6 +346,24 @@ impl Conn {
             }
         }
     }
+}
+
+/// Ask a process to stop, and insist a moment later if it has not.
+///
+/// A turn that is waiting on a command of its own will not notice anything until that command
+/// returns, which is exactly the case a person is trying to get out of.
+fn stop_process(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    });
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 #[cfg(test)]
@@ -539,3 +569,4 @@ mod tests {
         assert!(s.call(2, "status", json!({})).await.is_rep());
     }
 }
+

@@ -462,7 +462,7 @@ fn input(f: &mut Frame, area: Rect, ui: &Ui) {
             Style::default().fg(DIM),
         )
     } else {
-        Span::styled(ui.input.clone(), Style::default().fg(FG))
+        Span::styled(ui.input.text(), Style::default().fg(FG))
     };
     f.render_widget(
         Paragraph::new(Line::from(text)).block(
@@ -472,8 +472,10 @@ fn input(f: &mut Frame, area: Rect, ui: &Ui) {
         ),
         area,
     );
-    // The cursor sits after what has been typed, inside the border.
-    let x = area.x + 1 + ui.input.chars().count().min(area.width.saturating_sub(3) as usize) as u16;
+    // The cursor sits where the next character would go, which is not always the end of the
+    // line: it is the only thing on screen saying where an edit will land.
+    let room = area.width.saturating_sub(3) as usize;
+    let x = area.x + 1 + ui.input.cursor().min(room) as u16;
     f.set_cursor_position((x, area.y + 1));
 }
 

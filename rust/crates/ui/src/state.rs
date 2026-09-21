@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::creature::Mood;
+use crate::line::Editor;
 
 /// One thing shown in the conversation.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +95,7 @@ pub struct Ui {
     pub birth: Value,
     pub mood: Mood,
     pub tick: u64,
-    pub input: String,
+    pub input: Editor,
     pub connected: bool,
     /// The answer being streamed, which replaces itself as more arrives.
     speaking: Option<usize>,
@@ -147,7 +148,7 @@ impl Default for Ui {
             birth: Value::Null,
             mood: Mood::Idle,
             tick: 0,
-            input: String::new(),
+            input: Editor::default(),
             connected: false,
             speaking: None,
             said: None,
@@ -337,7 +338,7 @@ impl Ui {
 
     /// A line the person typed. Returns what should be sent, if anything.
     pub fn submit(&mut self) -> Option<Sent> {
-        let text = std::mem::take(&mut self.input);
+        let text = self.input.take();
         let text = text.trim().to_string();
         if text.is_empty() {
             return None;
@@ -573,7 +574,7 @@ mod tests {
         // mind says arrives as tokens, then as a message, then again at the end of the turn.
         // Every one of those is the same words, and each was being added to the screen.
         let mut u = ui();
-        u.input = "what is in this directory?".into();
+        u.input.set("what is in this directory?");
         u.submit();
 
         u.on_event("turn_start", &json!({"who": "user", "kind": "user",
@@ -715,7 +716,7 @@ mod tests {
     fn leaving_closes_the_window_and_sends_nothing() {
         for word in ["/quit", "/exit", "/detach"] {
             let mut u = ui();
-            u.input = word.to_string();
+            u.input.set(word);
             assert_eq!(u.submit(), None);
             assert!(u.done, "{word} should close the interface");
         }
@@ -724,9 +725,9 @@ mod tests {
     #[test]
     fn a_command_goes_to_the_core_and_ordinary_text_is_spoken() {
         let mut u = ui();
-        u.input = "/status".into();
+        u.input.set("/status");
         assert_eq!(u.submit(), Some(Sent::Command("status".into())));
-        u.input = "hello there".into();
+        u.input.set("hello there");
         assert_eq!(u.submit(), Some(Sent::Say("hello there".into())));
         assert_eq!(u.bubbles.last().unwrap().who, Who::Human, "what was said should appear at once");
     }
@@ -734,7 +735,7 @@ mod tests {
     #[test]
     fn an_empty_line_does_nothing() {
         let mut u = ui();
-        u.input = "   ".into();
+        u.input.set("   ");
         assert_eq!(u.submit(), None);
         assert!(u.bubbles.is_empty());
         assert!(!u.done);
@@ -744,7 +745,7 @@ mod tests {
     fn clearing_empties_the_view_without_touching_the_creature() {
         let mut u = ui();
         u.push(Who::Human, "you", "something");
-        u.input = "/clear".into();
+        u.input.set("/clear");
         assert_eq!(u.submit(), None);
         assert!(u.bubbles.is_empty());
         assert!(!u.done, "clearing is not leaving");

@@ -21,6 +21,7 @@ use ratatui::Terminal;
 use serde_json::json;
 
 use crate::link::{FromCore, Link};
+use crate::line::Editor;
 use crate::state::{Pane, Sent, Ui, Who};
 
 /// How much of the conversation is loaded when the window opens, and how much each page adds
@@ -87,11 +88,14 @@ pub enum Action {
     Scroll(i32),
     /// Show a different pane.
     Show(Pane),
+    /// Stop whatever the creature is doing now.
+    Interrupt,
 }
 
 /// Interpret one key. Kept separate from the terminal so it can be tested.
 pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Char('c') | KeyCode::Char('q') if ctrl => Action::Leave,
         // The panes. Function keys and Tab, because every ordinary character belongs to what
@@ -104,26 +108,50 @@ pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
             ui.bubbles.clear();
             Action::Redraw
         }
-        KeyCode::Char(c) => {
-            ui.input.push(c);
-            Action::Redraw
-        }
-        KeyCode::Backspace => {
-            ui.input.pop();
-            Action::Redraw
-        }
+
+        // Editing the line. The readline keys, because they are the ones every terminal has
+        // already taught everybody, and a window you talk to is a window you type in.
+        KeyCode::Char('a') if ctrl => edit(ui, Editor::home),
+        KeyCode::Char('e') if ctrl => edit(ui, Editor::end),
+        KeyCode::Char('u') if ctrl => edit(ui, Editor::kill_to_start),
+        KeyCode::Char('k') if ctrl => edit(ui, Editor::kill_to_end),
+        KeyCode::Char('w') if ctrl => edit(ui, Editor::kill_word_left),
+        KeyCode::Char('b') if alt => edit(ui, Editor::word_left),
+        KeyCode::Char('f') if alt => edit(ui, Editor::word_right),
+        KeyCode::Char('d') if alt => edit(ui, Editor::kill_word_right),
+        KeyCode::Char(c) => edit(ui, |e| e.insert(c)),
+
+        KeyCode::Backspace if alt || ctrl => edit(ui, Editor::kill_word_left),
+        KeyCode::Backspace => edit(ui, Editor::backspace),
+        KeyCode::Delete if alt || ctrl => edit(ui, Editor::kill_word_right),
+        KeyCode::Delete => edit(ui, Editor::delete),
+
+        KeyCode::Left if alt || ctrl => edit(ui, Editor::word_left),
+        KeyCode::Right if alt || ctrl => edit(ui, Editor::word_right),
+        KeyCode::Left => edit(ui, Editor::left),
+        KeyCode::Right => edit(ui, Editor::right),
+        KeyCode::Home => edit(ui, Editor::home),
+        KeyCode::End => edit(ui, Editor::end),
+
+        // Back through what was said before, and forward again to the line being written.
+        // Reading the conversation is the wheel and the page keys; this is the line.
+        KeyCode::Up => edit(ui, Editor::earlier),
+        KeyCode::Down => edit(ui, Editor::later),
+
         KeyCode::Enter => Action::Submit,
-        KeyCode::Esc => {
-            ui.input.clear();
-            Action::Redraw
-        }
+        // Stop what it is doing. Clearing the line is ctrl-u, as it is everywhere else.
+        KeyCode::Esc => Action::Interrupt,
+
         KeyCode::PageUp => Action::Scroll(-10),
         KeyCode::PageDown => Action::Scroll(10),
-        KeyCode::Up => Action::Scroll(-1),
-        KeyCode::Down => Action::Scroll(1),
-        KeyCode::End => Action::Scroll(i32::MAX / 2),
         _ => Action::Nothing,
     }
+}
+
+/// Change the line and redraw. Every editing key does exactly this.
+fn edit(ui: &mut Ui, f: impl FnOnce(&mut Editor)) -> Action {
+    f(&mut ui.input);
+    Action::Redraw
 }
 
 /// Run the interface until the person leaves.
@@ -252,6 +280,14 @@ async fn main_loop<B: ratatui::backend::Backend>(
                         match on_key(&mut ui, k) {
                             Action::Leave => return Ok(()),
                             Action::Scroll(by) => ui.scroll(by),
+                            Action::Interrupt => match link.as_mut() {
+                                Some(l) => {
+                                    if l.send("interrupt", json!({})).await.is_err() {
+                                        ui.connected = false;
+                                    }
+                                }
+                                None => ui.push(Who::System, "", "not connected; nothing to stop"),
+                            },
                             Action::Show(p) => {
                                 ui.pane = p;
                                 ui.scroll_back = 0;
@@ -384,7 +420,7 @@ mod tests {
         }
         on_key(&mut ui, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         on_key(&mut ui, key('p'));
-        assert_eq!(ui.input, "help");
+        assert_eq!(ui.input.text(), "help");
     }
 
     #[test]
@@ -402,23 +438,69 @@ mod tests {
     fn a_plain_q_is_typed_rather_than_leaving() {
         let mut ui = Ui::default();
         assert_eq!(on_key(&mut ui, key('q')), Action::Redraw);
-        assert_eq!(ui.input, "q", "a person writing the word 'question' must not be thrown out");
+        assert_eq!(ui.input.text(), "q", "a person writing the word 'question' must not be thrown out");
     }
 
     #[test]
-    fn escape_abandons_the_line_without_sending_it() {
+    fn escape_stops_what_it_is_doing_and_leaves_the_line_alone() {
+        // It used to throw the line away, which is what ctrl-u is for. Stopping a turn is the
+        // thing there was no key for at all, and it is the one anybody reaches for first.
         let mut ui = Ui::default();
-        ui.input = "half a thought".into();
-        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Action::Redraw);
-        assert!(ui.input.is_empty());
+        ui.input.set("half a thought");
+        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Action::Interrupt);
+        assert_eq!(ui.input.text(), "half a thought", "what was being typed is not collateral");
+
+        on_key(&mut ui, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(ui.input.is_empty(), "and ctrl-u clears the line, as everywhere else");
     }
 
     #[test]
-    fn the_arrows_and_page_keys_scroll() {
+    fn the_line_is_edited_with_the_keys_every_terminal_teaches() {
+        let mut ui = Ui::default();
+        for c in "read the news".chars() {
+            on_key(&mut ui, key(c));
+        }
+        // Stand at the start of the last word: what is deleted is the word before the cursor,
+        // and what is after it is left exactly as it was.
+        on_key(&mut ui, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        on_key(&mut ui, KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(ui.input.text(), "read news", "alt-backspace takes the word behind it");
+
+        on_key(&mut ui, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(ui.input.text(), "read ", "and alt-d the word in front of it");
+
+        for c in "the papers".chars() {
+            on_key(&mut ui, key(c));
+        }
+        on_key(&mut ui, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(ui.input.cursor(), 0, "ctrl-a goes to the start");
+        on_key(&mut ui, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(ui.input.cursor(), 4, "alt-right crosses a whole word");
+        on_key(&mut ui, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        assert_eq!(ui.input.cursor(), ui.input.len(), "ctrl-e goes to the end");
+    }
+
+    #[test]
+    fn the_arrows_reach_back_through_what_was_said() {
+        let mut ui = Ui::default();
+        ui.input.set("read the news");
+        ui.submit();
+        for c in "half".chars() {
+            on_key(&mut ui, key(c));
+        }
+        on_key(&mut ui, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(ui.input.text(), "read the news");
+        on_key(&mut ui, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(ui.input.text(), "half", "and forward again to what was being written");
+    }
+
+    #[test]
+    fn the_page_keys_scroll_now_that_the_arrows_belong_to_the_line() {
         let mut ui = Ui::default();
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)), Action::Scroll(-10));
-        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)), Action::Scroll(-1));
-        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)), Action::Scroll(1));
+        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)), Action::Scroll(10));
+        // Up and down are the line's history; reading the conversation is the wheel and these.
+        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)), Action::Redraw);
     }
 
     #[test]
@@ -433,7 +515,7 @@ mod tests {
     #[test]
     fn enter_submits_what_was_typed() {
         let mut ui = Ui::default();
-        ui.input = "hello".into();
+        ui.input.set("hello");
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Action::Submit);
         assert_eq!(ui.submit(), Some(Sent::Say("hello".into())));
     }
@@ -444,8 +526,8 @@ mod tests {
         for c in "caf\u{e9} \u{1f331}".chars() {
             on_key(&mut ui, key(c));
         }
-        assert_eq!(ui.input, "caf\u{e9} \u{1f331}");
+        assert_eq!(ui.input.text(), "caf\u{e9} \u{1f331}");
         on_key(&mut ui, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        assert_eq!(ui.input, "caf\u{e9} ", "backspace should remove a character, not a byte");
+        assert_eq!(ui.input.text(), "caf\u{e9} ", "backspace should remove a character, not a byte");
     }
 }
