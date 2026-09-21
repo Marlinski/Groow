@@ -45,6 +45,10 @@ type Answer<T> = oneshot::Sender<Result<T, WireError>>;
 
 /// What the scheduler should do next. The hub decides; the scheduler acts, because acting
 /// means spawning processes and that is slow.
+/// Where the learning cycle has got to, kept in the database so it outlives the process.
+const LAST_NIGHT: &str = "last_night";
+const SINCE_LEARNED: &str = "since_learned";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Duty {
     /// Run one conscious turn for this signal, which the core has already opened under this id.
@@ -291,6 +295,12 @@ pub fn idle_gap(streak: u32, base_minutes: f64, max_minutes: f64) -> f64 {
 impl Hub {
     pub fn new(cfg: Config, paths: Paths, birth: Birth, db: Db) -> anyhow::Result<Hub> {
         paths.ensure()?;
+        // When it last slept and how much has happened since are the creature's, not this
+        // process's. Kept in memory they restarted with the core, so a creature whose body was
+        // rebuilt often enough would never reach the end of a cycle and never learn at all.
+        let now = groow_proto::event::now();
+        let last_night = db.counter(LAST_NIGHT).ok().flatten().unwrap_or(now);
+        let since_learned = db.counter(SINCE_LEARNED).ok().flatten().unwrap_or(0.0).max(0.0) as u32;
         Ok(Hub {
             journal: Journal::open(paths.journal())?,
             inbox: Inbox::open(paths.inbox())?,
@@ -307,8 +317,8 @@ impl Hub {
             brain_up: false,
             fail_streak: 0,
             last_failure: 0.0,
-            since_learned: 0,
-            last_night: groow_proto::event::now(),
+            since_learned,
+            last_night,
             last_human: groow_proto::event::now(),
             running: true,
             clock: Box::new(groow_proto::event::now),
@@ -527,6 +537,14 @@ impl Hub {
         }))
     }
 
+    /// Write down where the learning cycle has got to, so a restart does not begin it again.
+    fn slept(&mut self, last_night: f64, since: u32) {
+        self.last_night = last_night;
+        self.since_learned = since;
+        let _ = self.db.set_counter(LAST_NIGHT, last_night);
+        let _ = self.db.set_counter(SINCE_LEARNED, since as f64);
+    }
+
     // ------------------------------------------------------------ scheduling
     /// The current time, from the hub's own clock.
     pub fn now(&self) -> f64 {
@@ -607,12 +625,11 @@ impl Hub {
         // round on the clock; a shorter pass comes round after a handful of turns.
         let hours = self.cfg.sleep_every_hours.max(0.0);
         if hours > 0.0 && now - self.last_night >= hours * 3600.0 {
-            self.last_night = now;
-            self.since_learned = 0;
+            self.slept(now, 0);
             return Ok(Duty::Learn("night"));
         }
         if self.since_learned >= self.cfg.nap_max_samples.max(1) as u32 {
-            self.since_learned = 0;
+            self.slept(self.last_night, 0);
             return Ok(Duty::Learn("nap"));
         }
 
@@ -732,7 +749,7 @@ impl Hub {
         });
         let _ = self.inbox.ack(&a.signal);
         self.fail_streak = 0;
-        self.since_learned += 1;
+        self.slept(self.last_night, self.since_learned + 1);
 
         self.fanout(Event::new(EventName::TurnEnd, json!({
             "turn": a.id, "kind": a.kind.as_str(), "final": out.final_text,
@@ -1623,6 +1640,66 @@ mod tests {
         let out = take(|reply| Cmd::Interrupt { reply }, &mut h).unwrap();
         assert_eq!(out["ok"], false);
         assert!(out["why"].as_str().unwrap().contains("nothing"));
+    }
+
+    #[test]
+    fn the_learning_cycle_survives_the_core_being_restarted() {
+        // It used to live in memory, so every restart put the counter back to zero and set the
+        // night clock going again from that moment. A body rebuilt a few times in a day would
+        // never reach the end of a cycle, and the creature would simply never learn.
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state");
+        // A real database on disk: an in-memory one is exactly what cannot show this.
+        let restarted = || {
+            let cfg = Config { state_dir: path.to_string_lossy().to_string(), curiosity: false, ..Default::default() };
+            let paths = Paths::new(&path);
+            paths.ensure().unwrap();
+            let birth = Birth::load_or_create(&paths.birth(), "test/model", "test", "Marlinski", "0.3.0").unwrap();
+            let db = Db::open(&paths.db()).unwrap();
+            Hub::new(cfg, paths, birth, db).unwrap()
+        };
+
+        {
+            let mut h = restarted();
+            h.brain_up = true;
+            for i in 0..5 {
+                take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+                take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+                let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
+                take(|reply| Cmd::Finish {
+                    outcome: Box::new(TurnOutcome {
+                        turn: ctx.turn.clone(), epoch: ctx.epoch, final_text: "done".into(),
+                        flags: vec![], tools_used: 0, seconds: 1.0,
+                    }),
+                    reply,
+                }, &mut h).unwrap();
+            }
+            assert_eq!(h.since_learned, 5);
+        }
+
+        // A new core over the same state picks the cycle up where it was left.
+        let mut h = restarted();
+        assert_eq!(h.since_learned, 5, "five turns of work were forgotten");
+        h.brain_up = true;
+
+        // Three more reaches the default of eight, and then it is owed a pass.
+        for i in 0..3 {
+            take(|reply| Cmd::Say { text: format!("n{i}"), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+            take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+            let ctx = take(|reply| Cmd::Claim { pid: 1, reply }, &mut h).unwrap();
+            take(|reply| Cmd::Finish {
+                outcome: Box::new(TurnOutcome {
+                    turn: ctx.turn.clone(), epoch: ctx.epoch, final_text: "done".into(),
+                    flags: vec![], tools_used: 0, seconds: 1.0,
+                }),
+                reply,
+            }, &mut h).unwrap();
+        }
+        assert!(
+            matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Learn("nap")),
+            "eight turns in, across a restart, it is owed a nap"
+        );
+        assert_eq!(h.since_learned, 0, "and the count starts again");
     }
 
     #[test]
