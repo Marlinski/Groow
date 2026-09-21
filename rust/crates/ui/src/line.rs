@@ -234,6 +234,85 @@ impl Editor {
     }
 }
 
+/// Break a line to a width, and say where the cursor lands once it is broken.
+///
+/// The wrapping and the cursor have to come from the same place. Drawing the text with one
+/// rule and guessing the cursor with another is how a cursor ends up a line and a half from
+/// where the next character actually goes.
+///
+/// Words are kept whole where they fit and split where they do not, because a word longer than
+/// the box has to go somewhere. The space a line is broken on is absorbed: it is what the break
+/// is made of, and showing it would put the cursor a column past the edge.
+pub fn wrap(text: &str, width: usize, cursor: usize) -> Wrapped {
+    let width = width.max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    let mut row_start = 0usize;
+    let mut at = (0usize, 0usize);
+    let mut i = 0usize;
+
+    let place = |i: usize, row_start: usize, rows: &[String], at: &mut (usize, usize)| {
+        if i == cursor {
+            *at = (rows.len(), i - row_start);
+        }
+    };
+
+    while i < chars.len() {
+        place(i, row_start, &rows, &mut at);
+        // Where the word containing this character ends.
+        let word_end = if chars[i].is_whitespace() {
+            i + 1
+        } else {
+            let mut j = i;
+            while j < chars.len() && !chars[j].is_whitespace() {
+                j += 1;
+            }
+            j
+        };
+        let word_len = word_end - i;
+        let used = i - row_start;
+
+        // Only at the start of a word. Applied part way through one, this would break the
+        // tail of a word that had already been split, giving a ragged edge for no reason.
+        let starts_a_word = i == 0 || chars[i - 1].is_whitespace();
+        if starts_a_word && !chars[i].is_whitespace() && word_len <= width && used + word_len > width {
+            // It does not fit here but would fit on a line of its own: break before it.
+            rows.push(std::mem::take(&mut row));
+            row_start = i;
+            place(i, row_start, &rows, &mut at);
+        }
+
+        if chars[i].is_whitespace() && i - row_start >= width {
+            // The break falls on a space: the space is the break.
+            rows.push(std::mem::take(&mut row));
+            i += 1;
+            row_start = i;
+            continue;
+        }
+        if i - row_start >= width {
+            rows.push(std::mem::take(&mut row));
+            row_start = i;
+            place(i, row_start, &rows, &mut at);
+        }
+        row.push(chars[i]);
+        i += 1;
+    }
+    place(i, row_start, &rows, &mut at);
+    rows.push(row);
+    Wrapped { rows, row: at.0, col: at.1 }
+}
+
+/// A line broken to fit, and where the cursor is in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wrapped {
+    pub rows: Vec<String>,
+    /// Which row the cursor is on, counting from zero.
+    pub row: usize,
+    /// How far along that row, in characters.
+    pub col: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +482,60 @@ mod tests {
         assert_eq!(e.text(), "one");
         e.earlier();
         assert_eq!(e.text(), "zero", "the shared line is not there twice");
+    }
+
+    #[test]
+    fn a_line_too_long_for_the_box_is_broken_at_a_space() {
+        // The space a row ends on stays on that row. It is invisible, and keeping it means a
+        // cursor sitting on it has somewhere to sit.
+        let w = wrap("read the news and tell me", 10, 0);
+        assert_eq!(w.rows, vec!["read the ", "news and ", "tell me"]);
+    }
+
+    #[test]
+    fn the_cursor_is_where_the_next_character_will_appear() {
+        // Typing at the end of a wrapped line: the cursor must be on the last row, just after
+        // the last character, or what you type appears somewhere you were not looking.
+        let text = "read the news and tell me";
+        let w = wrap(text, 10, text.chars().count());
+        assert_eq!(w.row, 2);
+        assert_eq!(w.col, 7, "after `tell me`");
+
+        // And in the middle, on the row that character is drawn on.
+        let w = wrap(text, 10, 9);
+        assert_eq!((w.row, w.col), (1, 0), "the `n` of `news` starts the second row");
+    }
+
+    #[test]
+    fn a_word_longer_than_the_box_is_split_rather_than_lost() {
+        let w = wrap("supercalifragilistic", 8, 20);
+        assert_eq!(w.rows, vec!["supercal", "ifragili", "stic"]);
+        assert_eq!((w.row, w.col), (2, 4));
+    }
+
+    #[test]
+    fn an_empty_line_is_one_empty_row_with_the_cursor_at_its_start() {
+        let w = wrap("", 20, 0);
+        assert_eq!(w.rows, vec![""]);
+        assert_eq!((w.row, w.col), (0, 0));
+    }
+
+    #[test]
+    fn what_is_drawn_and_where_the_cursor_is_come_from_the_same_rule() {
+        // Whatever the text, the cursor must land inside the rows that were drawn.
+        for text in ["a", "hello world", "read the news and tell me what you learned today",
+                     "one  two   three", "   leading", "trailing   "] {
+            for width in [4, 7, 12, 40] {
+                let n = text.chars().count();
+                for cursor in 0..=n {
+                    let w = wrap(text, width, cursor);
+                    assert!(w.row < w.rows.len(), "{text:?} {width} {cursor}: {w:?}");
+                    assert!(w.col <= width, "{text:?} {width} {cursor}: past the edge: {w:?}");
+                    let joined: String = w.rows.join("");
+                    assert!(joined.chars().count() <= n, "{text:?}: text appeared from nowhere");
+                }
+            }
+        }
     }
 
     #[test]

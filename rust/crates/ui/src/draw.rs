@@ -32,12 +32,21 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
 
+    // The box for what you are typing grows with it, so a long message is visible as it is
+    // written rather than running off the edge into somewhere you cannot see.
+    let typing = crate::line::wrap(
+        &ui.input.text(),
+        area.width.saturating_sub(2) as usize,
+        ui.input.cursor(),
+    );
+    let input_h = (typing.rows.len() as u16 + 2).clamp(3, input_limit(area.height));
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(4),
-            Constraint::Length(3),
+            Constraint::Length(input_h),
             Constraint::Length(1),
         ])
         .split(area);
@@ -56,7 +65,7 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
         // On a narrow terminal the creature gives way to the words.
         pane(f, body, ui);
     }
-    input(f, rows[2], ui);
+    input(f, rows[2], ui, &typing);
     status(f, rows[3], ui);
 }
 
@@ -452,7 +461,13 @@ fn thoughts(ui: &Ui) -> Vec<Line<'static>> {
     out
 }
 
-fn input(f: &mut Frame, area: Rect, ui: &Ui) {
+/// How tall the input box may grow: a third of the window, so the conversation is never
+/// squeezed out by something being typed at it.
+fn input_limit(height: u16) -> u16 {
+    (height / 3).clamp(3, 12)
+}
+
+fn input(f: &mut Frame, area: Rect, ui: &Ui, typing: &crate::line::Wrapped) {
     let border = if ui.connected { MINT } else { MOSS };
     let text = if ui.input.is_empty() && !ui.connected {
         Span::styled("waiting for the core\u{2026}", Style::default().fg(DIM))
@@ -462,10 +477,24 @@ fn input(f: &mut Frame, area: Rect, ui: &Ui) {
             Style::default().fg(DIM),
         )
     } else {
-        Span::styled(ui.input.text(), Style::default().fg(FG))
+        Span::styled(String::new(), Style::default().fg(FG))
     };
+
+    // More rows than fit: show the ones around the cursor, so typing is always visible even
+    // when what is being written is longer than the box can ever be.
+    let visible = area.height.saturating_sub(2) as usize;
+    let first = typing.row.saturating_sub(visible.saturating_sub(1));
+    let shown: Vec<Line> = if ui.input.is_empty() {
+        vec![Line::from(text)]
+    } else {
+        typing.rows[first..(first + visible).min(typing.rows.len())]
+            .iter()
+            .map(|r| Line::from(Span::styled(r.clone(), Style::default().fg(FG))))
+            .collect()
+    };
+
     f.render_widget(
-        Paragraph::new(Line::from(text)).block(
+        Paragraph::new(shown).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border)),
@@ -474,9 +503,9 @@ fn input(f: &mut Frame, area: Rect, ui: &Ui) {
     );
     // The cursor sits where the next character would go, which is not always the end of the
     // line: it is the only thing on screen saying where an edit will land.
-    let room = area.width.saturating_sub(3) as usize;
-    let x = area.x + 1 + ui.input.cursor().min(room) as u16;
-    f.set_cursor_position((x, area.y + 1));
+    let x = area.x + 1 + typing.col.min(area.width.saturating_sub(3) as usize) as u16;
+    let y = area.y + 1 + (typing.row - first) as u16;
+    f.set_cursor_position((x, y));
 }
 
 fn status(f: &mut Frame, area: Rect, ui: &Ui) {
@@ -611,6 +640,30 @@ mod tests {
         u.scroll(-60);
         let s = render(100, 30, &u);
         assert!(s.contains("back 60"), "a person should know they are not at the present: {s}");
+    }
+
+    #[test]
+    fn a_long_message_is_visible_as_it_is_written() {
+        // It used to run off the right edge into somewhere nobody could see, which is a poor
+        // way to write anything longer than a sentence.
+        let mut u = ui();
+        let long = "please read the news and tell me which of it you think is worth remembering \
+                    tomorrow, and why you think so";
+        u.input.set(long);
+        let s = render(60, 24, &u);
+        assert!(s.contains("please read the news"), "{s}");
+        assert!(s.contains("and why you think so"), "the end of it must be on screen too: {s}");
+    }
+
+    #[test]
+    fn the_box_grows_but_never_swallows_the_conversation() {
+        let mut u = ui();
+        u.push(Who::Groow, "groow", "something it said");
+        u.input.set(&"word ".repeat(400));
+        let s = render(60, 24, &u);
+        let box_rows = s.lines().filter(|l| l.contains("word")).count();
+        assert!(box_rows <= 8, "the box took over the window: {box_rows} rows");
+        assert!(s.contains("something it said"), "the conversation is still there: {s}");
     }
 
     #[test]
