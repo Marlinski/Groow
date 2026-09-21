@@ -68,6 +68,13 @@ class Learner:
             return {"error": "unknown episode"}
         self.memory.set_feedback(eid, value)
         ep = eps[eid]
+        if value <= 0 and not self.cfg.unlikelihood:
+            # It is marked bad and will never be rehearsed again, and that is the whole of
+            # the punishment. The gradient that would push the answer away is the least
+            # stable thing this can do to itself; forgetting is enough.
+            self.memory.log("feedback", value=value, episode=eid, losses=[],
+                            skipped="unlikelihood off", step=self.brain.meta["steps"])
+            return {"episode": eid, "feedback": value, "losses": [], "skipped": "unlikelihood off"}
         losses = []
         for _ in range(passes):
             if value > 0:

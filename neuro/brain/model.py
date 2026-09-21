@@ -274,13 +274,20 @@ class Brain:
     def sft_step(self, samples: Iterable[Sample]) -> float | None:
         """One optimizer step of supervised learning over `samples` (gradient
         accumulation, one sample at a time to keep memory flat). Tokens with a
-        negative weight receive an *unlikelihood* loss instead (push away).
+        negative weight receive an *unlikelihood* loss instead (push away) — but only
+        with `unlikelihood` set; otherwise their weight is clamped to zero here, at the
+        one place every supervised gradient passes through, so no sample builder can arm
+        that path by accident.
 
         `None` when there was nothing to learn from and no step was taken. It used to be NaN,
         which reached the statistics as a null and was then indistinguishable from a step that
         had gone wrong: "nothing to do" and "this broke" must not look the same.
         """
         samples = [s for s in samples if s.learnable_tokens > 0]
+        if not self.cfg.unlikelihood:
+            # Nothing is pushed away, so a sample made only of push-away has nothing left in
+            # it and is dropped here rather than costing a backward pass that computes zero.
+            samples = [s for s in samples if any(w > 0 for w in s.weights)]
         if not samples:
             return None
         with self._lock, _Busy(self, "training step"):
@@ -289,6 +296,8 @@ class Brain:
             for s in samples:
                 ids = torch.tensor([s.input_ids], device=self.device)
                 w = torch.tensor([s.weights], device=self.device)
+                if not self.cfg.unlikelihood:
+                    w = w.clamp(min=0)
                 with torch.autocast(self.device.type, dtype=self.dtype, enabled=self.device.type == "cuda"):
                     logits = self.model(input_ids=ids, use_cache=False).logits
                 loss = _weighted_ce(logits, ids, w) / len(samples)
@@ -302,9 +311,19 @@ class Brain:
     def pg_step(self, decisions: list[Decision], micro_batch: int = 2) -> float:
         """REINFORCE / GRPO-style policy gradient: raise the log-probability of
         completions with positive advantage, lower it for negative ones."""
-        decisions = [d for d in decisions if d.completion_ids and d.advantage != 0.0]
+        # The same rule as the supervised path, enforced in the same place and for the same
+        # reason: by default a turn that went badly teaches nothing rather than teaching the
+        # network to avoid it. The clip is kept either way — an outlier turn is still only a
+        # turn, and without a bound one bad group can dominate a whole night.
+        lo = -self.cfg.advantage_clip if self.cfg.negative_advantage else 0.0
+        hi = self.cfg.advantage_clip
+
+        def bounded(a: float) -> float:
+            return min(max(float(a), lo), hi)
+
+        decisions = [d for d in decisions if d.completion_ids and bounded(d.advantage) != 0.0]
         if not decisions:
-            return 0.0   # every reward equal: nothing to learn from this round
+            return 0.0   # every reward equal, or none of them above the bar: nothing to learn
         with self._lock, _Busy(self, "policy gradient step"):
             self.model.train()
             total = 0.0
@@ -326,7 +345,7 @@ class Brain:
                 pad = self.tok.pad_token_id
                 ids = torch.full((len(chunk), L), pad, device=self.device)
                 mask = torch.zeros((len(chunk), L), device=self.device)
-                adv = torch.tensor([d.advantage for d in chunk], device=self.device)
+                adv = torch.tensor([bounded(d.advantage) for d in chunk], device=self.device)
                 for j, (s, (start, end)) in enumerate(zip(seqs, kept)):
                     ids[j, :len(s)] = torch.tensor(s, device=self.device)
                     mask[j, start:end] = 1.0
@@ -386,6 +405,32 @@ class Brain:
             self.meta_path.write_text(json.dumps(self.meta, indent=2))
             torch.cuda.empty_cache()
             return {"consolidations": self.meta["consolidations"], "rank": rank, "seconds": round(time.time() - t, 1)}
+
+    def discard(self) -> dict:
+        """Throw the overlay away and start a blank one on the base, untouched.
+
+        Everything practised since the last merge is gone; the base on disk never moved, so
+        this is a rollback of exactly one night and it costs nothing to keep, because what it
+        rolls back to is the model that is already there. That is the whole reason the merge
+        can be gated: refusing to make a bad night permanent is only a real refusal if the bad
+        night can also be undone, and undoing it must not cost 7.6 GB of archive.
+        """
+        with self._lock, _Busy(self, "discarding the overlay"):
+            t = time.time()
+            base = self.model.unload()      # remove the adapters without merging them
+            base.config.use_cache = True
+            if self.plastic_dir.exists():
+                shutil.rmtree(self.plastic_dir)
+            self.model = get_peft_model(base, self._lora_config(self.meta.get("rank", self.cfg.lora_rank)))
+            self._prepare_trainable()
+            self._make_optimizer()
+            lost = int(self.meta.get("passes") or 0)
+            self.meta["passes"] = 0
+            self.meta["discarded"] = int(self.meta.get("discarded") or 0) + 1
+            self.meta_path.write_text(json.dumps(self.meta, indent=2))
+            torch.cuda.empty_cache()
+            return {"discarded": True, "passes_lost": lost,
+                    "discards": self.meta["discarded"], "seconds": round(time.time() - t, 1)}
 
     def grow_rank(self, new_rank: int) -> dict:
         """Function-preserving capacity growth: consolidate, then attach a wider overlay.

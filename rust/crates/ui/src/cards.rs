@@ -603,11 +603,13 @@ impl Card for Learning {
                 let note = p.get("note").and_then(|v| v.as_str()).unwrap_or("");
                 let at = p.get("ts").and_then(|v| v.as_f64()).map(ago).unwrap_or_default();
                 // A whole pass is the headline; the parts it is made of belong under it.
+                // A discard is neither: it is the night refusing itself, and the one row here
+                // nobody should have to go looking for.
                 let whole = matches!(kind, "nap" | "night");
-                let name = if whole {
-                    Style::default().fg(VIOLET).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(DIM)
+                let name = match kind {
+                    "discard" => Style::default().fg(ROSE).add_modifier(Modifier::BOLD),
+                    _ if whole => Style::default().fg(VIOLET).add_modifier(Modifier::BOLD),
+                    _ => Style::default().fg(DIM),
                 };
                 Line::from(vec![
                     Span::styled(format!("  {at:>8}  "), Style::default().fg(DIM)),

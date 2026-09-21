@@ -101,7 +101,8 @@ class Server:
         everything else waits in the queue. A training step is a job like any
         other, which is why a nap needs no locking of its own.
         """
-        handlers = {"generate": self.run, "train": self.run_train, "consolidate": self.run_consolidate}
+        handlers = {"generate": self.run, "train": self.run_train, "consolidate": self.run_consolidate,
+                    "probe": self.run_probe, "discard": self.run_discard}
         while True:
             job = await self.queue.get()
             self.busy, self.doing = True, job.kind
@@ -186,6 +187,20 @@ class Server:
         self.trained += int(report.get("consumed") or 0)
         self.send(job, {"done": True, "report": report})
 
+    def run_probe(self, job: Job) -> None:
+        """Measure the held-out probes. Reads the weights, never changes them.
+
+        It is a job like any other so that it queues behind whatever is running: a probe taken
+        in the middle of a training step would measure neither the before nor the after.
+        """
+        self.send(job, {"done": True, "report": self.parts().learner.probe()})
+
+    def run_discard(self, job: Job) -> None:
+        """Drop the overlay: undo everything practised since the last merge."""
+        report = self.brain.discard()
+        self.brain.save()
+        self.send(job, {"done": True, "report": report})
+
     def run_consolidate(self, job: Job) -> None:
         """Merge the overlay into the base and open a blank one.
 
@@ -240,6 +255,12 @@ class Server:
 
     async def h_consolidate(self, request: web.Request) -> web.StreamResponse:
         return await self.submit(request, "consolidate", LEARNING)
+
+    async def h_probe(self, request: web.Request) -> web.StreamResponse:
+        return await self.submit(request, "probe", LEARNING)
+
+    async def h_discard(self, request: web.Request) -> web.StreamResponse:
+        return await self.submit(request, "discard", LEARNING)
 
     async def h_reload(self, request: web.Request) -> web.Response:
         """Pick up weights that changed underneath us.
@@ -305,6 +326,8 @@ class Server:
             web.post("/generate", self.h_generate),
             web.post("/train", self.h_train),
             web.post("/consolidate", self.h_consolidate),
+            web.post("/probe", self.h_probe),
+            web.post("/discard", self.h_discard),
             web.post("/reload", self.h_reload),
         ])
         app.on_startup.append(lambda _: self._start())

@@ -55,6 +55,31 @@ No body. Merges the overlay into the base weights and opens a blank one. Nothing
 afterwards: the process that merged them is the one that serves, so the merged weights are what
 it answers from, from the next request onward.
 
+## POST /probe
+
+No body. Scores the held-out probes in `state/probes.json` and records the measurement.
+Reads the weights; never changes them.
+
+```json
+{"mean_loss":0.83,"losses":[0.4,1.2,…],"baseline_mean":0.79,"measurements":14}
+```
+
+These questions are never trained on, which is the only reason the number means anything. A
+night takes this before and after its training and compares the two; see
+[learning](../docs/learning.html).
+
+## POST /discard
+
+No body. Throws the overlay away and opens a blank one on the base, which never moved.
+Everything practised since the last merge is gone.
+
+```json
+{"discarded":true,"passes_lost":7,"discards":1}
+```
+
+This is what a failed gate does, and it is why no base needs archiving: the base on disk is
+already the checkpoint, so undoing a night costs a day and no disk at all.
+
 ## POST /reload
 
 Picks up weights that changed on disk underneath it. Only needed when something other than this
@@ -67,4 +92,4 @@ process changed them; a consolidation does not need it.
  "waiting":2,"generated":132,"trained":8,"steps":212}
 ```
 
-`doing` is `generate`, `train`, `consolidate` or empty. `waiting` is the queue depth.
+`doing` is `generate`, `train`, `consolidate`, `probe`, `discard` or empty. `waiting` is the queue depth.

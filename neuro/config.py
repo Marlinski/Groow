@@ -41,6 +41,17 @@ class Config:
     nap_max_samples: int = 8          # training samples consumed in the nap after each turn (the rest at night)
     idle_nap_max_samples: int = 32     # consumed when nobody is talking
 
+    # --- negative gradients (things to do less of) ---------------------------
+    # Raising the probability of a good answer is a stable thing to ask of a network.
+    # Lowering the probability of a bad one is not: there are infinitely many ways to be
+    # wrong and the gradient points at all of them at once. Both push-away paths are off
+    # until something better-behaved than a raw negative gradient replaces them, and both
+    # are enforced in the brain rather than in whoever builds the samples, so turning them
+    # on is one decision in one place.
+    unlikelihood: bool = False        # supervised: -log(1 - p) on negatively weighted tokens
+    negative_advantage: bool = False  # policy gradient: may lower the probability of poor turns
+    advantage_clip: float = 2.0       # no single turn counts for more than this many deviations
+
     # --- sleep (consolidation policy) --------------------------------------
     sleep_every_steps: int = 300      # a night is due after this many learning steps (0 = manual only)
     sleep_every_hours: float = 12.0   # ... or after this long, if anything was learned at all (0 = off)

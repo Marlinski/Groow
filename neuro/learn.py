@@ -146,6 +146,56 @@ def consolidate(cfg: Config) -> dict:
     return report
 
 
+def probe(cfg: Config) -> dict:
+    """Measure the held-out probes: is it forgetting things it used to know?
+
+    These questions live in `state/probes.json` and are never trained on, which is what makes
+    the number mean anything. It is the only measurement in the system capable of saying that
+    a night made the creature worse, and until now it had been taken exactly once, at step
+    zero, because the only thing that called it was itself called by nothing.
+    """
+    started = time.time()
+    report = ask_the_brain(cfg, "probe", {}, quiet=True)
+    if not report.get("error"):
+        note = {k: report.get(k) for k in ("baseline_mean", "measurements") if report.get(k) is not None}
+        Stats(Path(cfg.state)).learned("probe", len(report.get("losses") or []), report.get("mean_loss"),
+                                       json.dumps(note), seconds=round(time.time() - started, 2),
+                                       version=version(cfg))
+    return report
+
+
+def discard(cfg: Config) -> dict:
+    """Throw the overlay away: the day is lost, the base is untouched."""
+    started = time.time()
+    report = ask_the_brain(cfg, "discard", {})
+    if not report.get("error"):
+        Stats(Path(cfg.state)).learned("discard", 0, None, json.dumps(report),
+                                       seconds=round(time.time() - started, 2), version=version(cfg))
+    return report
+
+
+def _merge_if_it_helped(cfg: Config, so_far: dict) -> dict:
+    """Make the night permanent — unless the probes say it should not be.
+
+    `sleep_max_drift` has been in the config since the beginning and was read by nobody. This
+    is the whole safety net: no base is archived, so the base on disk *is* the checkpoint, and
+    refusing the merge and dropping the overlay costs one day and not one byte.
+
+    A missing measurement is not treated as a failure. If the brain could not be asked, the
+    night proceeds as it always did; a gate that blocks whenever it cannot see is a gate that
+    eventually gets removed.
+    """
+    before = (so_far.get("probe_before") or {}).get("mean_loss")
+    after = (so_far.get("probe_after") or {}).get("mean_loss")
+    if before is None or after is None:
+        return {**consolidate(cfg), "merged": True, "drift": None, "gated": False}
+    drift = round(float(after) - float(before), 4)
+    if cfg.sleep_max_drift and drift > cfg.sleep_max_drift:
+        return {**discard(cfg), "merged": False, "drift": drift, "limit": cfg.sleep_max_drift,
+                "why": f"probe loss rose {drift:+.3f}, past {cfg.sleep_max_drift}"}
+    return {**consolidate(cfg), "merged": True, "drift": drift}
+
+
 def _pass(cfg: Config, name: str, steps: list[tuple[str, object]]) -> dict:
     """Run the steps of one pass in order, and record the pass itself as well as its parts.
 
@@ -156,7 +206,7 @@ def _pass(cfg: Config, name: str, steps: list[tuple[str, object]]) -> dict:
     out: dict = {}
     started = time.time()
     for step_name, step in steps:
-        out[step_name], out[f"{step_name}_seconds"] = timed(lambda s=step: s(cfg))
+        out[step_name], out[f"{step_name}_seconds"] = timed(lambda s=step: s(cfg, out))
     seconds = round(time.time() - started, 2)
 
     trained = out.get("train") or {}
@@ -165,7 +215,8 @@ def _pass(cfg: Config, name: str, steps: list[tuple[str, object]]) -> dict:
         "harvested": sum(v for k, v in (out.get("harvest") or {}).items() if isinstance(v, int)),
         "sft_steps": trained.get("sft_steps", 0),
         "pg_steps": trained.get("pg_steps", 0),
-        "merged": bool(out.get("consolidate")),
+        "merged": bool((out.get("consolidate") or {}).get("merged")),
+        "drift": (out.get("consolidate") or {}).get("drift"),
         "parts": {k.removesuffix("_seconds"): v for k, v in out.items() if k.endswith("_seconds")},
     }
     if any(r.get("error") for r in out.values() if isinstance(r, dict)):
@@ -182,23 +233,31 @@ def nap(cfg: Config) -> dict:
     No merge and no long drills, because a person may speak at any moment.
     """
     return _pass(cfg, "nap", [
-        ("feel", feel),
-        ("harvest", harvest),
-        ("train", lambda c: train(c, max_samples=c.nap_max_samples)),
+        ("feel", lambda c, _: feel(c)),
+        ("harvest", lambda c, _: harvest(c)),
+        ("train", lambda c, _: train(c, max_samples=c.nap_max_samples)),
     ])
 
 
 def night(cfg: Config) -> dict:
-    """The whole cycle, ending in the merge that makes it permanent."""
+    """The whole cycle, ending in the merge that makes it permanent — if it earned it.
+
+    The probes are read on either side of the training, and nothing becomes permanent until
+    the two numbers have been compared. That ordering is the point: measuring after the merge
+    would tell you what happened, and by then there would be nothing to do about it.
+    """
     return _pass(cfg, "night", [
-        ("feel", feel),
-        ("harvest", harvest),
-        ("train", lambda c: train(c, max_samples=c.idle_nap_max_samples)),
-        ("consolidate", consolidate),
+        ("feel", lambda c, _: feel(c)),
+        ("harvest", lambda c, _: harvest(c)),
+        ("probe_before", lambda c, _: probe(c)),
+        ("train", lambda c, _: train(c, max_samples=c.idle_nap_max_samples)),
+        ("probe_after", lambda c, _: probe(c)),
+        ("consolidate", _merge_if_it_helped),
     ])
 
 
-PASSES = {"feel": feel, "harvest": harvest, "consolidate": consolidate, "nap": nap, "night": night}
+PASSES = {"feel": feel, "harvest": harvest, "consolidate": consolidate, "probe": probe,
+          "discard": discard, "nap": nap, "night": night}
 
 
 def main() -> None:
