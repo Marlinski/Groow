@@ -165,7 +165,7 @@ impl Thoughts {
     pub fn spawn(&self, goal: &str, max_steps: u32, system: &str) -> std::io::Result<Thought> {
         let now = groow_proto::event::now();
         let t = Thought {
-            id: super::inbox::short_id_pub(),
+            id: super::short_id(),
             goal: goal.trim().to_string(),
             status: ThoughtStatus::Running,
             created: now,

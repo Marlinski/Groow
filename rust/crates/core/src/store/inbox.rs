@@ -1,385 +1,361 @@
-//! Questions the mind has put to its mentor.
+//! The mind's inbox: everything that comes at it, in the order it arrived.
 //!
-//! Attention is the scarce resource here. A person will not answer twenty questions, so the
-//! mind is given a small budget of open ones: asking a twenty-first drops the oldest, and a
-//! question nobody answers expires. Both outcomes are fed back as a cost, which is what
-//! teaches it to ask less and ask better.
+//! A person's message, an alarm going off, an inner thought with something to report, a note it
+//! left itself. They are one queue because they are one kind of thing — something happened, and
+//! the mind has to deal with it — and because a single order is the only way it can be sure
+//! what it saw first.
+//!
+//! A directory, not a data structure in memory, so a restart loses nothing and a message left
+//! while the core was down is still there when it comes back. The name of a file is its
+//! priority and its arrival time, so the next thing to handle is simply the first name in
+//! sorted order.
+//!
+//! Delivery is at least once: a signal is moved aside while it is being handled and moved back
+//! if the handler died. Handling the same alarm twice is survivable; losing a person's message
+//! is not.
 
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use groow_proto::turn::SignalKind;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum QStatus {
-    Open,
-    Answered,
-    Expired,
-    Dropped,
-}
+static SEQ: AtomicU64 = AtomicU64::new(1);
 
-impl QStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            QStatus::Open => "open",
-            QStatus::Answered => "answered",
-            QStatus::Expired => "expired",
-            QStatus::Dropped => "dropped",
-        }
-    }
-
-    /// What this outcome is worth to the mind when the reward finally lands.
-    pub fn reward(&self) -> f64 {
-        match self {
-            QStatus::Answered => 0.6,
-            QStatus::Expired => -0.4,
-            QStatus::Dropped => -0.6,
-            QStatus::Open => 0.0,
-        }
-    }
-}
-
+/// One thing waiting to be handled.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Question {
-    pub id: String,
+pub struct Signal {
+    pub priority: u8,
+    pub kind: SignalKind,
+    pub text: String,
     pub ts: f64,
-    pub question: String,
     #[serde(default)]
-    pub context: String,
-    pub status: QStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_ts: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answer: Option<String>,
+    pub meta: Value,
+    /// How many times a process has taken this signal and failed to finish it.
+    #[serde(default)]
+    pub attempts: u32,
+    /// The file this came from, so it can be acknowledged. Not part of the stored record.
+    #[serde(skip)]
+    pub token: Option<PathBuf>,
 }
 
-/// What `ask` hands back to the mind: not just an id, but what it cost.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Receipt {
-    pub ok: bool,
-    pub id: String,
-    pub queued: String,
-    pub open_questions: usize,
-    pub budget: usize,
-    pub expires_in_hours: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dropped_to_make_room: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+impl Signal {
+    pub fn new(kind: SignalKind, text: impl Into<String>) -> Signal {
+        Signal {
+            priority: kind.priority(),
+            kind,
+            text: text.into(),
+            ts: groow_proto::event::now(),
+            meta: json!({}),
+            attempts: 0,
+            token: None,
+        }
+    }
+
+    pub fn with_meta(mut self, meta: Value) -> Signal {
+        self.meta = meta;
+        self
+    }
 }
 
 pub struct Inbox {
-    path: PathBuf,
-    pub budget: usize,
-    pub expiry_hours: f64,
+    new: PathBuf,
+    cur: PathBuf,
 }
 
 impl Inbox {
-    pub fn new(path: impl Into<PathBuf>, budget: usize, expiry_hours: f64) -> Inbox {
-        Inbox { path: path.into(), budget, expiry_hours }
+    /// Open the inbox, returning anything a previous life left half-handled to the queue.
+    pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Inbox> {
+        let dir = dir.as_ref();
+        let mb = Inbox { new: dir.join("new"), cur: dir.join("cur") };
+        fs::create_dir_all(&mb.new)?;
+        fs::create_dir_all(&mb.cur)?;
+        mb.recover()?;
+        Ok(mb)
     }
 
-    /// Every question ever asked, in the order it was asked. Unreadable lines are skipped.
-    pub fn all(&self) -> std::io::Result<Vec<Question>> {
-        let text = crate::paths::read_opt(&self.path)?.unwrap_or_default();
-        Ok(text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter_map(|l| serde_json::from_str::<Question>(l).ok())
-            .collect())
-    }
-
-    fn save(&self, qs: &[Question]) -> std::io::Result<()> {
-        let mut out = String::new();
-        for q in qs {
-            out.push_str(&serde_json::to_string(q).unwrap_or_default());
-            out.push('\n');
-        }
-        crate::paths::atomic_write(&self.path, out.as_bytes())
-    }
-
-    pub fn open_questions(&self) -> std::io::Result<Vec<Question>> {
-        Ok(self.all()?.into_iter().filter(|q| q.status == QStatus::Open).collect())
-    }
-
-    /// Ask. If the budget is full the oldest open question is dropped to make room, and the
-    /// receipt says so, because the mind should feel that it displaced something.
-    pub fn add(&self, question: &str, context: &str) -> std::io::Result<Receipt> {
-        let now = groow_proto::event::now();
-        let mut qs = self.all()?;
-        let mut dropped = None;
-
-        let open: Vec<usize> = qs.iter().enumerate()
-            .filter(|(_, q)| q.status == QStatus::Open)
-            .map(|(i, _)| i).collect();
-        if open.len() >= self.budget {
-            if let Some(&i) = open.iter().min_by(|a, b| {
-                qs[**a].ts.partial_cmp(&qs[**b].ts).unwrap_or(std::cmp::Ordering::Equal)
-            }) {
-                qs[i].status = QStatus::Dropped;
-                qs[i].resolved_ts = Some(now);
-                dropped = Some(serde_json::json!({
-                    "id": qs[i].id,
-                    "question": truncate(&qs[i].question, 120),
-                    "waited": ago(now - qs[i].ts),
-                }));
-            }
-        }
-
-        let q = Question {
-            id: short_id(),
-            ts: now,
-            question: question.trim().to_string(),
-            context: context.trim().to_string(),
-            status: QStatus::Open,
-            resolved_ts: None,
-            answer: None,
-        };
-        let id = q.id.clone();
-        let queued = truncate(&q.question, 200);
-        qs.push(q);
-        self.save(&qs)?;
-
-        let open_now = qs.iter().filter(|q| q.status == QStatus::Open).count();
-        Ok(Receipt {
-            ok: true,
-            id,
-            queued,
-            open_questions: open_now,
-            budget: self.budget,
-            expires_in_hours: self.expiry_hours,
-            note: dropped.as_ref().map(|_| {
-                "your mentor's attention is limited; an older question was dropped to make room".to_string()
-            }),
-            dropped_to_make_room: dropped,
-        })
-    }
-
-    /// Close a question out. Only an open question can be resolved, so a late answer to an
-    /// already expired question does not silently rewrite history.
-    pub fn resolve(&self, id: &str, status: QStatus, answer: &str) -> std::io::Result<Option<Question>> {
-        let mut qs = self.all()?;
-        let mut hit = None;
-        for q in qs.iter_mut() {
-            if q.id == id && q.status == QStatus::Open {
-                q.status = status;
-                q.resolved_ts = Some(groow_proto::event::now());
-                if !answer.trim().is_empty() {
-                    q.answer = Some(truncate(answer, 500));
-                }
-                hit = Some(q.clone());
-            }
-        }
-        if hit.is_some() {
-            self.save(&qs)?;
-        }
-        Ok(hit)
-    }
-
-    /// Expire everything that has waited too long. Returns what expired, so each one can be
-    /// charged for and shown to the mind together rather than one interruption at a time.
-    pub fn expire_due(&self) -> std::io::Result<Vec<Question>> {
-        let now = groow_proto::event::now();
-        let cutoff = now - self.expiry_hours * 3600.0;
-        let mut qs = self.all()?;
-        let mut gone = Vec::new();
-        for q in qs.iter_mut() {
-            if q.status == QStatus::Open && q.ts < cutoff {
-                q.status = QStatus::Expired;
-                q.resolved_ts = Some(now);
-                gone.push(q.clone());
-            }
-        }
-        if !gone.is_empty() {
-            self.save(&qs)?;
-        }
-        Ok(gone)
-    }
-
-    /// Mark every open question answered, for when a person has dealt with them out of band.
-    pub fn clear(&self) -> std::io::Result<usize> {
-        let now = groow_proto::event::now();
-        let mut qs = self.all()?;
+    /// Anything sitting in `cur` belonged to a process that is gone. Put it back.
+    fn recover(&self) -> std::io::Result<usize> {
         let mut n = 0;
-        for q in qs.iter_mut() {
-            if q.status == QStatus::Open {
-                q.status = QStatus::Answered;
-                q.resolved_ts = Some(now);
+        for e in fs::read_dir(&self.cur)? {
+            let p = e?.path();
+            if p.extension().map(|x| x == "json").unwrap_or(false) {
+                if let Some(name) = p.file_name() {
+                    fs::rename(&p, self.new.join(name))?;
+                    n += 1;
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// File name, which is also the sort key: priority first, then arrival, then a tiebreak.
+    fn name_for(sig: &Signal) -> String {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed) % 100_000;
+        let micros = (sig.ts * 1e6) as u128;
+        let kind = sig.kind.as_str();
+        format!("{}-{:016}-{:05}{:05}-{}.json", sig.priority, micros, std::process::id() % 100_000, seq, kind)
+    }
+
+    /// Put a signal in the queue. Written to a temporary name first, so a reader scanning the
+    /// directory never picks up a half-written message.
+    pub fn push(&self, sig: &Signal) -> std::io::Result<PathBuf> {
+        let name = Self::name_for(sig);
+        let target = self.new.join(&name);
+        let body = serde_json::to_string(sig).unwrap_or_else(|_| "{}".into());
+        crate::paths::atomic_write(&target, body.as_bytes())?;
+        Ok(target)
+    }
+
+    /// Everything waiting, most urgent first.
+    fn pending(&self) -> std::io::Result<Vec<PathBuf>> {
+        let mut v: Vec<PathBuf> = match fs::read_dir(&self.new) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+                .collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        v.sort();
+        Ok(v)
+    }
+
+    /// Whether anything at least this urgent is waiting.
+    pub fn has(&self, max_priority: u8) -> std::io::Result<bool> {
+        for p in self.pending()? {
+            if let Some(pr) = priority_of(&p) {
+                if pr <= max_priority {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn len(&self) -> std::io::Result<usize> {
+        Ok(self.pending()?.len())
+    }
+
+    pub fn is_empty(&self) -> std::io::Result<bool> {
+        Ok(self.len()? == 0)
+    }
+
+    /// Take the most urgent signal, moving it aside so a crash returns it to the queue.
+    ///
+    /// A file that cannot be parsed is moved aside and skipped rather than retried forever,
+    /// because a poison message that blocks the queue would silence the mind completely.
+    pub fn pop(&self) -> std::io::Result<Option<Signal>> {
+        for p in self.pending()? {
+            let name = match p.file_name() {
+                Some(n) => n.to_owned(),
+                None => continue,
+            };
+            let held = self.cur.join(&name);
+            // Another process may have taken it between the listing and here. That is fine.
+            if fs::rename(&p, &held).is_err() {
+                continue;
+            }
+            let text = match fs::read_to_string(&held) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            match serde_json::from_str::<Signal>(&text) {
+                Ok(mut sig) => {
+                    sig.token = Some(held);
+                    return Ok(Some(sig));
+                }
+                Err(_) => {
+                    // Poison. Keep it out of the way for a person to look at later.
+                    let _ = fs::rename(&held, self.cur.join(format!("{}.bad", name.to_string_lossy())));
+                    continue;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Confirm a signal was handled. Until this is called it comes back after a restart.
+    pub fn ack(&self, sig: &Signal) -> std::io::Result<()> {
+        if let Some(t) = &sig.token {
+            match fs::remove_file(t) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Put a claimed signal back in the queue for another attempt, counting the failure.
+    ///
+    /// The count is written back, so a message that keeps killing its process is eventually
+    /// given up on rather than retried until the end of time.
+    pub fn requeue(&self, sig: &Signal) -> std::io::Result<()> {
+        let mut again = sig.clone();
+        again.attempts += 1;
+        again.token = None;
+        self.push(&again)?;
+        self.ack(sig)
+    }
+
+    /// Remove every waiting signal of one kind. Used to collapse repeated idle nudges.
+    pub fn drop_kind(&self, kind: SignalKind) -> std::io::Result<usize> {
+        let suffix = format!("-{}.json", kind.as_str());
+        let mut n = 0;
+        for p in self.pending()? {
+            let matches = p.file_name().and_then(|s| s.to_str()).map(|s| s.ends_with(&suffix)).unwrap_or(false);
+            if matches && fs::remove_file(&p).is_ok() {
                 n += 1;
             }
-        }
-        if n > 0 {
-            self.save(&qs)?;
         }
         Ok(n)
     }
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n).collect()
-    }
-}
-
-fn ago(seconds: f64) -> String {
-    let s = seconds.max(0.0) as u64;
-    if s >= 86400 { format!("{}d", s / 86400) }
-    else if s >= 3600 { format!("{}h", s / 3600) }
-    else if s >= 60 { format!("{}m", s / 60) }
-    else { format!("{s}s") }
-}
-
-/// A short, human-quotable id. Collisions are checked by the caller's storage, not here.
-fn short_id() -> String {
-    use rand::Rng;
-    let mut r = rand::rng();
-    (0..6).map(|_| {
-        let n: u8 = r.random_range(0..16);
-        std::char::from_digit(n as u32, 16).unwrap_or('0')
-    }).collect()
-}
-
-/// The id generator, shared with the schedule so ids look alike everywhere.
-pub fn short_id_pub() -> String { short_id() }
-
-/// A convenience for tests and for the status endpoint.
-pub fn path_in(state: &Path) -> PathBuf {
-    state.join("mentor_inbox.jsonl")
+/// The priority encoded in a file name.
+fn priority_of(p: &Path) -> Option<u8> {
+    p.file_name()?.to_str()?.split('-').next()?.parse().ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn inbox(d: &tempfile::TempDir) -> Inbox {
-        Inbox::new(d.path().join("inbox.jsonl"), 3, 48.0)
+    #[test]
+    fn the_most_urgent_signal_comes_out_first() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalIdle, "idle thought")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalAlarm, "an alarm")).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "a person")).unwrap();
+        assert_eq!(mb.pop().unwrap().unwrap().text, "a person");
+        assert_eq!(mb.pop().unwrap().unwrap().text, "an alarm");
+        assert_eq!(mb.pop().unwrap().unwrap().text, "idle thought");
+        assert!(mb.pop().unwrap().is_none());
     }
 
     #[test]
-    fn a_question_is_open_until_it_is_resolved() {
+    fn signals_of_equal_priority_keep_their_order() {
         let d = tempfile::tempdir().unwrap();
-        let ib = inbox(&d);
-        let r = ib.add("what should I read?", "").unwrap();
-        assert!(r.ok);
-        assert_eq!(ib.open_questions().unwrap().len(), 1);
-        ib.resolve(&r.id, QStatus::Answered, "try the river book").unwrap();
-        assert!(ib.open_questions().unwrap().is_empty());
-        let q = &ib.all().unwrap()[0];
-        assert_eq!(q.status, QStatus::Answered);
-        assert_eq!(q.answer.as_deref(), Some("try the river book"));
-        assert!(q.resolved_ts.is_some());
-    }
-
-    #[test]
-    fn the_budget_drops_the_oldest_and_says_so() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = inbox(&d);
-        let mut ids = Vec::new();
-        for i in 0..3 {
-            ids.push(ib.add(&format!("q{i}"), "").unwrap().id);
+        let mb = Inbox::open(d.path()).unwrap();
+        for i in 0..5 {
+            let mut s = Signal::new(SignalKind::SignalUser, format!("m{i}"));
+            s.ts = 1000.0 + i as f64;
+            mb.push(&s).unwrap();
         }
-        let r = ib.add("one too many", "").unwrap();
-        assert!(r.dropped_to_make_room.is_some(), "the receipt must admit the cost");
-        assert!(r.note.is_some());
-        assert_eq!(r.open_questions, 3, "the budget still holds");
-        let all = ib.all().unwrap();
-        assert_eq!(all[0].status, QStatus::Dropped, "the oldest went");
-        assert_eq!(all[1].status, QStatus::Open);
-    }
-
-    #[test]
-    fn a_dropped_question_is_the_oldest_not_the_first_in_the_file() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = inbox(&d);
-        // Write them out of chronological order on purpose.
-        let mut qs = Vec::new();
-        for (i, ts) in [("new", 3000.0), ("oldest", 1000.0), ("middle", 2000.0)] {
-            qs.push(Question {
-                id: format!("id{}", qs.len()), ts, question: i.to_string(),
-                context: String::new(), status: QStatus::Open, resolved_ts: None, answer: None,
-            });
+        for i in 0..5 {
+            assert_eq!(mb.pop().unwrap().unwrap().text, format!("m{i}"));
         }
-        ib.save(&qs).unwrap();
-        let r = ib.add("pushes one out", "").unwrap();
-        let dropped = r.dropped_to_make_room.unwrap();
-        assert_eq!(dropped["question"], "oldest");
     }
 
     #[test]
-    fn questions_expire_when_nobody_answers() {
+    fn an_unacknowledged_signal_comes_back_after_a_restart() {
         let d = tempfile::tempdir().unwrap();
-        let ib = Inbox::new(d.path().join("i.jsonl"), 5, 1.0);
-        let stale = Question {
-            id: "aaa111".into(), ts: groow_proto::event::now() - 7200.0,
-            question: "anyone?".into(), context: String::new(),
-            status: QStatus::Open, resolved_ts: None, answer: None,
-        };
-        let fresh = Question { id: "bbb222".into(), ts: groow_proto::event::now(), ..stale.clone() };
-        ib.save(&[stale, fresh]).unwrap();
-        let gone = ib.expire_due().unwrap();
-        assert_eq!(gone.len(), 1);
-        assert_eq!(gone[0].id, "aaa111");
-        assert_eq!(ib.open_questions().unwrap().len(), 1, "the fresh one is untouched");
-    }
-
-    #[test]
-    fn expiring_twice_charges_once() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = Inbox::new(d.path().join("i.jsonl"), 5, 1.0);
-        ib.save(&[Question {
-            id: "aaa111".into(), ts: 0.0, question: "old".into(), context: String::new(),
-            status: QStatus::Open, resolved_ts: None, answer: None,
-        }]).unwrap();
-        assert_eq!(ib.expire_due().unwrap().len(), 1);
-        assert_eq!(ib.expire_due().unwrap().len(), 0, "an expired question must not expire again");
-    }
-
-    #[test]
-    fn a_late_answer_to_a_closed_question_changes_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = inbox(&d);
-        let r = ib.add("q", "").unwrap();
-        ib.resolve(&r.id, QStatus::Expired, "").unwrap();
-        assert!(ib.resolve(&r.id, QStatus::Answered, "too late").unwrap().is_none());
-        assert_eq!(ib.all().unwrap()[0].status, QStatus::Expired);
-    }
-
-    #[test]
-    fn each_outcome_carries_its_own_price() {
-        assert!(QStatus::Answered.reward() > 0.0);
-        assert!(QStatus::Expired.reward() < 0.0);
-        assert!(QStatus::Dropped.reward() < QStatus::Expired.reward(), "being displaced is worse than being ignored");
-    }
-
-    #[test]
-    fn clearing_closes_everything_open() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = inbox(&d);
-        ib.add("a", "").unwrap();
-        ib.add("b", "").unwrap();
-        assert_eq!(ib.clear().unwrap(), 2);
-        assert!(ib.open_questions().unwrap().is_empty());
-        assert_eq!(ib.clear().unwrap(), 0);
-    }
-
-    #[test]
-    fn a_missing_file_is_an_empty_inbox() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = Inbox::new(d.path().join("never-written.jsonl"), 3, 48.0);
-        assert!(ib.all().unwrap().is_empty());
-        assert!(ib.expire_due().unwrap().is_empty());
-    }
-
-    #[test]
-    fn ids_are_distinct_across_many_questions() {
-        let d = tempfile::tempdir().unwrap();
-        let ib = Inbox::new(d.path().join("i.jsonl"), 1000, 48.0);
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..200 {
-            assert!(seen.insert(ib.add("q", "").unwrap().id), "duplicate id");
+        {
+            let mb = Inbox::open(d.path()).unwrap();
+            mb.push(&Signal::new(SignalKind::SignalUser, "important")).unwrap();
+            let s = mb.pop().unwrap().unwrap();
+            assert_eq!(s.text, "important");
+            // The process dies here without acknowledging.
         }
+        let mb = Inbox::open(d.path()).unwrap();
+        assert_eq!(mb.pop().unwrap().unwrap().text, "important", "a lost turn must not lose the message");
+    }
+
+    #[test]
+    fn an_acknowledged_signal_stays_gone() {
+        let d = tempfile::tempdir().unwrap();
+        {
+            let mb = Inbox::open(d.path()).unwrap();
+            mb.push(&Signal::new(SignalKind::SignalUser, "done with this")).unwrap();
+            let s = mb.pop().unwrap().unwrap();
+            mb.ack(&s).unwrap();
+        }
+        let mb = Inbox::open(d.path()).unwrap();
+        assert!(mb.pop().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_poison_message_does_not_block_the_queue() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        fs::write(d.path().join("new/0-0000000000000001-0000000001-user.json"), "{ not json").unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "the real one")).unwrap();
+        assert_eq!(mb.pop().unwrap().unwrap().text, "the real one", "the bad file must be stepped over");
+    }
+
+    #[test]
+    fn meta_survives_the_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalFocus, "look at this").with_meta(json!({"thought": "ab12cd"}))).unwrap();
+        let s = mb.pop().unwrap().unwrap();
+        assert_eq!(s.meta["thought"], "ab12cd");
+        assert_eq!(s.kind, SignalKind::SignalFocus);
+    }
+
+    #[test]
+    fn urgency_can_be_asked_about_without_consuming() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalIdle, "later")).unwrap();
+        assert!(!mb.has(0).unwrap(), "an idle nudge is not urgent");
+        assert!(mb.has(3).unwrap());
+        mb.push(&Signal::new(SignalKind::SignalUser, "now")).unwrap();
+        assert!(mb.has(0).unwrap());
+        assert_eq!(mb.len().unwrap(), 2, "asking must not consume");
+    }
+
+    #[test]
+    fn repeated_nudges_of_one_kind_can_be_collapsed() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        for _ in 0..4 {
+            mb.push(&Signal::new(SignalKind::SignalIdle, "curious")).unwrap();
+        }
+        mb.push(&Signal::new(SignalKind::SignalUser, "keep me")).unwrap();
+        assert_eq!(mb.drop_kind(SignalKind::SignalIdle).unwrap(), 4);
+        assert_eq!(mb.len().unwrap(), 1);
+        assert_eq!(mb.pop().unwrap().unwrap().text, "keep me");
+    }
+
+    #[test]
+    fn a_requeued_signal_is_handed_out_again_and_remembers_it_failed() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "retry me")).unwrap();
+        let s = mb.pop().unwrap().unwrap();
+        assert_eq!(s.attempts, 0);
+        mb.requeue(&s).unwrap();
+        let again = mb.pop().unwrap().unwrap();
+        assert_eq!(again.text, "retry me");
+        assert_eq!(again.attempts, 1, "a failure that is not counted is a failure repeated forever");
+        mb.requeue(&again).unwrap();
+        assert_eq!(mb.pop().unwrap().unwrap().attempts, 2);
+    }
+
+    #[test]
+    fn requeueing_does_not_leave_the_old_copy_behind() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "once")).unwrap();
+        let s = mb.pop().unwrap().unwrap();
+        mb.requeue(&s).unwrap();
+        assert_eq!(mb.len().unwrap(), 1, "a retry must not multiply the message");
+    }
+
+    #[test]
+    fn a_half_written_file_is_never_read() {
+        let d = tempfile::tempdir().unwrap();
+        let mb = Inbox::open(d.path()).unwrap();
+        // A temporary from an interrupted write, which must not be picked up.
+        fs::write(d.path().join("new/.0-x.json.99.tmp"), "{\"half\":").unwrap();
+        mb.push(&Signal::new(SignalKind::SignalUser, "whole")).unwrap();
+        assert_eq!(mb.pop().unwrap().unwrap().text, "whole");
+        assert!(mb.pop().unwrap().is_none());
     }
 }

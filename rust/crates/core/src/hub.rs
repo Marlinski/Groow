@@ -27,9 +27,8 @@ use crate::db::Db;
 use crate::paths::Paths;
 use crate::store::birth::Birth;
 use crate::store::identity::Identity;
-use crate::store::inbox::{Inbox, QStatus};
 use crate::store::journal::{restore_window_without, Journal};
-use crate::store::mailbox::{Mailbox, Signal};
+use crate::store::inbox::{Inbox, Signal};
 use crate::store::schedule::Schedule;
 use crate::store::thoughts::{ThoughtStatus, Thoughts};
 
@@ -95,14 +94,12 @@ pub enum Cmd {
     BrainState { up: bool },
 
     Say { text: String, kind: SignalKind, meta: Value, reply: Answer<Value> },
-    Ask { question: String, context: String, reply: Answer<Value> },
     Think { goal: String, max_steps: u32, reply: Answer<Value> },
     ThoughtAction { action: String, id: String, text: String, reply: Answer<Value> },
     /// A thought process taking its next step.
     ThoughtClaim { id: String, pid: u32, reply: Answer<TurnContext> },
     ThoughtAppend { id: String, msg: Box<Message>, reply: Answer<Value> },
     ThoughtEnd { id: String, final_text: String, flags: Vec<String>, reply: Answer<Value> },
-    Inbox { action: String, id: String, answer: String, reply: Answer<Value> },
     ScheduleAction { action: String, text: String, when: String, every: String, id: String, by: String, reply: Answer<Value> },
     Recall { n: usize, reply: Answer<Value> },
     ToolRan { turn: String, name: String, actor: String, ok: bool, seconds: f64 },
@@ -174,10 +171,6 @@ impl Handle {
         let text = text.to_string();
         self.ask(|reply| Cmd::Say { text, kind, meta, reply }).await
     }
-    pub async fn ask_mentor(&self, question: &str, context: &str) -> Result<Value, WireError> {
-        let (question, context) = (question.to_string(), context.to_string());
-        self.ask(|reply| Cmd::Ask { question, context, reply }).await
-    }
     pub async fn think(&self, goal: &str, max_steps: u32) -> Result<Value, WireError> {
         let goal = goal.to_string();
         self.ask(|reply| Cmd::Think { goal, max_steps, reply }).await
@@ -197,10 +190,6 @@ impl Handle {
     pub async fn thought(&self, action: &str, id: &str, text: &str) -> Result<Value, WireError> {
         let (action, id, text) = (action.to_string(), id.to_string(), text.to_string());
         self.ask(|reply| Cmd::ThoughtAction { action, id, text, reply }).await
-    }
-    pub async fn inbox(&self, action: &str, id: &str, answer: &str) -> Result<Value, WireError> {
-        let (action, id, answer) = (action.to_string(), id.to_string(), answer.to_string());
-        self.ask(|reply| Cmd::Inbox { action, id, answer, reply }).await
     }
     pub async fn schedule(&self, action: &str, text: &str, when: &str, every: &str, id: &str, by: &str)
         -> Result<Value, WireError>
@@ -226,7 +215,6 @@ pub struct Hub {
     cfg: Config,
     paths: Paths,
     journal: Journal,
-    mailbox: Mailbox,
     inbox: Inbox,
     schedule: Schedule,
     thoughts: Thoughts,
@@ -275,8 +263,6 @@ pub fn frame(kind: SignalKind, text: &str, meta: &Value) -> String {
             "[reminder, no reply needed] {text}. You may read that thought, pause it, or ignore this."),
         SignalKind::SignalAlarm => format!("[an alarm you set earlier] {text}"),
         SignalKind::SignalNote => format!("[a note you left yourself earlier] {text}"),
-        SignalKind::SignalExpired => format!(
-            "[no answer came] {text} Your mentor's attention is limited; ask less, and ask what matters."),
         SignalKind::SignalIdle => text.to_string(),
     }
 }
@@ -297,8 +283,7 @@ impl Hub {
         paths.ensure()?;
         Ok(Hub {
             journal: Journal::open(paths.journal())?,
-            mailbox: Mailbox::open(paths.mailbox())?,
-            inbox: Inbox::new(paths.inbox(), cfg.inbox_max_open, cfg.inbox_expiry_hours),
+            inbox: Inbox::open(paths.inbox())?,
             schedule: Schedule::new(paths.schedule()),
             thoughts: Thoughts::new(paths.thoughts()),
             identity: Identity::new(paths.identity()),
@@ -382,10 +367,6 @@ impl Hub {
                 let r = self.say(&text, kind, meta);
                 send(reply, r);
             }
-            Cmd::Ask { question, context, reply } => {
-                let r = self.ask_mentor(&question, &context);
-                send(reply, r);
-            }
             Cmd::Think { goal, max_steps, reply } => {
                 let r = self.think(&goal, max_steps);
                 send(reply, r);
@@ -404,10 +385,6 @@ impl Hub {
             }
             Cmd::ThoughtEnd { id, final_text, flags, reply } => {
                 let r = self.thought_end(&id, &final_text, &flags);
-                send(reply, r);
-            }
-            Cmd::Inbox { action, id, answer, reply } => {
-                let r = self.inbox_action(&action, &id, &answer);
                 send(reply, r);
             }
             Cmd::ScheduleAction { action, text, when, every, id, by, reply } => {
@@ -474,13 +451,11 @@ impl Hub {
             "mood": self.mood(),
             "age": self.birth.age_text(now),
             "born": self.birth.born,
-            "queue": self.mailbox.len().unwrap_or(0),
+            "queue": self.inbox.len().unwrap_or(0),
             "busy": self.active.is_some(),
             "turn": self.active.as_ref().map(|a| a.id.clone()),
             "turns": self.db.turn_count().unwrap_or(0),
             "thoughts": self.thoughts.live().map(|v| v.len()).unwrap_or(0),
-            "open_questions": self.inbox.open_questions().map(|v| v.len()).unwrap_or(0),
-            "answer_rate": self.db.answer_rate().unwrap_or(None),
             "feeling": {"pain": pain, "pleasure": pleasure, "tone": tone},
             "idle_streak": self.idle_streak,
         })
@@ -562,27 +537,14 @@ impl Hub {
 
         for a in self.schedule.due(now).map_err(other)? {
             let sig = Signal::new(SignalKind::SignalAlarm, &a.text).with_meta(json!({"alarm": a.id}));
-            self.mailbox.push(&sig).map_err(io)?;
-        }
-
-        let expired = self.inbox.expire_due().map_err(io)?;
-        if !expired.is_empty() {
-            let lines: Vec<String> = expired.iter().map(|q| format!("\u{2022} {}", q.question)).collect();
-            for q in &expired {
-                let _ = self.db.question_resolved(&q.id, now, "expired", QStatus::Expired.reward());
-                self.fanout(Event::new(EventName::Question, json!({
-                    "id": q.id, "status": "expired", "text": q.question,
-                })));
-            }
-            let text = format!("You asked and nobody answered:\n{}", lines.join("\n"));
-            self.mailbox.push(&Signal::new(SignalKind::SignalExpired, text)).map_err(io)?;
+            self.inbox.push(&sig).map_err(io)?;
         }
 
         for id in self.thoughts.reap(pid_alive, now).map_err(io)? {
             self.fanout(Event::new(EventName::Thought, json!({"id": id, "status": "paused", "why": "its process went away"})));
         }
 
-        if let Some(sig) = self.mailbox.pop().map_err(io)? {
+        if let Some(sig) = self.inbox.pop().map_err(io)? {
             if sig.kind.is_human() {
                 self.last_human = now;
                 self.idle_streak = 0;
@@ -616,7 +578,7 @@ impl Hub {
                 self.last_human = now;
                 let sig = Signal::new(SignalKind::SignalIdle,
                     "Nothing is waiting for you. Pick something small you do not understand, look it up, and try it.");
-                self.mailbox.push(&sig).map_err(io)?;
+                self.inbox.push(&sig).map_err(io)?;
                 return Ok(Duty::Idle(0.2));
             }
         }
@@ -721,15 +683,9 @@ impl Hub {
             at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
             flags: out.flags.clone(), outcome: "ok".into(),
         });
-        let _ = self.mailbox.ack(&a.signal);
+        let _ = self.inbox.ack(&a.signal);
         self.fail_streak = 0;
         self.since_learned += 1;
-
-        // Seeing what the mind said is the only way a question gets closed by conversation,
-        // so the answer is matched here rather than anywhere the mind could reach.
-        if a.kind.is_human() {
-            self.close_questions_answered_by(&a.signal.text, a.started, now);
-        }
 
         self.fanout(Event::new(EventName::TurnEnd, json!({
             "turn": a.id, "kind": a.kind.as_str(), "final": out.final_text,
@@ -747,32 +703,6 @@ impl Hub {
         }
         self.journal.append(&v)?;
         Ok(())
-    }
-
-    /// A person replying at all is treated as an answer to the oldest question that was
-    /// already waiting. The judgement of whether it was a good answer belongs to the limbic
-    /// system, not here.
-    ///
-    /// Only questions older than this turn count. A question the mind asked *during* this turn
-    /// cannot have been answered by the message that started it, and closing it would hand the
-    /// mind a reward for a question nobody has read.
-    fn close_questions_answered_by(&mut self, text: &str, turn_started: f64, now: f64) {
-        if text.trim().is_empty() {
-            return;
-        }
-        let open = match self.inbox.open_questions() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let open: Vec<_> = open.into_iter().filter(|q| q.ts < turn_started).collect();
-        if let Some(q) = open.first() {
-            if self.inbox.resolve(&q.id, QStatus::Answered, text).unwrap_or(None).is_some() {
-                let _ = self.db.question_resolved(&q.id, now, "answered", QStatus::Answered.reward());
-                self.fanout(Event::new(EventName::Question, json!({
-                    "id": q.id, "status": "answered", "text": q.question,
-                })));
-            }
-        }
     }
 
     /// The turn's process died. The signal goes back in the queue so nothing is lost, and the
@@ -794,9 +724,9 @@ impl Hub {
         // eventually set down rather than retried forever.
         let give_up = a.signal.attempts + 1 >= MAX_ATTEMPTS;
         if a.kind.is_human() && !give_up {
-            let _ = self.mailbox.requeue(&a.signal);
+            let _ = self.inbox.requeue(&a.signal);
         } else {
-            let _ = self.mailbox.ack(&a.signal);
+            let _ = self.inbox.ack(&a.signal);
             if a.kind.is_human() {
                 let note = Message::assistant(format!(
                     "I could not answer that: {why}. It has been tried {} times and I am setting it down.",
@@ -822,24 +752,12 @@ impl Hub {
             return Err(WireError::BadArg("nothing to say".into()));
         }
         let sig = Signal::new(kind, text).with_meta(meta);
-        self.mailbox.push(&sig).map_err(io)?;
+        self.inbox.push(&sig).map_err(io)?;
         if kind.is_human() {
             self.last_human = self.now();
             self.idle_streak = 0;
         }
         Ok(json!({"ok": true, "queued": kind.as_str()}))
-    }
-
-    fn ask_mentor(&mut self, question: &str, context: &str) -> Result<Value, WireError> {
-        if question.trim().is_empty() {
-            return Err(WireError::BadArg("a question needs to say something".into()));
-        }
-        let r = self.inbox.add(question, context).map_err(io)?;
-        let _ = self.db.question_asked(&r.id, self.now());
-        self.fanout(Event::new(EventName::Question, json!({
-            "id": r.id, "status": "open", "text": question,
-        })));
-        serde_json::to_value(r).map_err(|e| WireError::Internal(e.to_string()))
     }
 
     fn think(&mut self, goal: &str, max_steps: u32) -> Result<Value, WireError> {
@@ -912,10 +830,10 @@ impl Hub {
                 // A thought that reached the main thread queues a signal for it.
                 if action == "focus" {
                     let sig = Signal::new(SignalKind::SignalFocus, text).with_meta(json!({"thought": id}));
-                    self.mailbox.push(&sig).map_err(io)?;
+                    self.inbox.push(&sig).map_err(io)?;
                 } else if action == "finish" {
                     let sig = Signal::new(SignalKind::SignalThoughtDone, text).with_meta(json!({"thought": id}));
-                    self.mailbox.push(&sig).map_err(io)?;
+                    self.inbox.push(&sig).map_err(io)?;
                 }
                 self.fanout(Event::new(EventName::Thought, json!({
                     "id": id, "event": action, "text": text, "goal": t.goal,
@@ -1004,7 +922,7 @@ impl Hub {
 
         if t.status.is_final() {
             let sig = Signal::new(SignalKind::SignalThoughtDone, &t.summary).with_meta(json!({"thought": t.id}));
-            self.mailbox.push(&sig).map_err(io)?;
+            self.inbox.push(&sig).map_err(io)?;
         }
         self.fanout(Event::new(EventName::Thought, json!({
             "id": t.id, "status": t.status.as_str(), "steps": t.steps,
@@ -1030,37 +948,6 @@ impl Hub {
                     "id": t.id, "status": "paused", "goal": t.goal, "text": t.summary,
                 })));
             }
-        }
-    }
-
-    fn inbox_action(&mut self, action: &str, id: &str, answer: &str) -> Result<Value, WireError> {
-        match action {
-            "list" | "" => {
-                let open = self.inbox.open_questions().map_err(io)?;
-                Ok(json!({"open": open, "budget": self.cfg.inbox_max_open}))
-            }
-            "clear" => Ok(json!({"cleared": self.inbox.clear().map_err(io)?})),
-            "answer" => {
-                let now = self.now();
-                match self.inbox.resolve(id, QStatus::Answered, answer).map_err(io)? {
-                    Some(q) => {
-                        let _ = self.db.question_resolved(&q.id, now, "answered", QStatus::Answered.reward());
-                        Ok(json!({"ok": true, "id": q.id}))
-                    }
-                    None => Err(WireError::NotFound("open question", id.to_string())),
-                }
-            }
-            "drop" => {
-                let now = self.now();
-                match self.inbox.resolve(id, QStatus::Dropped, "").map_err(io)? {
-                    Some(q) => {
-                        let _ = self.db.question_resolved(&q.id, now, "dropped", QStatus::Dropped.reward());
-                        Ok(json!({"ok": true, "id": q.id}))
-                    }
-                    None => Err(WireError::NotFound("open question", id.to_string())),
-                }
-            }
-            other => Err(WireError::BadArg(format!("no such inbox action `{other}`"))),
         }
     }
 
@@ -1316,69 +1203,6 @@ mod tests {
     }
 
     #[test]
-    fn asking_costs_something_and_the_receipt_says_what() {
-        let (mut h, _d) = hub();
-        let mut last = json!(null);
-        for i in 0..6 {
-            last = take(|reply| Cmd::Ask { question: format!("q{i}"), context: String::new(), reply }, &mut h).unwrap();
-        }
-        assert!(last["dropped_to_make_room"].is_object(), "the sixth question should have displaced one");
-        assert_eq!(last["open_questions"], 5);
-    }
-
-    #[test]
-    fn a_reply_from_a_person_closes_the_oldest_question() {
-        let (mut h, _d) = hub();
-        let r = take(|reply| Cmd::Ask { question: "what next?".into(), context: String::new(), reply }, &mut h).unwrap();
-        let qid = r["id"].as_str().unwrap().to_string();
-
-        take(|reply| Cmd::Say { text: "learn about rivers".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
-        let (turn, epoch) = h.active_turn().unwrap();
-        take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
-        }), reply }, &mut h).unwrap();
-
-        let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
-        assert_eq!(listing["open"].as_array().unwrap().len(), 0, "answering in conversation should close it");
-        assert_eq!(h.db().answer_rate().unwrap(), Some(1.0));
-        assert!(!qid.is_empty());
-    }
-
-    #[test]
-    fn a_question_asked_during_a_turn_is_not_closed_by_the_message_that_started_it() {
-        let (mut h, clock, _d) = hub_at(1000.0);
-        take(|reply| Cmd::Say { text: "go and ask him".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
-        clock.advance(1.0);
-        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
-        // The mind asks while the turn is running.
-        clock.advance(1.0);
-        take(|reply| Cmd::Ask { question: "does it still exist?".into(), context: String::new(), reply }, &mut h).unwrap();
-        let (turn, epoch) = h.active_turn().unwrap();
-        take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch: epoch.0, final_text: "asked.".into(), flags: vec![], tools_used: 1, seconds: 1.0,
-        }), reply }, &mut h).unwrap();
-
-        let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
-        assert_eq!(listing["open"].as_array().unwrap().len(), 1,
-            "a question asked mid-turn was closed by the message that started that turn");
-    }
-
-    #[test]
-    fn a_nudge_never_counts_as_an_answer() {
-        let (mut h, _d) = hub();
-        take(|reply| Cmd::Ask { question: "what next?".into(), context: String::new(), reply }, &mut h).unwrap();
-        take(|reply| Cmd::Say { text: "tick".into(), kind: SignalKind::SignalAlarm, meta: json!({}), reply }, &mut h).unwrap();
-        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
-        let (turn, epoch) = h.active_turn().unwrap();
-        take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
-        }), reply }, &mut h).unwrap();
-        let listing = take(|reply| Cmd::Inbox { action: "list".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap();
-        assert_eq!(listing["open"].as_array().unwrap().len(), 1, "its own alarm must not answer its question");
-    }
-
-    #[test]
     fn thoughts_are_capped_and_can_be_driven() {
         let (mut h, _d) = hub();
         let mut ids = Vec::new();
@@ -1420,25 +1244,6 @@ mod tests {
         match duty {
             Duty::Turn(s, _) => assert_eq!(s.kind, SignalKind::SignalAlarm),
             other => panic!("the alarm did not fire: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_unanswered_question_expires_into_one_batched_nudge() {
-        let d = tempfile::tempdir().unwrap();
-        let mut h = hub_for_test(d.path()).unwrap();
-        h.brain_up = true;
-        h.inbox = Inbox::new(h.paths.inbox(), 5, 0.0);
-        for i in 0..3 {
-            take(|reply| Cmd::Ask { question: format!("q{i}"), context: String::new(), reply }, &mut h).unwrap();
-        }
-        let duty = take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
-        match duty {
-            Duty::Turn(s, _) => {
-                assert_eq!(s.kind, SignalKind::SignalExpired);
-                assert_eq!(s.text.lines().count(), 4, "one interruption for all three, not three");
-            }
-            other => panic!("expiry did not reach the mind: {other:?}"),
         }
     }
 
@@ -1641,6 +1446,23 @@ mod tests {
     }
 
     #[test]
+    fn empty_requests_are_refused_rather_than_queued() {
+        let (mut h, _d) = hub();
+        assert!(take(|reply| Cmd::Say { text: "  ".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).is_err());
+        assert!(take(|reply| Cmd::Think { goal: " ".into(), max_steps: 3, reply }, &mut h).is_err());
+    }
+
+    #[test]
+    fn unknown_actions_are_named_in_the_error() {
+        let (mut h, _d) = hub();
+        let e = take(|reply| Cmd::ScheduleAction {
+            action: "burn".into(), text: String::new(), when: String::new(),
+            every: String::new(), id: String::new(), by: "mentor".into(), reply,
+        }, &mut h).unwrap_err();
+        assert!(e.to_string().contains("burn"), "the error should say what was wrong: {e}");
+    }
+
+    #[test]
     fn events_reach_every_subscriber() {
         let (mut h, _d) = hub();
         let mut a = take(|reply| Cmd::Subscribe { reply }, &mut h).unwrap();
@@ -1683,21 +1505,6 @@ mod tests {
         assert_eq!(gaps[2], 2400.0);
         assert_eq!(gaps[4], 5400.0, "and it stops at the ceiling");
         assert!(gaps.windows(2).all(|w| w[1] >= w[0]));
-    }
-
-    #[test]
-    fn empty_requests_are_refused_rather_than_queued() {
-        let (mut h, _d) = hub();
-        assert!(take(|reply| Cmd::Say { text: "  ".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).is_err());
-        assert!(take(|reply| Cmd::Ask { question: "".into(), context: String::new(), reply }, &mut h).is_err());
-        assert!(take(|reply| Cmd::Think { goal: " ".into(), max_steps: 3, reply }, &mut h).is_err());
-    }
-
-    #[test]
-    fn unknown_actions_are_named_in_the_error() {
-        let (mut h, _d) = hub();
-        let e = take(|reply| Cmd::Inbox { action: "burn".into(), id: String::new(), answer: String::new(), reply }, &mut h).unwrap_err();
-        assert!(e.to_string().contains("burn"), "the error should say what was wrong: {e}");
     }
 
     #[test]

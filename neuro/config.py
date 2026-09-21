@@ -76,8 +76,6 @@ class Config:
     thought_timeout: float = 3600.0   # so is an inner thought
 
     # --- the mentor's attention ----------------------------------------------------
-    inbox_max_open: int = 5           # open questions at once; asking when full drops the oldest
-    inbox_expiry_hours: float = 48.0  # a question nobody answers expires, and that is a late cost
     hold_seconds: float = 300.0       # how long a turn waits for a reaction before it is felt on sensors alone
 
     # --- limbic (how things felt) ------------------------------------------------

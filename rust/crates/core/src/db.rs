@@ -1,7 +1,7 @@
 //! The statistics database.
 //!
 //! Everything measurable about a life: how long turns take, which tools fail, what each turn
-//! felt like, whether questions get answered. It lives beside the state but is readable only
+//! felt like, how long the learning passes take. It lives beside the state but is readable only
 //! by the core, so the mind cannot see or edit how it is being scored.
 //!
 //! Files remain the source of truth for the conversation. Nothing here is irreplaceable: if
@@ -94,14 +94,6 @@ impl Db {
                 valence  REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS feelings_ts ON feelings(ts);
-
-            CREATE TABLE IF NOT EXISTS questions (
-                id       TEXT PRIMARY KEY,
-                asked    REAL NOT NULL,
-                resolved REAL,
-                status   TEXT NOT NULL,
-                reward   REAL
-            );
 
             CREATE TABLE IF NOT EXISTS learning (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,7 +198,6 @@ impl Db {
         Ok((pain, pleasure))
     }
 
-    // ---------------------------------------------------------------- questions
     pub fn question_asked(&self, id: &str, ts: f64) -> anyhow::Result<()> {
         self.conn.execute(
             "INSERT INTO questions (id, asked, status) VALUES (?1,?2,'open') ON CONFLICT(id) DO NOTHING",
@@ -215,28 +206,7 @@ impl Db {
         Ok(())
     }
 
-    /// Close a question. Only an open question moves, so a late duplicate is harmless.
-    pub fn question_resolved(&self, id: &str, ts: f64, status: &str, reward: f64) -> anyhow::Result<bool> {
-        let n = self.conn.execute(
-            "UPDATE questions SET resolved=?2, status=?3, reward=?4 WHERE id=?1 AND status='open'",
-            params![id, ts, status, reward],
-        )?;
-        Ok(n > 0)
-    }
-
     /// The share of questions that ever got an answer. The mind's estimate of whether asking
-    /// is worth it should track this.
-    pub fn answer_rate(&self) -> anyhow::Result<Option<f64>> {
-        let closed: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM questions WHERE status != 'open'", [], |r| r.get(0))?;
-        if closed == 0 {
-            return Ok(None);
-        }
-        let answered: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM questions WHERE status = 'answered'", [], |r| r.get(0))?;
-        Ok(Some(answered as f64 / closed as f64))
-    }
-
     // ---------------------------------------------------------------- learning
     pub fn learned(&self, ts: f64, kind: &str, samples: u32, loss: Option<f64>, note: &str) -> anyhow::Result<()> {
         self.conn.execute(
@@ -393,26 +363,6 @@ mod tests {
     fn a_mood_with_no_history_is_flat() {
         let db = Db::memory().unwrap();
         assert_eq!(db.mood(1000.0, 1800.0).unwrap(), (0.0, 0.0));
-    }
-
-    #[test]
-    fn a_question_closes_once_and_only_once() {
-        let db = Db::memory().unwrap();
-        db.question_asked("q1", 10.0).unwrap();
-        assert!(db.question_resolved("q1", 20.0, "answered", 0.6).unwrap());
-        assert!(!db.question_resolved("q1", 30.0, "expired", -0.4).unwrap(), "a closed question stays closed");
-    }
-
-    #[test]
-    fn the_answer_rate_is_unknown_until_something_closes() {
-        let db = Db::memory().unwrap();
-        assert_eq!(db.answer_rate().unwrap(), None);
-        db.question_asked("q1", 1.0).unwrap();
-        assert_eq!(db.answer_rate().unwrap(), None, "an open question says nothing yet");
-        db.question_resolved("q1", 2.0, "answered", 0.6).unwrap();
-        db.question_asked("q2", 3.0).unwrap();
-        db.question_resolved("q2", 4.0, "expired", -0.4).unwrap();
-        assert_eq!(db.answer_rate().unwrap(), Some(0.5));
     }
 
     #[test]

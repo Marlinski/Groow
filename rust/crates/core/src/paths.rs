@@ -36,9 +36,9 @@ impl Paths {
     }
 
     pub fn journal(&self) -> PathBuf { self.state.join("main") }
-    pub fn mailbox(&self) -> PathBuf { self.state.join("mailbox") }
-    pub fn mailbox_new(&self) -> PathBuf { self.mailbox().join("new") }
-    pub fn mailbox_cur(&self) -> PathBuf { self.mailbox().join("cur") }
+    pub fn inbox(&self) -> PathBuf { self.state.join("inbox") }
+    pub fn inbox_new(&self) -> PathBuf { self.inbox().join("new") }
+    pub fn inbox_cur(&self) -> PathBuf { self.inbox().join("cur") }
     pub fn thoughts(&self) -> PathBuf { self.state.join("thoughts") }
     pub fn training(&self) -> PathBuf { self.state.join("training") }
     pub fn limbic(&self) -> PathBuf { self.state.join("limbic") }
@@ -46,7 +46,6 @@ impl Paths {
 
     pub fn birth(&self) -> PathBuf { self.state.join("birth.json") }
     pub fn identity(&self) -> PathBuf { self.state.join("identity.md") }
-    pub fn inbox(&self) -> PathBuf { self.state.join("mentor_inbox.jsonl") }
     pub fn schedule(&self) -> PathBuf { self.state.join("schedule.json") }
     pub fn incidents(&self) -> PathBuf { self.state.join("incidents.jsonl") }
     pub fn activity(&self) -> PathBuf { self.logs().join("activity.jsonl") }
@@ -58,12 +57,25 @@ impl Paths {
     pub fn db(&self) -> PathBuf { self.state.join("groow.db") }
 
     /// Create every directory the core writes into. Idempotent.
+    /// The inbox was called the mailbox when the mind could also put questions to its mentor,
+    /// and there was a second thing called an inbox to keep them apart from. A creature born
+    /// before that went away still has the old directory, and what is waiting in it is a
+    /// person's message, so it is moved rather than left behind.
+    fn take_the_old_name(&self) -> std::io::Result<()> {
+        let was = self.state.join("mailbox");
+        if was.is_dir() && !self.inbox().exists() {
+            fs::rename(&was, self.inbox())?;
+        }
+        Ok(())
+    }
+
     pub fn ensure(&self) -> std::io::Result<()> {
+        self.take_the_old_name()?;
         for d in [
             self.state.clone(),
             self.journal(),
-            self.mailbox_new(),
-            self.mailbox_cur(),
+            self.inbox_new(),
+            self.inbox_cur(),
             self.thoughts(),
             self.training(),
             self.limbic(),
@@ -361,6 +373,19 @@ mod tests {
     }
 
     #[test]
+    fn a_creature_born_before_the_rename_keeps_what_was_waiting() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::new(d.path().join("state"));
+        std::fs::create_dir_all(d.path().join("state/mailbox/new")).unwrap();
+        std::fs::write(d.path().join("state/mailbox/new/0-1-1-user.json"), "{}").unwrap();
+
+        p.ensure().unwrap();
+
+        assert!(p.inbox_new().join("0-1-1-user.json").is_file(), "the message was left behind");
+        assert!(!d.path().join("state/mailbox").exists(), "and the old name is gone");
+    }
+
+    #[test]
     fn the_settings_come_from_the_home_once_it_has_its_own() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("docker-compose.yml"), "services: {}\n").unwrap();
@@ -457,7 +482,7 @@ mod tests {
         let p = Paths::new(d.path().join("state"));
         p.ensure().unwrap();
         p.ensure().unwrap();
-        assert!(p.mailbox_new().is_dir());
+        assert!(p.inbox_new().is_dir());
         assert!(p.journal().is_dir());
         assert!(p.training().is_dir());
     }

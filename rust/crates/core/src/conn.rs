@@ -206,7 +206,6 @@ impl Conn {
                 }
                 r
             }
-            Op::Ask => self.hub.ask_mentor(&s("question"), &s("context")).await,
             Op::Think => {
                 let steps = arg.get("max_steps").and_then(|v| v.as_u64()).unwrap_or(8) as u32;
                 self.hub.think(&s("goal"), steps).await
@@ -238,10 +237,6 @@ impl Conn {
             Op::Schedule => {
                 let action = if s("action").is_empty() { "list".into() } else { s("action") };
                 self.hub.schedule(&action, &s("text"), &s("when"), &s("every"), &s("id"), &s("by")).await
-            }
-            Op::Inbox => {
-                let action = if s("action").is_empty() { "list".into() } else { s("action") };
-                self.hub.inbox(&action, &s("id"), &s("answer")).await
             }
             Op::Say => {
                 let kind = if s("kind") == "note" {

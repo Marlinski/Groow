@@ -80,7 +80,7 @@ impl Schedule {
             None => anyhow::bail!("when? use --in 30m, --at 18:30, or --every 2h / 'daily 06:30'"),
         };
         let a = Alarm {
-            id: super::inbox::short_id_pub(),
+            id: super::short_id(),
             text: text.to_string(),
             when,
             repeat_s,

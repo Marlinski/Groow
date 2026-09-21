@@ -34,7 +34,7 @@ enum SignalKind {
   SIGNAL_REMINDER = 5;
   SIGNAL_ALARM = 6;
   SIGNAL_NOTE = 7;           // something it left for itself
-  SIGNAL_EXPIRED = 8;        // a question nobody answered
+  reserved 8;                // was SIGNAL_EXPIRED, when it could put questions to its mentor
   SIGNAL_IDLE = 9;
 }
 

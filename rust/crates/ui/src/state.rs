@@ -231,16 +231,6 @@ impl Ui {
                     self.mood = Mood::Dreaming;
                 }
             }
-            "question" => {
-                let st = s("status");
-                let line = match st {
-                    "open" => format!("asked: {}", s("text")),
-                    "answered" => format!("answered: {}", s("text")),
-                    "expired" => format!("nobody answered: {}", s("text")),
-                    other => format!("{other}: {}", s("text")),
-                };
-                self.push(Who::Signal, "question", &line);
-            }
             "learned" => {
                 let loss = data.get("loss").and_then(|v| v.as_f64());
                 let n = data.get("samples").and_then(|v| v.as_u64()).unwrap_or(0);

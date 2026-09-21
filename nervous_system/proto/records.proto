@@ -21,8 +21,9 @@ message JournalRecord {
   optional string turn = 7;      // lets a turn that went badly be left out of the window later
 }
 
-// One file in state/mailbox/new. The name carries the priority and the arrival time, so the
-// next thing to handle is the first name in sorted order.
+// One file in state/inbox/new: the mind's inbox, which is everything that comes at it in the
+// order it arrived. The name carries the priority and the arrival time, so the next thing to
+// handle is the first name in sorted order.
 message Signal {
   uint32 priority = 1;
   groow.wire.SignalKind kind = 2;
@@ -30,25 +31,6 @@ message Signal {
   double ts = 4;
   google.protobuf.Struct meta = 5;
   uint32 attempts = 6;           // failures so far; after three it is set down
-}
-
-// One line of state/mentor_inbox.jsonl.
-message Question {
-  string id = 1;
-  double ts = 2;
-  string question = 3;
-  string context = 4;
-  Status status = 5;
-  optional double resolved_ts = 6;
-  optional string answer = 7;
-
-  enum Status {
-    STATUS_UNSPECIFIED = 0;
-    STATUS_OPEN = 1;
-    STATUS_ANSWERED = 2;
-    STATUS_EXPIRED = 3;          // nobody answered in time
-    STATUS_DROPPED = 4;          // displaced by a newer question
-  }
 }
 
 // One entry of state/schedule.json.

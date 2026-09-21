@@ -255,7 +255,7 @@ mod tests {
     }
 
     fn tools() -> Vec<String> {
-        ["shell", "ask", "think"].iter().map(|s| s.to_string()).collect()
+        ["shell", "think"].iter().map(|s| s.to_string()).collect()
     }
 
     #[test]

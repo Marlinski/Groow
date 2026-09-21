@@ -128,7 +128,7 @@ h2 .roman { color: var(--accent); font: 700 12px/1 system-ui, sans-serif; letter
 <table><tr><th>Sense</th><th>What it reaches</th></tr>
 <tr><td><code>shell(command)</code></td><td>the home, its files and traces, the commands its skills install (<code>web &lt;url&gt;</code>, <code>news</code>, <code>tictactoe</code>, <code>arithmetic</code>) and the <code>groow …</code> commands that reach its own core</td></tr>
 <tr><td><code>think(goal)</code></td><td>an inner thought: a second line of reasoning with its own history and its own shell, running concurrently</td></tr>
-<tr><td><code>ask(question)</code></td><td>the mentor's inbox, the one channel out that is not the conversation</td></tr></table>
+</table>
 <p>Everything a sense does is written to the <b>journal</b> (<code>state/main/</code>, every message and every tool result, fsynced as it happens) and, for skills that play in bulk, to the <b>activity log</b> (<code>state/log/activity.jsonl</code>). Those two files are the only inputs the rest of the organism has. Details: <a href="core.html">Core</a>.</p>
 
 <h2><span class="roman">III</span>The limbic system</h2>
@@ -172,7 +172,7 @@ outcome(command, result)             -> p(useful)  − p(failed)</code></pre>
 <pre><code>rust/crates/
   proto/        the wire: frames, the op table, who may call what
   core/         the state, the scheduler, connections; the only writer
-                store/ (journal, mailbox, questions, alarms, thoughts, certificate, identity)
+                store/ (journal, inbox, alarms, thoughts, certificate, identity)
                 hub.rs (one task owns everything), db.rs (the statistics), peer.rs (who is calling)
   harness/      the agent loop: parse a generation, run the tools, report what it noticed
   ui/           the window, the creature and the card
@@ -190,6 +190,6 @@ skel/           what a new home is given: skills/ recipes/ .groowrc groow.json
                 on disk, never compiled in; --skel points at another
 home/           the creature itself, never in the repository
   skills/ bin/ recipes/ workspace/ .groowrc groow.json
-  state/        base/ plastic/ main/ mailbox/ training/ log/ thoughts/ groow.db …</code></pre>
+  state/        base/ plastic/ main/ inbox/ training/ log/ thoughts/ groow.db …</code></pre>
 <footer>Groow · docs · anatomy</footer>
 </main></body></html>

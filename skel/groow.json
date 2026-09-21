@@ -45,8 +45,6 @@
   "sleep_replay_steps": 30,
   "sleep_every_steps": 300,
   "sense_idle_minutes": 10.0,
-  "inbox_expiry_hours": 48.0,
-  "inbox_max_open": 5,
   "hold_seconds": 300.0,
   "sense_idle_max_minutes": 90.0
 }

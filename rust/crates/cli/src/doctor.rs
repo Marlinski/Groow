@@ -74,9 +74,9 @@ pub fn examine(state: &Path, config: &Path) -> Value {
         }
     }
 
-    // Anything stuck in the mailbox is work that never got done.
-    let waiting = count_files(&state.join("mailbox/new"), "json");
-    let held = count_files(&state.join("mailbox/cur"), "json");
+    // Anything stuck in the inbox is work that never got done.
+    let waiting = count_files(&state.join("inbox/new"), "json");
+    let held = count_files(&state.join("inbox/cur"), "json");
     notes["waiting"] = json!(waiting);
     if held > 0 {
         problems.push(format!("{held} signal(s) left claimed by a process that is gone; they will be retried"));
@@ -112,8 +112,8 @@ mod tests {
 
     fn born(d: &Path) {
         std::fs::create_dir_all(d.join("main")).unwrap();
-        std::fs::create_dir_all(d.join("mailbox/new")).unwrap();
-        std::fs::create_dir_all(d.join("mailbox/cur")).unwrap();
+        std::fs::create_dir_all(d.join("inbox/new")).unwrap();
+        std::fs::create_dir_all(d.join("inbox/cur")).unwrap();
         std::fs::write(
             d.join("birth.json"),
             r#"{"id":"abc","name":"Groow","born":1000.0,"lineage":"m","hardware":"h","mentor":"M","version":"1"}"#,
@@ -174,7 +174,7 @@ mod tests {
     fn work_left_claimed_by_a_dead_process_is_pointed_out() {
         let d = tempfile::tempdir().unwrap();
         born(d.path());
-        std::fs::write(d.path().join("mailbox/cur/0-1-1-user.json"), "{}").unwrap();
+        std::fs::write(d.path().join("inbox/cur/0-1-1-user.json"), "{}").unwrap();
         let r = examine(d.path(), &d.path().join("groow.json"));
         assert!(r["problems"].to_string().contains("will be retried"));
     }
@@ -183,7 +183,7 @@ mod tests {
     fn waiting_work_is_counted_but_is_not_a_problem() {
         let d = tempfile::tempdir().unwrap();
         born(d.path());
-        std::fs::write(d.path().join("mailbox/new/0-1-1-user.json"), "{}").unwrap();
+        std::fs::write(d.path().join("inbox/new/0-1-1-user.json"), "{}").unwrap();
         let r = examine(d.path(), &d.path().join("groow.json"));
         assert_eq!(r["notes"]["waiting"], 1);
         assert_eq!(r["problems"].as_array().unwrap().len(), 0, "a queue is normal");

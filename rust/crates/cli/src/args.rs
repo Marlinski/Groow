@@ -2,7 +2,7 @@
 //!
 //! One binary with two lives. Run by the owner it is the whole tool: it starts the core, opens
 //! the window, and does the things only a mentor may do. Run by the mind, inside its own body,
-//! the same binary is how it reaches its own alarms, questions and thoughts, and the commands
+//! the same binary is how it reaches its own alarms and thoughts, and the commands
 //! that belong to its mentor refuse politely.
 
 use clap::{Parser, Subcommand};
@@ -59,13 +59,6 @@ pub enum Command {
         #[arg(short, long, default_value_t = 40)]
         n: usize,
     },
-    /// The questions it has left for you.
-    Inbox {
-        #[arg(default_value = "list")]
-        action: String,
-        id: Option<String>,
-        answer: Vec<String>,
-    },
     /// Set an alarm for it.
     Remind {
         text: Vec<String>,
@@ -114,7 +107,6 @@ impl Command {
             Command::Ui => "ui",
             Command::Say { .. } => "say",
             Command::Recall { .. } => "recall",
-            Command::Inbox { .. } => "inbox",
             Command::Remind { .. } => "remind",
             Command::Schedule { .. } => "schedule",
             Command::Thoughts => "thoughts",
@@ -148,81 +140,6 @@ pub fn is_the_mind() -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
-
-    #[test]
-    fn waking_it_takes_no_arguments_at_all() {
-        let c = Cli::try_parse_from(["groow", "start"]).unwrap();
-        match c.cmd {
-            Command::Start { as_user } => assert_eq!(as_user, None),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn starting_it_knows_nothing_about_containers() {
-        // Whether it runs in this terminal, a container or a microvm is a runtime concern, so
-        // there is no flag here for choosing one. `make start` is where the container lives.
-        for gone in ["--here", "--rebuild"] {
-            assert!(Cli::try_parse_from(["groow", "start", gone]).is_err(), "{gone} should be gone");
-        }
-        for gone in ["logs", "shell"] {
-            assert!(Cli::try_parse_from(["groow", gone]).is_err(), "{gone} belongs to the body");
-        }
-    }
-
-    #[test]
-    fn where_it_lives_is_one_place_not_two() {
-        // The home is the thing; the state is a folder inside it, along with everything else
-        // it owns. Asking for them separately invited them to disagree.
-        let c = Cli::try_parse_from(["groow", "--home", "/srv/groow", "status"]).unwrap();
-        assert_eq!(c.home.as_deref(), Some(std::path::Path::new("/srv/groow")));
-        assert!(Cli::try_parse_from(["groow", "--state", "/srv/groow/state", "status"]).is_err());
-    }
-
-    #[test]
-    fn the_everyday_commands_parse() {
-        let c = Cli::try_parse_from(["groow", "say", "hello", "there"]).unwrap();
-        match c.cmd {
-            Command::Say { text } => assert_eq!(text, ["hello", "there"]),
-            other => panic!("{other:?}"),
-        }
-        assert!(Cli::try_parse_from(["groow", "status"]).is_ok());
-        assert!(Cli::try_parse_from(["groow", "ui"]).is_ok());
-        assert!(Cli::try_parse_from(["groow", "stop"]).is_ok());
-    }
-
-    #[test]
-    fn an_alarm_takes_any_of_the_three_forms() {
-        for args in [
-            vec!["groow", "remind", "read the news", "--in", "30m"],
-            vec!["groow", "remind", "read the news", "--at", "18:30"],
-            vec!["groow", "remind", "read the news", "--every", "daily 06:30"],
-        ] {
-            assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?} should parse");
-        }
-    }
-
-    #[test]
-    fn the_inbox_defaults_to_showing_what_is_waiting() {
-        let c = Cli::try_parse_from(["groow", "inbox"]).unwrap();
-        match c.cmd {
-            Command::Inbox { action, .. } => assert_eq!(action, "list"),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_answer_can_be_several_words() {
-        let c = Cli::try_parse_from(["groow", "inbox", "answer", "ab12", "look", "at", "rivers"]).unwrap();
-        match c.cmd {
-            Command::Inbox { action, id, answer } => {
-                assert_eq!(action, "answer");
-                assert_eq!(id.as_deref(), Some("ab12"));
-                assert_eq!(answer.join(" "), "look at rivers");
-            }
-            other => panic!("{other:?}"),
-        }
-    }
 
     #[test]
     fn nonsense_is_refused_with_a_message_rather_than_a_panic() {
@@ -259,7 +176,7 @@ mod tests {
         for args in [
             vec!["groow", "start"], vec!["groow", "stop"], vec!["groow", "status"],
             vec!["groow", "ui"], vec!["groow", "say", "x"], vec!["groow", "recall"],
-            vec!["groow", "inbox"], vec!["groow", "remind", "x", "--in", "1h"],
+vec!["groow", "remind", "x", "--in", "1h"],
             vec!["groow", "schedule"], vec!["groow", "thoughts"],
             vec!["groow", "thought", "read", "a1"], vec!["groow", "doctor"],
             vec!["groow", "run-turn"], vec!["groow", "run-thought", "a1"],

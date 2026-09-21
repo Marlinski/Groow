@@ -46,7 +46,7 @@ pub async fn talk(cmd: Command, state: std::path::PathBuf, json: bool) -> anyhow
                     None => {
                         println!("{}", serde_json::to_string_pretty(&v)?);
                         // The drawn answers say this themselves, and better.
-                        if let Some(note) = human_note(&cmd, &v) {
+                        if let Some(note) = human_note(&cmd) {
                             eprintln!("{note}");
                         }
                     }
@@ -72,14 +72,6 @@ pub fn request_for(cmd: &Command) -> anyhow::Result<(String, Value)> {
             ("say".into(), json!({"text": t}))
         }
         Command::Recall { n } => ("recall".into(), json!({"n": n})),
-        Command::Inbox { action, id, answer } => (
-            "inbox".into(),
-            json!({
-                "action": action,
-                "id": id.clone().unwrap_or_default(),
-                "answer": answer.join(" "),
-            }),
-        ),
         Command::Remind { text, in_, at, every } => {
             let t = text.join(" ");
             if t.trim().is_empty() {
@@ -113,18 +105,10 @@ pub fn request_for(cmd: &Command) -> anyhow::Result<(String, Value)> {
 }
 
 /// A line for a person, when the JSON alone would not be obvious.
-fn human_note(cmd: &Command, v: &Value) -> Option<String> {
+fn human_note(cmd: &Command) -> Option<String> {
     match cmd {
         Command::Stop => Some("it is going to sleep".into()),
         Command::Say { .. } => Some("left for it; it will answer on its next turn".into()),
-        Command::Inbox { action, .. } if action == "list" => {
-            let n = v.get("open").and_then(|o| o.as_array()).map(|a| a.len()).unwrap_or(0);
-            Some(match n {
-                0 => "it has not asked you anything".into(),
-                1 => "it is waiting on one answer".into(),
-                n => format!("it is waiting on {n} answers"),
-            })
-        }
         _ => None,
     }
 }
@@ -169,22 +153,6 @@ mod tests {
     fn an_alarm_records_who_set_it() {
         let (_, arg) = request_for(&cmd(&["groow", "remind", "news", "--in", "1h"])).unwrap();
         assert_eq!(arg["by"], "mentor", "by default a person is setting it");
-    }
-
-    #[test]
-    fn answering_a_question_carries_the_id_and_the_words() {
-        let (op, arg) = request_for(&cmd(&["groow", "inbox", "answer", "ab12", "look", "at", "rivers"])).unwrap();
-        assert_eq!(op, "inbox");
-        assert_eq!(arg["id"], "ab12");
-        assert_eq!(arg["answer"], "look at rivers");
-    }
-
-    #[test]
-    fn the_note_for_a_person_matches_what_is_waiting() {
-        let list = cmd(&["groow", "inbox"]);
-        assert!(human_note(&list, &json!({"open": []})).unwrap().contains("not asked"));
-        assert!(human_note(&list, &json!({"open": [1]})).unwrap().contains("one answer"));
-        assert!(human_note(&list, &json!({"open": [1, 2, 3]})).unwrap().contains("3 answers"));
     }
 
     #[test]

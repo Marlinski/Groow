@@ -1,10 +1,6 @@
 {
   "_": "Generated from the code. `cargo test -p groow-proto` fails if this file and the code disagree; the failure prints what it should say.",
   "ops": {
-    "ask": [
-      "agent",
-      "mentor"
-    ],
     "command": [
       "mentor",
       "viewer"
@@ -17,11 +13,6 @@
       "mentor"
     ],
     "hello": [
-      "agent",
-      "mentor",
-      "viewer"
-    ],
-    "inbox": [
       "agent",
       "mentor",
       "viewer"

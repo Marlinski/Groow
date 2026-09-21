@@ -27,7 +27,7 @@ Only the core writes this. The mind asks, and the core decides.
 
 ## The queue
 
-`state/mailbox/new/` and `state/mailbox/cur/`, one file per waiting signal. The name is the
+`state/inbox/new/` and `state/inbox/cur/`, one file per waiting signal. The name is the
 sort key, so the next thing to handle is the first name in order:
 
 ```

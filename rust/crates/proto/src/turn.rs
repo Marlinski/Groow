@@ -47,7 +47,6 @@ impl SignalKind {
             SignalKind::SignalReminder => "reminder",
             SignalKind::SignalAlarm => "alarm",
             SignalKind::SignalNote => "note",
-            SignalKind::SignalExpired => "expired",
             SignalKind::SignalIdle => "idle",
         }
     }
@@ -61,7 +60,6 @@ impl SignalKind {
             "reminder" => SignalKind::SignalReminder,
             "alarm" => SignalKind::SignalAlarm,
             "note" => SignalKind::SignalNote,
-            "expired" => SignalKind::SignalExpired,
             "idle" => SignalKind::SignalIdle,
             _ => return None,
         })
@@ -77,7 +75,7 @@ impl SignalKind {
         match self {
             SignalKind::SignalUser | SignalKind::SignalCommand | SignalKind::SignalUnspecified => 0,
             SignalKind::SignalFocus | SignalKind::SignalThoughtDone | SignalKind::SignalNote => 1,
-            SignalKind::SignalReminder | SignalKind::SignalAlarm | SignalKind::SignalExpired => 2,
+            SignalKind::SignalReminder | SignalKind::SignalAlarm => 2,
             SignalKind::SignalIdle => 3,
         }
     }
@@ -148,7 +146,7 @@ mod tests {
         assert!(SignalKind::SignalUser.is_human());
         assert!(SignalKind::SignalCommand.is_human());
         for k in [SignalKind::SignalIdle, SignalKind::SignalAlarm, SignalKind::SignalFocus,
-                  SignalKind::SignalExpired] {
+                  ] {
             assert!(!k.is_human(), "{} should be framed", k.as_str());
         }
     }
@@ -157,7 +155,7 @@ mod tests {
     fn the_short_names_used_on_disk_round_trip() {
         for k in [SignalKind::SignalUser, SignalKind::SignalCommand, SignalKind::SignalFocus,
                   SignalKind::SignalThoughtDone, SignalKind::SignalReminder, SignalKind::SignalAlarm,
-                  SignalKind::SignalNote, SignalKind::SignalExpired, SignalKind::SignalIdle] {
+                  SignalKind::SignalNote, SignalKind::SignalIdle] {
             assert_eq!(SignalKind::parse(k.as_str()), Some(k), "{} did not round trip", k.as_str());
         }
         assert_eq!(SignalKind::parse("from_the_future"), None);

@@ -31,7 +31,7 @@ not be worth keeping.
 | `state/plastic/` | the overlay you learn into: short-term, changed as you go. |
 | `state/identity.md` | your self-description. It changes through what you do, not by editing. |
 | `state/birth.json` | your id, when you were born, what you came from. Nobody can rewrite it. |
-| `state/mailbox/` | what is waiting to wake you. |
+| `state/inbox/` | your inbox: everything waiting for you, in the order it arrived. |
 | `state/groow.db` | how your turns are being scored. You cannot read this one, on purpose. |
 
 If you find you want to change something in `state/`, that is worth telling your mentor about

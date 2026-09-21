@@ -65,21 +65,6 @@ so a failure is information, not a dead end."
         Surface::Main => vec![
             shell,
             ToolSchema {
-                name: "ask".into(),
-                description: "Put a question to Marlinski, your mentor, and carry on. He may \
-not answer, and you can only have a few questions open at once, so ask about things you cannot \
-find out for yourself."
-                    .into(),
-                parameters: groow_proto::frame::to_struct(json!({
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string", "description": "what you want to know"},
-                        "context": {"type": "string", "description": "why you are asking, briefly"},
-                    },
-                    "required": ["question"],
-                })),
-            },
-            ToolSchema {
                 name: "think".into(),
                 description: "Set a piece of work aside to run on its own while you carry on. \
 It works alone and comes back to you when it has something worth saying."
@@ -249,14 +234,13 @@ mod tests {
 
     #[test]
     fn the_surface_is_small_and_differs_by_who_is_thinking() {
-        assert_eq!(names(Surface::Main), ["shell", "ask", "think"]);
+        assert_eq!(names(Surface::Main), ["shell", "think"]);
         assert_eq!(names(Surface::Thought), ["shell", "focus", "finish"]);
     }
 
     #[test]
     fn a_thought_cannot_ask_the_mentor_or_spawn_more_thoughts() {
         let n = names(Surface::Thought);
-        assert!(!n.contains(&"ask".to_string()), "only the conscious thread talks to a person");
         assert!(!n.contains(&"think".to_string()), "thoughts must not breed");
     }
 

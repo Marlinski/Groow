@@ -132,7 +132,6 @@ with an explanation rather than a database error. `sudo groow start` if you mean
 ```
 make logs              follow what its body is doing
 make shell             a shell in its home, as the mind
-./groow inbox          the questions it has left you
 ./groow remind "read the news" --every "daily 08:00"
 ./groow thoughts       what it is working on by itself
 ./groow doctor         check the state on disk without needing it awake

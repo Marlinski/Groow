@@ -253,14 +253,6 @@ async fn run_call(client: &mut Client, call: &Call, settings: &Settings) -> Tool
             let cmd = tools::arg_str(&call.args, "command");
             tools::run_shell(&cmd, &settings.home, settings.tool_timeout).await
         }
-        "ask" => {
-            let q = tools::arg_str(&call.args, "question");
-            let c = tools::arg_str(&call.args, "context");
-            match client.call("ask", json!({"question": q, "context": c})).await {
-                Ok(v) => ToolResult::good(describe_receipt(&v)),
-                Err(e) => ToolResult::bad(format!("the question could not be left: {e}")),
-            }
-        }
         "think" => {
             let goal = tools::arg_str(&call.args, "goal");
             let steps = tools::arg_u32(&call.args, "max_steps", 8);
@@ -336,26 +328,6 @@ fn thought_id() -> String {
     std::env::var("GROOW_THOUGHT").unwrap_or_default()
 }
 
-/// Turn the receipt for a question into something the mind can act on: not just an
-/// acknowledgement, but what it cost.
-fn describe_receipt(v: &serde_json::Value) -> String {
-    let open = v.get("open_questions").and_then(|x| x.as_u64()).unwrap_or(0);
-    let budget = v.get("budget").and_then(|x| x.as_u64()).unwrap_or(0);
-    let hours = v.get("expires_in_hours").and_then(|x| x.as_f64()).unwrap_or(0.0);
-    let mut s = format!(
-        "left for your mentor. {open} of {budget} questions are now waiting, and this one \
-expires in {hours:.0} hours if nobody answers."
-    );
-    if let Some(d) = v.get("dropped_to_make_room").and_then(|d| d.as_object()) {
-        let q = d.get("question").and_then(|q| q.as_str()).unwrap_or("");
-        let waited = d.get("waited").and_then(|w| w.as_str()).unwrap_or("");
-        s.push_str(&format!(
-            " To make room, your oldest question was dropped unanswered after {waited}: \u{201c}{q}\u{201d}."
-        ));
-    }
-    s
-}
-
 /// The kind of signal, for anything that needs to treat a person differently.
 pub fn is_from_a_person(k: SignalKind) -> bool {
     k.is_human()
@@ -377,7 +349,6 @@ mod tests {
         /// Events the turn announced on its own account.
         emitted: Vec<(String, serde_json::Value)>,
         outcome: Option<TurnOutcome>,
-        asked: Vec<serde_json::Value>,
         completions: usize,
     }
 
@@ -439,13 +410,6 @@ mod tests {
                     "turn.end" => {
                         log.lock().unwrap().outcome = serde_json::from_value(arg).ok();
                         Frame::rep(id, json!({"ok": true}))
-                    }
-                    "ask" => {
-                        log.lock().unwrap().asked.push(arg);
-                        Frame::rep(id, json!({
-                            "ok": true, "id": "abc123", "open_questions": 2, "budget": 5,
-                            "expires_in_hours": 48.0,
-                        }))
                     }
                     "think" => Frame::rep(id, json!({"ok": true, "id": "th0001"})),
                     "thought" => Frame::rep(id, json!({"ok": true})),
@@ -588,24 +552,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_question_to_the_mentor_comes_back_with_what_it_cost() {
-        let (_out, log, _d) = run(
-            vec![
-                "<tool_call>{\"name\":\"ask\",\"arguments\":{\"question\":\"what next?\"}}</tool_call>".into(),
-                "Asked.".into(),
-            ],
-            10,
-        )
-        .await;
-        let l = log.lock().unwrap();
-        assert_eq!(l.asked.len(), 1);
-        assert_eq!(l.asked[0]["question"], "what next?");
-        let result = l.appended.iter().find(|m| m.name.as_deref() == Some("ask")).unwrap();
-        assert!(result.text().contains("of 5 questions"), "the cost was not shown: {}", result.text());
-        assert!(result.text().contains("expires"));
-    }
-
-    #[tokio::test]
     async fn a_call_the_model_wrote_without_tags_still_runs() {
         let (out, log, _d) = run(
             vec![
@@ -655,7 +601,7 @@ mod tests {
         };
         let said = unknown_tool("rm_rf_everything", &settings);
         assert!(said.contains("there is no tool"), "{said}");
-        assert!(said.contains("shell, ask, think"), "{said}");
+        assert!(said.contains("shell, think"), "{said}");
     }
 
     #[tokio::test]

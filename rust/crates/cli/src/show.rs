@@ -18,40 +18,11 @@ use crate::args::Command;
 pub fn render(cmd: &Command, v: &Value) -> Option<String> {
     Some(match cmd {
         Command::Status => box_of(v),
-        Command::Inbox { action, .. } if action == "list" => inbox(v),
         Command::Thoughts => thoughts_list(v),
         Command::Schedule { action, .. } if action == "list" => alarms(v),
         Command::Recall { .. } => conversation(v),
         _ => return None,
     })
-}
-
-/// The questions it has left for you.
-fn inbox(v: &Value) -> String {
-    let open = arr(v, "open");
-    if open.is_empty() {
-        return "It has not asked you anything.".into();
-    }
-    let mut out = match open.len() {
-        1 => "One question, waiting on you:
-".to_string(),
-        n => format!("{n} questions, waiting on you:
-"),
-    };
-    for q in open {
-        out.push('\n');
-        out.push_str(&format!("  {}  {}
-", id_of(&q), str_of(&q, "question").unwrap_or_default()));
-        if let Some(c) = str_of(&q, "context") {
-            out.push_str(&format!("          {c}
-"));
-        }
-        out.push_str(&format!("          asked {}
-", ago(&q, "ts")));
-    }
-    out.push_str("
-Answer one with `groow inbox answer <id> <your answer>`.");
-    out
 }
 
 /// What it is working on by itself.
@@ -216,14 +187,6 @@ fn id_of(v: &Value) -> String {
     str_of(v, "id").unwrap_or_else(|| "??????".into())
 }
 
-/// How long ago something happened, which is the question being asked of a timestamp.
-fn ago(v: &Value, k: &str) -> String {
-    match v.get(k).and_then(|t| t.as_f64()) {
-        Some(ts) => format!("{} ago", duration(now() - ts)),
-        None => "at some point".into(),
-    }
-}
-
 /// When something is next due, which may be in the past if it is overdue.
 fn due(v: &Value, k: &str) -> String {
     match v.get(k).and_then(|t| t.as_f64()) {
@@ -296,7 +259,6 @@ fn rows(v: &Value) -> Vec<(&'static str, String)> {
         ("doing", doing(v)),
         ("brain", brain(v)),
         ("turns", turns(v)),
-        ("waiting", waiting(v)),
         ("thoughts", thoughts(v)),
     ]
 }
@@ -343,24 +305,10 @@ fn brain(v: &Value) -> String {
 }
 
 fn turns(v: &Value) -> String {
-    let n = num(v, "turns");
-    let rate = v.get("answer_rate").and_then(|r| r.as_f64());
-    let so_far = match n {
-        0 => "none yet".to_string(),
-        1 => "one so far".to_string(),
+    match num(v, "turns") {
+        0 => "none yet".into(),
+        1 => "one so far".into(),
         n => format!("{n} so far"),
-    };
-    match rate {
-        Some(r) if n > 0 => format!("{so_far}, {:.0}% answered", r * 100.0),
-        _ => so_far,
-    }
-}
-
-fn waiting(v: &Value) -> String {
-    match num(v, "open_questions") {
-        0 => "nothing; it has not asked you anything".into(),
-        1 => "one question for you (`groow inbox`)".into(),
-        n => format!("{n} questions for you (`groow inbox`)"),
     }
 }
 
@@ -389,9 +337,9 @@ mod tests {
     fn idle() -> Value {
         json!({
             "brain": true, "busy": false, "age": "22h 16m", "napping": null,
-            "answer_rate": 1, "idle_streak": 1, "queue": 0, "thoughts": 0,
+            "idle_streak": 1, "queue": 0, "thoughts": 0,
             "feeling": {"pain": 0, "tone": "even", "pleasure": 0},
-            "open_questions": 1, "turn": null, "mood": "idle",
+            "turn": null, "mood": "idle",
             "born": 1789731096.238, "turns": 38
         })
     }
@@ -402,30 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn a_question_shows_the_id_you_would_type_to_answer_it() {
-        let v = json!({"budget": 5, "open": [{
-            "id": "b02813", "ts": now() - 3600.0, "status": "open",
-            "question": "What is one small thing I do not understand?",
-            "context": "I am told to pick something, but I do not know what to pick.",
-        }]});
-        let s = render(&cmd(&["groow", "inbox"]), &v).unwrap();
-        assert!(s.contains("One question"), "{s}");
-        assert!(s.contains("b02813"), "{s}");
-        assert!(s.contains("asked 60m ago"), "{s}");
-        assert!(s.contains("groow inbox answer <id>"), "it should say how to answer: {s}");
-    }
-
-    #[test]
-    fn an_empty_inbox_says_so_in_words() {
-        let s = render(&cmd(&["groow", "inbox"]), &json!({"open": []})).unwrap();
-        assert_eq!(s, "It has not asked you anything.");
-    }
-
-    #[test]
-    fn only_the_listing_actions_are_drawn() {
-        // `inbox answer` replies with an acknowledgement, which is nothing to draw.
-        assert!(render(&cmd(&["groow", "inbox", "answer", "b0", "yes"]), &json!({"ok": true})).is_none());
+    fn an_acknowledgement_is_left_as_it_came() {
+        // Only a listing is worth drawing; `say` answers with an ok, and there is nothing to
+        // make of that which the JSON does not already say.
         assert!(render(&cmd(&["groow", "say", "hello"]), &json!({"ok": true})).is_none());
+        assert!(render(&cmd(&["groow", "stop"]), &json!({"ok": true})).is_none());
     }
 
     #[test]
@@ -515,8 +444,7 @@ mod tests {
         assert!(s.contains("idle, even"), "{s}");
         assert!(s.contains("nothing just now"), "{s}");
         assert!(s.contains("loaded and answering"), "{s}");
-        assert!(s.contains("38 so far, 100% answered"), "{s}");
-        assert!(s.contains("one question for you"), "{s}");
+        assert!(s.contains("38 so far"), "{s}");
     }
 
     #[test]

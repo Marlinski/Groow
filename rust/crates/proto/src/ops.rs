@@ -39,8 +39,6 @@ pub enum Op {
     Complete,
 
     // ---- things the mind may do to itself -------------------------------------------
-    /// Put a question to the mentor and leave it open.
-    Ask,
     /// Start an inner thought.
     Think,
     /// Act on an existing inner thought: focus, finish, pause, resume, kill, read.
@@ -55,8 +53,6 @@ pub enum Op {
     Recall,
     /// Set or cancel an alarm.
     Schedule,
-    /// List open questions.
-    Inbox,
 
     // ---- things only the mentor may do ------------------------------------------------
     /// Speak to the creature.
@@ -81,7 +77,6 @@ impl Op {
             "turn.append" => Op::TurnAppend,
             "turn.end" => Op::TurnEnd,
             "complete" => Op::Complete,
-            "ask" => Op::Ask,
             "think" => Op::Think,
             "thought" => Op::Thought,
             "thought.claim" => Op::ThoughtClaim,
@@ -89,7 +84,6 @@ impl Op {
             "thought.end" => Op::ThoughtEnd,
             "recall" => Op::Recall,
             "schedule" => Op::Schedule,
-            "inbox" => Op::Inbox,
             "say" => Op::Say,
             "command" => Op::Command,
             "consolidate" => Op::Consolidate,
@@ -108,7 +102,6 @@ impl Op {
             Op::TurnAppend => "turn.append",
             Op::TurnEnd => "turn.end",
             Op::Complete => "complete",
-            Op::Ask => "ask",
             Op::Think => "think",
             Op::Thought => "thought",
             Op::ThoughtClaim => "thought.claim",
@@ -116,7 +109,6 @@ impl Op {
             Op::ThoughtEnd => "thought.end",
             Op::Recall => "recall",
             Op::Schedule => "schedule",
-            Op::Inbox => "inbox",
             Op::Say => "say",
             Op::Command => "command",
             Op::Consolidate => "consolidate",
@@ -139,12 +131,12 @@ impl Op {
             Role::Agent => matches!(
                 self,
                 Op::Hello | Op::Status | Op::TurnClaim | Op::TurnAppend | Op::TurnEnd
-                    | Op::Complete | Op::Ask | Op::Think | Op::Thought | Op::Recall
-                    | Op::Schedule | Op::Inbox
+                    | Op::Complete | Op::Think | Op::Thought | Op::Recall
+                    | Op::Schedule
                     | Op::ThoughtClaim | Op::ThoughtAppend | Op::ThoughtEnd
             ),
             // A person at a terminal: look, and talk.
-            Role::Viewer => matches!(self, Op::Hello | Op::Status | Op::Watch | Op::Say | Op::Command | Op::Inbox | Op::Recall),
+            Role::Viewer => matches!(self, Op::Hello | Op::Status | Op::Watch | Op::Say | Op::Command | Op::Recall),
         }
     }
 
@@ -166,8 +158,8 @@ mod tests {
     fn names_round_trip() {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
-            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
-            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Inbox, Op::Say, Op::Command,
+            Op::Complete, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
+            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Say, Op::Command,
             Op::Consolidate, Op::Train, Op::Quit,
         ] {
             assert_eq!(Op::parse(op.name()), Some(op), "{} did not round trip", op.name());
@@ -203,7 +195,7 @@ mod tests {
     fn a_viewer_can_never_drive_a_turn() {
         // A terminal is not a mind. It must not be able to claim a turn, write into the
         // conversation, or generate, however the roles are ordered.
-        for op in [Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete, Op::Ask, Op::Think,
+        for op in [Op::TurnClaim, Op::TurnAppend, Op::TurnEnd, Op::Complete, Op::Think,
                    Op::ThoughtClaim, Op::ThoughtAppend, Op::ThoughtEnd] {
             assert!(!op.allowed_for(Role::Viewer), "{} must not be reachable from a viewer", op.name());
         }
@@ -213,8 +205,8 @@ mod tests {
     fn every_op_is_reachable_by_somebody() {
         for op in [
             Op::Hello, Op::Status, Op::Watch, Op::TurnClaim, Op::TurnAppend, Op::TurnEnd,
-            Op::Complete, Op::Ask, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
-            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Inbox, Op::Say, Op::Command,
+            Op::Complete, Op::Think, Op::Thought, Op::ThoughtClaim, Op::ThoughtAppend,
+            Op::ThoughtEnd, Op::Recall, Op::Schedule, Op::Say, Op::Command,
             Op::Consolidate, Op::Train, Op::Quit,
         ] {
             let any = [Role::Agent, Role::Viewer, Role::Mentor].iter().any(|r| op.allowed_for(*r));

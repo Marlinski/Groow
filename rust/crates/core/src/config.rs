@@ -49,8 +49,6 @@ fn d_tool_timeout() -> u64 { 120 }
 fn d_skill_check_timeout() -> u64 { 60 }
 fn d_turn_timeout() -> f64 { 900.0 }
 fn d_thought_timeout() -> f64 { 3600.0 }
-fn d_inbox_max() -> usize { 5 }
-fn d_inbox_expiry() -> f64 { 48.0 }
 fn d_hold() -> f64 { 300.0 }
 fn d_judge() -> String { "laya".into() }
 fn d_halflife() -> f64 { 1800.0 }
@@ -131,8 +129,6 @@ pub struct Config {
     pub thought_timeout: f64,
 
     // mentor attention
-    pub inbox_max_open: usize,
-    pub inbox_expiry_hours: f64,
     pub hold_seconds: f64,
 
     // limbic
@@ -184,8 +180,7 @@ impl Default for Config {
             learn_from_thoughts: false, gen_max_batch: d_gen_batch(),
             tool_timeout: d_tool_timeout(),
             skill_check_timeout: d_skill_check_timeout(), turn_timeout: d_turn_timeout(),
-            thought_timeout: d_thought_timeout(), inbox_max_open: d_inbox_max(),
-            inbox_expiry_hours: d_inbox_expiry(), hold_seconds: d_hold(),
+            thought_timeout: d_thought_timeout(), hold_seconds: d_hold(),
             judge: d_judge(), mood_halflife_s: d_halflife(),
             api_host: d_host(), api_port: d_port(), allow_python: d_true(), allow_shell: d_true(), home_dir: String::new(),
             python_timeout: d_python_timeout(), enable_thinking: false,

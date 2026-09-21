@@ -4,7 +4,7 @@
 <p class="lead">One conscious thread over a priority queue of signals, and the inner thoughts it can spawn, watch, pause, resume and kill. The thread is linear because consciousness is; the GPU underneath is not.</p>
 
 <h2>The main thought</h2>
-<p>The main thought is a single rolling conversation (one <code>Harness</code>, priority 0). It is the only thing that speaks to the person or to the mentor. It consumes <b>signals</b> from a mailbox on disk (<code>state/mailbox/</code>) in priority order and does nothing between them; inner thoughts run on their own and reach it only through that mailbox. Every message of its conversation is journalled to <code>state/main/</code> as it happens, and the window is rebuilt from the journal after a reboot.</p>
+<p>The main thought is a single rolling conversation (one <code>Harness</code>, priority 0). It is the only thing that speaks to the person or to the mentor. It consumes <b>signals</b> from an inbox on disk (<code>state/inbox/</code>) in priority order and does nothing between them; inner thoughts run on their own and reach it only through that inbox. Every message of its conversation is journalled to <code>state/main/</code> as it happens, and the window is rebuilt from the journal after a reboot.</p>
 <table><tr><th>Priority</th><th>Signal</th><th>Framed to the model as</th></tr>
 <tr><td>0 USER</td><td>a human typed</td><td>the message itself</td></tr>
 <tr><td>1 FOCUS</td><td>a thought called <code>focus()</code> or finished</td><td><code>[inner thought a1b2 says] …</code> / <code>[inner thought a1b2 finished] …</code></td></tr>
@@ -43,7 +43,7 @@ remind "read the news"      --every 3h
 remind "sum up the day"     --every "daily 22:00"
 schedule                    # what is set, and when each fires next
 schedule cancel a1b2c3</code></pre>
-<p>Alarms are a file in the home (<code>state/schedule.json</code>), so they survive a reboot and Groow can read them like anything else. When one fires it arrives in the mailbox at reminder priority and is framed as <em>"[an alarm you set earlier] …"</em>: a message to the conscious thread, never code that runs by itself. A repeat reschedules itself as it fires; a one-shot is removed.</p>
+<p>Alarms are a file in the home (<code>state/schedule.json</code>), so they survive a reboot and Groow can read them like anything else. When one fires it arrives in the inbox at reminder priority and is framed as <em>"[an alarm you set earlier] …"</em>: a message to the conscious thread, never code that runs by itself. A repeat reschedules itself as it fires; a one-shot is removed.</p>
 
 <h2>Recall: every trace is readable</h2>
 <p>Every message of the main conversation is in <code>state/main/*.jsonl</code>; every thought step is an episode of kind <code>thought:&lt;id&gt;</code> in <code>state/episodes.jsonl</code> and a trace in <code>state/thoughts/</code>; every lesson is filed with its source in <code>state/lessons.jsonl</code>. Groow rereads them with <code>grep</code> in its shell. This is the diary the mind can reread; the weights are what it became.</p>

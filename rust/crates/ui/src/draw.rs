@@ -181,7 +181,6 @@ pub fn card(ui: &Ui, now: f64) -> Vec<Line<'static>> {
         ("body", g("hardware"), FG),
         ("mentor", g("mentor"), FG),
         ("turns", n("turns").to_string(), FG),
-        ("asked", format!("{} open", n("open_questions")), FG),
         ("thinking", n("thoughts").to_string(), FG),
         ("feeling", if s("tone").is_empty() { tone(ui) } else { s("tone") }, FG),
     ] {
@@ -280,12 +279,6 @@ fn status(f: &mut Frame, area: Rect, ui: &Ui) {
         ),
         Style::default().fg(DIM),
     ));
-    if let Some(rate) = ui.status.get("answer_rate").and_then(|v| v.as_f64()) {
-        spans.push(Span::styled(
-            format!("\u{b7} answered {:.0}% ", rate * 100.0),
-            Style::default().fg(DIM),
-        ));
-    }
     if !ui.connected {
         spans.push(Span::styled("\u{b7} not connected ", Style::default().fg(ROSE)));
     }
