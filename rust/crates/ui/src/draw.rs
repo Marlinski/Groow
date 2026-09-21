@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::creature;
+use crate::cards::Card;
 use crate::creature::Looks;
 use crate::state::{Bubble, Pane, Ui, Who};
 
@@ -74,7 +75,7 @@ pub fn draw(f: &mut Frame, ui: &Ui) {
 fn pane(f: &mut Frame, area: Rect, ui: &Ui) {
     match ui.pane {
         Pane::Conversation => conversation(f, area, ui, ui.bubbles.iter().collect()),
-        Pane::Tools => conversation(f, area, ui, ui.tool_lines()),
+        Pane::Journal => journal(f, area, ui),
         Pane::Admin => meta(f, area, ui),
     }
 }
@@ -168,6 +169,73 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
 /// Everything here comes out of the statistics database, which only the core can open. It is
 /// deliberately the plainest view in the window: a list of what ran and how long it took, and
 /// two lines showing where the numbers are going. A graph that flatters is worse than no graph.
+/// The journal: the list of runs on the left, what is inside the one being pointed at on the
+/// right. Everything that happened, in one place, with the filters across the top.
+///
+/// On a narrow terminal the detail gives way to the list, because a list you cannot read is
+/// worse than a detail you cannot see.
+fn journal(f: &mut Frame, area: Rect, ui: &Ui) {
+    // Wide enough for both only counts the pane, not the window: the side panel has
+    // already taken its share by the time this is drawn.
+    let wide = area.width >= 84 && ui.filter != crate::state::Filter::Commands;
+    let cols = if wide {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area)
+    } else {
+        Layout::default().direction(Direction::Horizontal).constraints([Constraint::Min(10)]).split(area)
+    };
+
+    // The filters, and which one is on, across the title.
+    let mut legend = vec![Span::styled(" runs ", Style::default().fg(DIM))];
+    for fl in crate::state::Filter::ALL {
+        let on = fl == ui.filter;
+        legend.push(Span::styled(
+            format!("alt-{} {} ", fl.key(), fl.name()),
+            if on {
+                Style::default().fg(MINT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            },
+        ));
+    }
+
+    let w = cols[0].width.saturating_sub(4) as usize;
+    let lines = crate::cards::Runs.lines(ui, w);
+    // Keep what is pointed at on screen, whether it is at the top of a long list or the end.
+    let room = cols[0].height.saturating_sub(2) as usize;
+    let from = ui.picked.saturating_sub(room.saturating_sub(3).max(1));
+    let view: Vec<Line> = lines[from.min(lines.len())..(from + room).min(lines.len())].to_vec();
+    f.render_widget(
+        Paragraph::new(view).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(EDGE))
+                .title(Line::from(legend)),
+        ),
+        cols[0],
+    );
+
+    if !wide {
+        return;
+    }
+    let w = cols[1].width.saturating_sub(4) as usize;
+    let inside = crate::cards::Inside.lines(ui, w);
+    let room = cols[1].height.saturating_sub(2) as usize;
+    let from = inside.len().saturating_sub(room.max(1)).min(ui.meta_scroll as usize);
+    let view: Vec<Line> = inside[from.min(inside.len())..(from + room).min(inside.len())].to_vec();
+    f.render_widget(
+        Paragraph::new(view).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(EDGE))
+                .title(Span::styled(" inside ", Style::default().fg(DIM))),
+        ),
+        cols[1],
+    );
+}
+
 /// The operator's view: a column of cards, scrolled from the top.
 ///
 /// It knows which cards it shows and nothing about what any of them contains. Moving one to
@@ -645,25 +713,26 @@ mod tests {
         let mut u = ui();
         let s = render(100, 30, &u);
         assert!(s.contains("F1 conversation"), "{s}");
-        assert!(s.contains("F2 commands"), "{s}");
+        assert!(s.contains("F2 journal"), "{s}");
         assert!(s.contains("F3 meta"), "{s}");
 
-        u.pane = Pane::Tools;
-        assert!(render(100, 30, &u).contains(" commands "), "the pane's own title should change");
+        u.pane = Pane::Journal;
+        assert!(render(100, 30, &u).contains("runs"), "the pane's own title should change");
     }
 
     #[test]
-    fn the_commands_pane_shows_what_was_run_and_nothing_else() {
+    fn the_commands_filter_shows_what_was_run_and_nothing_else() {
         let mut u = ui();
         u.push(Who::Human, "you", "what is in this directory?");
         u.push(Who::Tool, "", "\u{2699} shell(ls -1 | wc -l)");
         u.push(Who::System, "", "  6");
         u.push(Who::Groow, "groow", "There are six.");
 
-        u.pane = Pane::Tools;
+        u.pane = Pane::Journal;
+        u.show(crate::state::Filter::Commands);
         let s = render(100, 30, &u);
         assert!(s.contains("shell(ls -1"), "{s}");
-        assert!(!s.contains("There are six"), "what was said belongs to the other pane: {s}");
+        assert!(!s.contains("There are six"), "what was said belongs to the conversation: {s}");
     }
 
     #[test]

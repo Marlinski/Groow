@@ -108,7 +108,7 @@ pub enum Cmd {
     ThoughtAppend { id: String, msg: Box<Message>, reply: Answer<Value> },
     ThoughtEnd { id: String, final_text: String, flags: Vec<String>, reply: Answer<Value> },
     ScheduleAction { action: String, text: String, when: String, every: String, id: String, by: String, reply: Answer<Value> },
-    Recall { n: usize, before: Option<f64>, reply: Answer<Value> },
+    Recall { n: usize, before: Option<f64>, turn: Option<String>, reply: Answer<Value> },
     Interrupt { reply: Answer<Value> },
     Stats { n: usize, reply: Answer<Value> },
     ToolRan { turn: String, name: String, actor: String, ok: bool, seconds: f64 },
@@ -207,8 +207,8 @@ impl Handle {
         let (every, id, by) = (every.to_string(), id.to_string(), by.to_string());
         self.ask(|reply| Cmd::ScheduleAction { action, text, when, every, id, by, reply }).await
     }
-    pub async fn recall(&self, n: usize, before: Option<f64>) -> Result<Value, WireError> {
-        self.ask(|reply| Cmd::Recall { n, before, reply }).await
+    pub async fn recall(&self, n: usize, before: Option<f64>, turn: Option<String>) -> Result<Value, WireError> {
+        self.ask(|reply| Cmd::Recall { n, before, turn, reply }).await
     }
     pub async fn interrupt(&self) -> Result<Value, WireError> {
         self.ask(|reply| Cmd::Interrupt { reply }).await
@@ -422,8 +422,8 @@ impl Hub {
                 let r = self.schedule_action(&action, &text, &when, &every, &id, &by);
                 send(reply, r);
             }
-            Cmd::Recall { n, before, reply } => {
-                let r = self.recall(n, before);
+            Cmd::Recall { n, before, turn, reply } => {
+                let r = self.recall(n, before, turn);
                 send(reply, r);
             }
             Cmd::Interrupt { reply } => {
@@ -527,8 +527,14 @@ impl Hub {
     ///
     /// Paging backwards is what lets a window show a day rather than a screenful. `more` is
     /// false when nothing older came back, which is how the window knows to stop asking.
-    fn recall(&self, n: usize, before: Option<f64>) -> Result<Value, WireError> {
+    fn recall(&self, n: usize, before: Option<f64>, turn: Option<String>) -> Result<Value, WireError> {
         let n = n.clamp(1, 500);
+        // One turn, whole: every line of it, however far back it is. This is what looking into
+        // a single run means, and it is a different question from reading the conversation.
+        if let Some(id) = turn {
+            let of_it = self.journal.of_turn(&id, 400).map_err(io)?;
+            return Ok(json!({"messages": of_it, "more": false, "turn": id}));
+        }
         let recs = match before {
             Some(ts) => self.journal.before(ts, n).map_err(io)?,
             None => self.journal.tail(n).map_err(io)?,
@@ -924,6 +930,7 @@ impl Hub {
                 "thoughts": all.iter().map(|t| json!({
                     "id": t.id, "goal": t.goal, "status": t.status.as_str(),
                     "steps": t.steps, "max_steps": t.max_steps, "summary": t.summary,
+                    "created": t.created, "updated": t.updated,
                 })).collect::<Vec<_>>(),
                 "running": all.iter().filter(|t| t.status.as_str() == "running").count(),
                 "max": self.cfg.max_thoughts,
@@ -932,9 +939,13 @@ impl Hub {
         let t = self.thoughts.get(id).map_err(io)?
             .ok_or_else(|| WireError::NotFound("thought", id.to_string()))?;
         let out = match action {
+            // Everything it did, not only where it got to. A thought is a run like a turn is,
+            // and looking into one means reading what it actually said and ran.
             "read" => json!({
                 "id": t.id, "goal": t.goal, "status": t.status.as_str(),
                 "steps": t.steps, "max_steps": t.max_steps, "summary": t.summary,
+                "created": t.created, "updated": t.updated,
+                "history": t.history,
             }),
             "pause" | "resume" | "kill" | "finish" => {
                 if t.status.is_final() && (action == "pause" || action == "resume") {
@@ -1628,18 +1639,18 @@ mod tests {
             h.journal.append_message(&m).unwrap();
         }
 
-        let first = take(|reply| Cmd::Recall { n: 10, before: None, reply }, &mut h).unwrap();
+        let first = take(|reply| Cmd::Recall { n: 10, before: None, turn: None, reply }, &mut h).unwrap();
         let newest = first["messages"].as_array().unwrap();
         assert_eq!(newest.len(), 10);
         assert_eq!(newest[9]["content"], "line 24", "the newest page ends at the newest line");
         assert_eq!(first["more"], true);
 
         let oldest_held = newest[0]["ts"].as_f64().unwrap();
-        let next = take(|reply| Cmd::Recall { n: 10, before: Some(oldest_held), reply }, &mut h).unwrap();
+        let next = take(|reply| Cmd::Recall { n: 10, before: Some(oldest_held), turn: None, reply }, &mut h).unwrap();
         let page = next["messages"].as_array().unwrap();
         assert_eq!(page[9]["content"], "line 14", "the page before it ends where the first began");
 
-        let rest = take(|reply| Cmd::Recall { n: 10, before: Some(1000.0), reply }, &mut h).unwrap();
+        let rest = take(|reply| Cmd::Recall { n: 10, before: Some(1000.0), turn: None, reply }, &mut h).unwrap();
         assert!(rest["messages"].as_array().unwrap().is_empty());
         assert_eq!(rest["more"], false, "and then it stops asking");
     }
@@ -1904,6 +1915,29 @@ mod tests {
             Duty::Thought(got) => assert_eq!(got, id),
             other => panic!("a thought nobody picked up was left there: {other:?}"),
         }
+    }
+
+    #[test]
+    fn one_run_can_be_read_back_whole() {
+        // Looking into a single run is not the same question as reading the conversation. It
+        // wants every line of that turn and nothing else, however far back it is.
+        let (mut h, _d) = hub();
+        for (turn, text) in [("t1", "first"), ("t1", "second"), ("t2", "another turn"), ("t1", "third")] {
+            let mut m = Message::assistant(text);
+            m.ts = Some(1000.0);
+            h.journal.append(&json!({
+                "role": m.role, "content": m.content, "ts": m.ts, "turn": turn,
+            })).unwrap();
+        }
+
+        let v = take(|reply| Cmd::Recall { n: 40, before: None, turn: Some("t2".into()), reply }, &mut h).unwrap();
+        let of_it = v["messages"].as_array().unwrap();
+        assert_eq!(of_it.len(), 1);
+        assert_eq!(of_it[0]["content"], "another turn");
+
+        // And nothing at all for a run that never happened, rather than the whole journal.
+        let none = take(|reply| Cmd::Recall { n: 40, before: None, turn: Some("nope".into()), reply }, &mut h).unwrap();
+        assert!(none["messages"].as_array().unwrap().is_empty());
     }
 
     #[test]

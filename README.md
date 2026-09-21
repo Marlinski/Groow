@@ -15,10 +15,12 @@ mentor when it is stuck. It has a birth certificate it cannot edit and an age th
 make start               wake it in the container it ships with. The first time this
                          builds its body and fetches its base model, which takes a
                          while and happens once.
-./groow ui               open the window onto it. F1 what was said, F2 every
-                         command it ran, F3 the operator's view: what is ticking
-                         now, every alarm, what the learning has been doing and
-                         what it cost. Esc stops whatever it is doing; the line
+./groow ui               open the window onto it. F1 the conversation, F2 the
+                         journal — every run it has ever done, main thread and
+                         inner thought alike, with what is inside one (alt-a/m/
+                         i/f/c narrows it) — F3 the operator's view: what is
+                         ticking now, every alarm, and what the learning has
+                         been doing. Esc stops whatever it is doing; the line
                          you type in edits like any other (arrows, alt-arrows,
                          ctrl-a/e/u/w, up and down for what you said before)
 ./groow say "hello"      say something

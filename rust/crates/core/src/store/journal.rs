@@ -174,6 +174,37 @@ impl Journal {
         Ok(out)
     }
 
+    /// Every line of one turn, oldest first.
+    ///
+    /// Read backwards from the newest file and stopped as soon as an older turn appears, so
+    /// looking into a recent run does not read a month of conversation to find it.
+    pub fn of_turn(&self, turn: &str, limit: usize) -> std::io::Result<Vec<Value>> {
+        let mut out: Vec<Value> = Vec::new();
+        for f in self.files()?.into_iter().rev() {
+            let text = fs::read_to_string(&f)?;
+            for line in text.lines().rev() {
+                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                match v.get("turn").and_then(|t| t.as_str()) {
+                    Some(t) if t == turn => {
+                        out.push(v);
+                        if out.len() >= limit {
+                            out.reverse();
+                            return Ok(out);
+                        }
+                    }
+                    // Past the beginning of it: a turn's lines are written together.
+                    _ if !out.is_empty() => {
+                        out.reverse();
+                        return Ok(out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.reverse();
+        Ok(out)
+    }
+
     pub fn count(&self) -> std::io::Result<usize> {
         let mut total = 0;
         for f in self.files()? {

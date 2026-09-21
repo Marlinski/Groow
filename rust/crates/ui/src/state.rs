@@ -32,33 +32,89 @@ impl Bubble {
     }
 }
 
-/// Which view is on screen. The conversation is the creature; the other two are about it.
+/// Which view is on screen. The conversation is the creature; the others are about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
-    /// What was said.
+    /// What was said: the creature, as you talk to it.
     Conversation,
-    /// Every command it has run, and what came back.
-    Tools,
+    /// Every run it has done, main thread and inner thought alike, what is inside one, and
+    /// every command it has run. One place to look into anything that happened.
+    Journal,
     /// The meta-processes: what learning ran, how long it took, where the feeling is going.
     Admin,
+}
+
+/// What the journal is showing. One pane, a few questions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filter {
+    /// Every run, whatever it was.
+    All,
+    /// Only the conversation's own turns.
+    Main,
+    /// Only what it thought about on its own.
+    Inner,
+    /// Only the runs that went wrong, which is the list anyone actually goes looking for.
+    Failed,
+    /// Not runs at all: every command it has run, with what came back.
+    Commands,
+}
+
+impl Filter {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Filter::All => "all",
+            Filter::Main => "main",
+            Filter::Inner => "inner",
+            Filter::Failed => "failed",
+            Filter::Commands => "commands",
+        }
+    }
+
+    /// The key that reaches it, held with alt so that ordinary letters stay yours to type.
+    pub fn key(&self) -> char {
+        match self {
+            Filter::All => 'a',
+            Filter::Main => 'm',
+            Filter::Inner => 'i',
+            Filter::Failed => 'f',
+            Filter::Commands => 'c',
+        }
+    }
+
+    pub const ALL: [Filter; 5] =
+        [Filter::All, Filter::Main, Filter::Inner, Filter::Failed, Filter::Commands];
+
+    pub fn of(key: char) -> Option<Filter> {
+        Filter::ALL.into_iter().find(|f| f.key() == key)
+    }
+
+    /// Whether this run belongs in the list.
+    pub fn keeps(&self, r: &Run) -> bool {
+        match self {
+            Filter::All | Filter::Commands => true,
+            Filter::Main => !r.inner,
+            Filter::Inner => r.inner,
+            Filter::Failed => !matches!(r.outcome.as_str(), "ok" | "done" | "running"),
+        }
+    }
 }
 
 impl Pane {
     pub fn title(&self) -> &'static str {
         match self {
             Pane::Conversation => "conversation",
-            Pane::Tools => "commands",
+            Pane::Journal => "journal",
             Pane::Admin => "meta",
         }
     }
 
     /// Left to right, which is also the order the function keys are in.
-    pub const ALL: [Pane; 3] = [Pane::Conversation, Pane::Tools, Pane::Admin];
+    pub const ALL: [Pane; 3] = [Pane::Conversation, Pane::Journal, Pane::Admin];
 
     pub fn next(&self) -> Pane {
         match self {
-            Pane::Conversation => Pane::Tools,
-            Pane::Tools => Pane::Admin,
+            Pane::Conversation => Pane::Journal,
+            Pane::Journal => Pane::Admin,
             Pane::Admin => Pane::Conversation,
         }
     }
@@ -85,6 +141,27 @@ pub struct ThoughtRow {
     pub goal: String,
     pub steps: u32,
     pub note: String,
+    /// When it was started, and when it last did anything.
+    pub at: f64,
+    pub ended: f64,
+}
+
+/// One run: a turn of the conversation, or an inner thought. The journal lists these.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Run {
+    pub id: String,
+    /// Whether it ran beside the conversation rather than as it.
+    pub inner: bool,
+    /// What set it off: a person, an alarm, curiosity, or that it is a thought.
+    pub tag: String,
+    pub at: f64,
+    pub seconds: Option<f64>,
+    /// For a thought, its goal. A turn's own words are inside it, not on the line.
+    pub what: String,
+    pub outcome: String,
+    pub flags: String,
+    pub tokens: Option<u64>,
+    pub tools: u64,
 }
 
 /// Everything on screen.
@@ -107,6 +184,16 @@ pub struct Ui {
     echoed: Option<String>,
     /// How far back the conversation is scrolled; zero is the newest.
     pub scroll_back: u16,
+    /// What the journal is showing.
+    pub filter: Filter,
+    /// Which run the journal is pointing at, counting from the newest.
+    pub picked: usize,
+    /// The run the journal has fetched the inside of, and what came back.
+    pub opened: Option<String>,
+    pub inside: Value,
+    /// Set when the journal wants the inside of the run it is pointing at. The run loop clears
+    /// it by asking, which keeps the sockets out of this file.
+    pub want_inside: bool,
     /// How far down the meta pane is scrolled; zero is the top. A conversation is read from
     /// the bottom because the newest matters most, and a table from the top because the
     /// heading does, so the two do not share a number.
@@ -204,6 +291,11 @@ impl Default for Ui {
             said: None,
             echoed: None,
             scroll_back: 0,
+            filter: Filter::All,
+            picked: 0,
+            opened: None,
+            inside: Value::Null,
+            want_inside: false,
             meta_scroll: 0,
             done: false,
             trouble: None,
@@ -499,6 +591,72 @@ impl Ui {
         }
     }
 
+    /// Every run it has done, newest first: the turns of the conversation and the inner
+    /// thoughts alike, because they are the same kind of thing — a process, given a reason to
+    /// run, that did some work and ended somehow.
+    pub fn runs(&self) -> Vec<Run> {
+        let mut out: Vec<Run> = Vec::new();
+        for t in self.stats.get("turns").and_then(|v| v.as_array()).into_iter().flatten() {
+            let g = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            out.push(Run {
+                id: g("id"),
+                inner: false,
+                tag: g("kind"),
+                at: t.get("started").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                seconds: t.get("seconds").and_then(|v| v.as_f64()),
+                what: String::new(),
+                outcome: g("outcome"),
+                flags: g("flags"),
+                tokens: t.get("tokens").and_then(|v| v.as_u64()),
+                tools: t.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+            });
+        }
+        for t in self.thoughts.values() {
+            out.push(Run {
+                id: t.id.clone(),
+                inner: true,
+                tag: "thought".into(),
+                at: t.at,
+                seconds: (t.ended > t.at).then_some(t.ended - t.at),
+                what: t.goal.clone(),
+                outcome: t.status.clone(),
+                flags: String::new(),
+                tokens: None,
+                tools: t.steps as u64,
+            });
+        }
+        out.sort_by(|a, b| b.at.partial_cmp(&a.at).unwrap_or(std::cmp::Ordering::Equal));
+        out
+    }
+
+    /// The runs the journal is showing, after its filter.
+    pub fn listed(&self) -> Vec<Run> {
+        self.runs().into_iter().filter(|r| self.filter.keeps(r)).collect()
+    }
+
+    /// Show something else. The pointer goes back to the newest, because it pointed at a place
+    /// in a list that no longer exists.
+    pub fn show(&mut self, f: Filter) {
+        self.filter = f;
+        self.picked = 0;
+        self.want_inside = true;
+    }
+
+    /// Move the journal's pointer, and say that what it points at should be fetched.
+    pub fn pick(&mut self, by: i32) {
+        let n = self.listed().len();
+        if n == 0 {
+            return;
+        }
+        self.picked = (self.picked as i32 + by).clamp(0, n as i32 - 1) as usize;
+        self.want_inside = true;
+    }
+
+    /// The run the journal is pointing at.
+    pub fn pointing_at(&self) -> Option<Run> {
+        self.listed().into_iter().nth(self.picked)
+    }
+
     /// The inner thoughts as the core last listed them.
     ///
     /// They used to arrive only as events, so a window opened while one was running showed
@@ -520,6 +678,12 @@ impl Ui {
             }
             if let Some(s) = t.get("summary").and_then(|s| s.as_str()) {
                 row.note = s.to_string();
+            }
+            if let Some(v) = t.get("created").and_then(|v| v.as_f64()) {
+                row.at = v;
+            }
+            if let Some(v) = t.get("updated").and_then(|v| v.as_f64()) {
+                row.ended = v;
             }
         }
     }
@@ -571,7 +735,7 @@ pub enum Sent {
     Command(String),
 }
 
-fn compact(v: &Value) -> String {
+pub fn compact(v: &Value) -> String {
     match v {
         Value::Object(m) => m
             .iter()

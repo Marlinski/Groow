@@ -234,7 +234,9 @@ impl Conn {
                 let n = arg.get("n").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
                 // A window paging backwards says what it already holds; without it, the end.
                 let before = arg.get("before").and_then(|b| b.as_f64()).filter(|b| *b > 0.0);
-                self.hub.recall(n, before).await
+                // One run, whole, when it is asked for by name.
+                let turn = arg.get("turn").and_then(|t| t.as_str()).filter(|t| !t.is_empty());
+                self.hub.recall(n, before, turn.map(|t| t.to_string())).await
             }
             Op::Interrupt => {
                 let r = self.hub.interrupt().await;

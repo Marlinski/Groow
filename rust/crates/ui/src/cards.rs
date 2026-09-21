@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::draw::{ago, clip, head, quiet, spark, summarise, took, AMBER, DIM, FG, MINT, MOSS, ROSE, SKY, VIOLET};
-use crate::state::Ui;
+use crate::state::{compact, Filter, Ui, Who};
 
 /// Something worth looking at, drawn wherever it is put.
 pub trait Card {
@@ -34,6 +34,183 @@ pub fn operator() -> Vec<Box<dyn Card>> {
         Box::new(Turns),
         Box::new(Commands),
     ]
+}
+
+/// The journal: every run it has done, and what is inside the one being pointed at.
+pub fn journal() -> Vec<Box<dyn Card>> {
+    vec![Box::new(Runs)]
+}
+
+/// Every run, newest first, with what set it off and what it cost.
+///
+/// A turn of the conversation and an inner thought are the same kind of thing — a process,
+/// given a reason to run, that did some work and ended somehow — so they are one list, tagged,
+/// rather than two places to look.
+pub struct Runs;
+
+impl Card for Runs {
+    fn title(&self) -> &'static str {
+        "runs"
+    }
+
+    fn lines(&self, ui: &Ui, w: usize) -> Vec<Line<'static>> {
+        // One filter is not a list of runs at all: it is every command it has run, which is
+        // the other thing anyone opens this pane to look at.
+        if ui.filter == Filter::Commands {
+            let ran = ui.tool_lines();
+            if ran.is_empty() {
+                return vec![quiet("nothing has been run yet")];
+            }
+            return ran
+                .iter()
+                .map(|b| {
+                    let colour = if b.who == Who::Tool { SKY } else { DIM };
+                    Line::from(vec![
+                        Span::styled(format!("  {:>8} ", b.at.map(clock).unwrap_or_default()), Style::default().fg(DIM)),
+                        Span::styled(clip(b.text.trim_end(), w.saturating_sub(12).max(10)), Style::default().fg(colour)),
+                    ])
+                })
+                .collect();
+        }
+        let runs = ui.listed();
+        if runs.is_empty() {
+            return vec![quiet("nothing has run yet")];
+        }
+        let mut out = Vec::new();
+        for (i, r) in runs.iter().enumerate().take(200) {
+            let here = i == ui.picked;
+            let mark = if here { "\u{25b8} " } else { "  " };
+            let tag = if r.inner { "inner" } else { "main" };
+            let colour = if r.inner { VIOLET } else { SKY };
+            let cost = match (r.seconds, r.tokens) {
+                (Some(s), Some(t)) if t > 0 => format!("{} \u{b7} {t} tok", took(s).trim()),
+                (Some(s), _) => took(s).trim().to_string(),
+                _ => "running".to_string(),
+            };
+            let end = if r.outcome == "ok" || r.outcome == "done" {
+                Style::default().fg(DIM)
+            } else {
+                Style::default().fg(ROSE)
+            };
+            out.push(Line::from(vec![
+                Span::styled(
+                    mark.to_string(),
+                    if here { Style::default().fg(MINT).add_modifier(Modifier::BOLD) } else { Style::default() },
+                ),
+                Span::styled(format!("{:>8} ", clock(r.at)), Style::default().fg(DIM)),
+                Span::styled(format!("{tag:<6}"), Style::default().fg(colour)),
+                Span::styled(format!("{:<9} ", clip(&r.tag, 9)), Style::default().fg(DIM)),
+                Span::styled(format!("{:<18}", clip(&cost, 18)), Style::default().fg(FG)),
+                Span::styled(
+                    clip(&if r.what.is_empty() { format!("{} {}", r.outcome, r.flags) } else { r.what.clone() },
+                         w.saturating_sub(46).max(10)),
+                    end,
+                ),
+            ]));
+        }
+        out
+    }
+}
+
+/// What is inside the run the journal is pointing at: every line of it, in order.
+pub struct Inside;
+
+impl Card for Inside {
+    fn title(&self) -> &'static str {
+        "inside"
+    }
+
+    fn lines(&self, ui: &Ui, w: usize) -> Vec<Line<'static>> {
+        let Some(r) = ui.pointing_at() else {
+            return vec![quiet("nothing to look into")];
+        };
+        let mut out = vec![Line::from(vec![
+            Span::styled(format!("  {} ", r.id), Style::default().fg(MINT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{} \u{b7} {}", if r.inner { "inner" } else { "main" }, stamp(r.at)),
+                Style::default().fg(DIM),
+            ),
+        ])];
+        if !r.what.is_empty() {
+            out.push(Line::from(Span::styled(format!("  {}", r.what), Style::default().fg(FG))));
+        }
+        if !r.flags.is_empty() {
+            out.push(Line::from(Span::styled(format!("  {}", r.flags), Style::default().fg(ROSE))));
+        }
+        out.push(Line::from(""));
+
+        if ui.opened.as_deref() != Some(r.id.as_str()) {
+            out.push(quiet("reading it\u{2026}"));
+            return out;
+        }
+        // A turn answers with the lines of the conversation; a thought with its own trace. The
+        // shape is the same either way, which is the point of them being one list.
+        let lines = ui
+            .inside
+            .get("messages")
+            .or_else(|| ui.inside.get("history"))
+            .and_then(|m| m.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if lines.is_empty() {
+            out.push(quiet("nothing was written down for this one"));
+        }
+        for m in lines {
+            let g = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let who = match (g("role").as_str(), g("kind")) {
+                ("user", k) if !k.is_empty() && k != "user" => k,
+                (role, _) => role.to_string(),
+            };
+            let colour = match who.as_str() {
+                "user" => AMBER,
+                "assistant" => MINT,
+                "tool" => SKY,
+                "system" => MOSS,
+                _ => VIOLET,
+            };
+            let at = m.get("ts").and_then(|t| t.as_f64()).map(clock).unwrap_or_default();
+            let body = groow_harness::parse::visible(&g("content"));
+            for (n, line) in body.lines().enumerate() {
+                out.push(Line::from(vec![
+                    Span::styled(
+                        if n == 0 { format!("  {at:>8} {who:<10}") } else { " ".repeat(20) },
+                        Style::default().fg(if n == 0 { colour } else { DIM }),
+                    ),
+                    Span::styled(clip(line, w.saturating_sub(20).max(10)), Style::default().fg(FG)),
+                ]));
+            }
+            for c in m.get("tool_calls").and_then(|c| c.as_array()).into_iter().flatten() {
+                let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let args = c.get("arguments").map(compact).unwrap_or_default();
+                out.push(Line::from(vec![
+                    Span::styled(" ".repeat(20), Style::default()),
+                    Span::styled(
+                        format!("\u{2699} {name}({})", clip(&args, w.saturating_sub(24).max(10))),
+                        Style::default().fg(SKY),
+                    ),
+                ]));
+            }
+        }
+        out
+    }
+}
+
+/// The time of day, which is what you look for in a log.
+fn clock(ts: f64) -> String {
+    if ts <= 0.0 {
+        return String::new();
+    }
+    let s = ts as u64 % 86400;
+    format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+}
+
+/// The whole moment, for the heading of one run: the time of day and how long ago that was,
+/// because both are things you want and neither answers for the other.
+fn stamp(ts: f64) -> String {
+    if ts <= 0.0 {
+        return "at some point".into();
+    }
+    format!("{} \u{b7} {} ago", clock(ts), ago(ts))
 }
 
 /// The cards beside the conversation, under the creature and its certificate.
@@ -495,6 +672,77 @@ mod tests {
         let s = text(&stacked(&u, &beside(), 34));
         assert!(s.contains("inner thoughts"), "{s}");
         assert!(s.contains("alarms"), "{s}");
+    }
+
+    #[test]
+    fn the_journal_lists_every_run_newest_first_whatever_kind_it_was() {
+        // A turn and an inner thought are the same kind of thing: a process, given a reason to
+        // run, that did some work and ended somehow. One list, tagged, not two places to look.
+        let mut u = ui();
+        u.stats = json!({"turns": [
+            {"id": "t2", "kind": "user", "started": 200.0, "seconds": 3.0, "tools": 1,
+             "outcome": "ok", "flags": "", "tokens": 120},
+            {"id": "t1", "kind": "alarm", "started": 100.0, "seconds": 9.0, "tools": 6,
+             "outcome": "ok", "flags": "tool_error,exhausted", "tokens": 900},
+        ]});
+        u.thoughts(&json!({"thoughts": [
+            {"id": "a97d91", "goal": "count the files", "status": "done", "steps": 3,
+             "created": 150.0, "updated": 170.0},
+        ]}));
+
+        let runs = u.runs();
+        assert_eq!(runs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["t2", "a97d91", "t1"]);
+        assert!(runs[1].inner, "a thought is an inner run");
+        assert_eq!(runs[1].seconds, Some(20.0), "from when it started to its last step");
+
+        let s = text(&Runs.lines(&u, 100));
+        assert!(s.contains("main"), "{s}");
+        assert!(s.contains("inner"), "{s}");
+        assert!(s.contains("count the files"), "a thought shows its goal: {s}");
+        assert!(s.contains("tool_error"), "a turn shows how it ended: {s}");
+    }
+
+    #[test]
+    fn the_journal_can_be_narrowed_to_one_question_at_a_time() {
+        let mut u = ui();
+        u.stats = json!({"turns": [
+            {"id": "t1", "kind": "user", "started": 100.0, "seconds": 1.0, "outcome": "ok", "flags": ""},
+            {"id": "t2", "kind": "idle", "started": 90.0, "seconds": 1.0, "outcome": "abandoned", "flags": ""},
+        ]});
+        u.thoughts(&json!({"thoughts": [{"id": "a9", "goal": "g", "status": "done", "created": 95.0}]}));
+
+        u.show(Filter::Main);
+        assert_eq!(u.listed().iter().map(|r| r.id.clone()).collect::<Vec<_>>(), ["t1", "t2"]);
+        u.show(Filter::Inner);
+        assert_eq!(u.listed().iter().map(|r| r.id.clone()).collect::<Vec<_>>(), ["a9"]);
+        u.show(Filter::Failed);
+        assert_eq!(u.listed().iter().map(|r| r.id.clone()).collect::<Vec<_>>(), ["t2"],
+                   "the list anyone actually goes looking for");
+        u.show(Filter::All);
+        assert_eq!(u.listed().len(), 3);
+    }
+
+    #[test]
+    fn pointing_at_a_run_asks_for_what_is_inside_it() {
+        let mut u = ui();
+        u.stats = json!({"turns": [
+            {"id": "t1", "kind": "user", "started": 100.0, "seconds": 1.0, "outcome": "ok", "flags": ""},
+            {"id": "t2", "kind": "user", "started": 90.0, "seconds": 1.0, "outcome": "ok", "flags": ""},
+        ]});
+        assert_eq!(u.pointing_at().unwrap().id, "t1", "the newest, until told otherwise");
+        u.pick(1);
+        assert_eq!(u.pointing_at().unwrap().id, "t2");
+        assert!(u.want_inside, "and what it points at has to be fetched");
+        u.pick(5);
+        assert_eq!(u.pointing_at().unwrap().id, "t2", "never past the end");
+
+        // Until it arrives, the detail says so rather than showing the run before it.
+        assert!(text(&Inside.lines(&u, 60)).contains("reading it"));
+        u.opened = Some("t2".into());
+        u.inside = json!({"messages": [{"role": "user", "content": "hello", "ts": 90.0}]});
+        let s = text(&Inside.lines(&u, 60));
+        assert!(s.contains("hello"), "{s}");
+        assert!(s.contains("t2"), "{s}");
     }
 
     #[test]

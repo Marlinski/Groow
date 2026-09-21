@@ -52,6 +52,9 @@ pub struct Pending {
     pub stats: Option<u32>,
     pub alarms: Option<u32>,
     pub thoughts: Option<u32>,
+    /// The inside of one run, and which run it was asked about.
+    pub inside: Option<u32>,
+    pub inside_of: Option<String>,
 }
 
 impl Pending {
@@ -73,6 +76,10 @@ impl Pending {
         } else if self.thoughts == Some(id) {
             self.thoughts = None;
             ui.thoughts(v);
+        } else if self.inside == Some(id) {
+            self.inside = None;
+            ui.opened = self.inside_of.take();
+            ui.inside = v.clone();
         } else {
             return false;
         }
@@ -98,6 +105,10 @@ pub enum Action {
     Show(Pane),
     /// Stop whatever the creature is doing now.
     Interrupt,
+    /// Point the journal somewhere else.
+    Pick(i32),
+    /// Show the journal a different way.
+    Filter(crate::state::Filter),
 }
 
 /// Interpret one key. Kept separate from the terminal so it can be tested.
@@ -109,7 +120,7 @@ pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
         // The panes. Function keys and Tab, because every ordinary character belongs to what
         // is being typed: a window you talk to cannot spend its letters on shortcuts.
         KeyCode::F(1) => Action::Show(Pane::Conversation),
-        KeyCode::F(2) => Action::Show(Pane::Tools),
+        KeyCode::F(2) => Action::Show(Pane::Journal),
         KeyCode::F(3) => Action::Show(Pane::Admin),
         KeyCode::Tab => Action::Show(ui.pane.next()),
         KeyCode::Char('l') if ctrl => {
@@ -124,6 +135,11 @@ pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
         KeyCode::Char('u') if ctrl => edit(ui, Editor::kill_to_start),
         KeyCode::Char('k') if ctrl => edit(ui, Editor::kill_to_end),
         KeyCode::Char('w') if ctrl => edit(ui, Editor::kill_word_left),
+        // The journal's filters. Held with alt, because every ordinary letter belongs to what
+        // is being typed: a window you talk to cannot spend its letters on shortcuts.
+        KeyCode::Char(c) if alt && ui.pane == Pane::Journal && crate::state::Filter::of(c).is_some() => {
+            Action::Filter(crate::state::Filter::of(c).expect("just checked"))
+        }
         KeyCode::Char('b') if alt => edit(ui, Editor::word_left),
         KeyCode::Char('f') if alt => edit(ui, Editor::word_right),
         KeyCode::Char('d') if alt => edit(ui, Editor::kill_word_right),
@@ -141,8 +157,10 @@ pub fn on_key(ui: &mut Ui, key: KeyEvent) -> Action {
         KeyCode::Home => edit(ui, Editor::home),
         KeyCode::End => edit(ui, Editor::end),
 
-        // Back through what was said before, and forward again to the line being written.
-        // Reading the conversation is the wheel and the page keys; this is the line.
+        // In the journal, up and down walk the runs: it is a list, and that is what a list is
+        // read with. Everywhere else they are the line's own history.
+        KeyCode::Up if ui.pane == Pane::Journal => Action::Pick(-1),
+        KeyCode::Down if ui.pane == Pane::Journal => Action::Pick(1),
         KeyCode::Up => edit(ui, Editor::earlier),
         KeyCode::Down => edit(ui, Editor::later),
 
@@ -253,6 +271,23 @@ async fn main_loop<B: ratatui::backend::Backend>(
             }
         }
 
+        // The journal is pointing at a run nobody has read yet.
+        if ui.want_inside {
+            ui.want_inside = false;
+            if let (Some(l), Some(r)) = (link.as_mut(), ui.pointing_at()) {
+                if ui.opened.as_deref() != Some(r.id.as_str()) {
+                    ui.inside = serde_json::Value::Null;
+                    ui.opened = None;
+                    pending.inside = if r.inner {
+                        l.send("thought", json!({"action": "read", "id": r.id})).await.ok()
+                    } else {
+                        l.send("recall", json!({"turn": r.id})).await.ok()
+                    };
+                    pending.inside_of = Some(r.id);
+                }
+            }
+        }
+
         // Reading back past the top: ask for the page before the oldest thing held.
         if ui.want_more {
             ui.want_more = false;
@@ -293,6 +328,8 @@ async fn main_loop<B: ratatui::backend::Backend>(
                         match on_key(&mut ui, k) {
                             Action::Leave => return Ok(()),
                             Action::Scroll(by) => ui.scroll(by),
+                            Action::Pick(by) => ui.pick(by),
+                            Action::Filter(f) => ui.show(f),
                             Action::Interrupt => match link.as_mut() {
                                 Some(l) => {
                                     if l.send("interrupt", json!({})).await.is_err() {
@@ -304,6 +341,9 @@ async fn main_loop<B: ratatui::backend::Backend>(
                             Action::Show(p) => {
                                 ui.pane = p;
                                 ui.scroll_back = 0;
+                                // Arriving at the journal, it is already pointing at something
+                                // and nobody has read the inside of it yet.
+                                ui.want_inside = p == Pane::Journal;
                                 if p == Pane::Admin {
                                     if let Some(l) = link.as_mut() {
                                         pending.stats = l.send("stats", json!({"n": STATS})).await.ok();
@@ -419,11 +459,11 @@ mod tests {
     #[test]
     fn the_panes_are_reachable_by_function_key_and_by_tab() {
         let mut ui = Ui::default();
-        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)), Action::Show(Pane::Tools));
+        assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)), Action::Show(Pane::Journal));
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)), Action::Show(Pane::Admin));
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)), Action::Show(Pane::Conversation));
         // Tab cycles from wherever it is, so one key reaches all three.
-        ui.pane = Pane::Tools;
+        ui.pane = Pane::Journal;
         assert_eq!(on_key(&mut ui, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)), Action::Show(Pane::Admin));
     }
 
