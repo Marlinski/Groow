@@ -28,6 +28,7 @@ use crate::paths::Paths;
 use crate::store::birth::Birth;
 use crate::store::identity::Identity;
 use crate::store::journal::{restore_window_without, Journal};
+use crate::life::Life;
 use crate::store::inbox::{Inbox, Signal};
 use crate::store::schedule::Schedule;
 use crate::store::thoughts::{ThoughtStatus, Thoughts};
@@ -243,9 +244,10 @@ pub struct Hub {
     /// What kind of learning pass is running, if any. While one is, the mind is asleep: no
     /// turn is started, because the brain it would need is busy changing itself.
     napping: Option<String>,
+    /// What it is doing, in one place, derived from the facts rather than kept beside them.
+    life: Life,
     /// Whether the brain is answering. It takes a while to load the weights, and a turn that
     /// starts before then fails for a reason that has nothing to do with the turn.
-    brain_up: bool,
     /// Consecutive turns that ended badly, and when the last one did. A brain that is down
     /// must not turn into a spawn loop.
     fail_streak: u32,
@@ -314,7 +316,7 @@ impl Hub {
             epoch: Epoch(0),
             idle_streak: 0,
             napping: None,
-            brain_up: false,
+            life: Life::default(),
             fail_streak: 0,
             last_failure: 0.0,
             since_learned,
@@ -354,7 +356,11 @@ impl Hub {
                 self.subscribers.push(tx);
                 send(reply, Ok(rx));
             }
-            Cmd::Emit { event } => self.fanout(event),
+            // A turn says what it is doing as it goes, and the state follows.
+            Cmd::Emit { event } => {
+                self.life.saw(&event.name);
+                self.fanout(event);
+            }
             Cmd::NextDuty { reply } => {
                 let d = self.next_duty();
                 send(reply, d);
@@ -374,13 +380,14 @@ impl Hub {
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
             Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
             Cmd::BrainState { up } => {
-                if self.brain_up != up {
-                    self.brain_up = up;
+                if self.life.awake() != up {
+                    self.life.brain(up);
                     self.fanout(Event::new(EventName::Status, self.status()));
                 }
             }
             Cmd::Napping { what } => {
                 self.napping = what.clone();
+                self.life.asleep(what.clone());
                 self.fanout(Event::new(EventName::Status, self.status()));
             }
             Cmd::Say { text, kind, meta, reply } => {
@@ -474,8 +481,9 @@ impl Hub {
         let (pain, pleasure) = self.db.mood(now, self.cfg.mood_halflife_s).unwrap_or((0.0, 0.0));
         let tone = if pleasure - pain > 0.8 { "content" } else if pain - pleasure > 0.8 { "sore" } else { "even" };
         json!({
+            "state": self.life.state().as_str(),
             "napping": self.napping,
-            "brain": self.brain_up,
+            "brain": self.life.awake(),
             "mood": self.mood(),
             "age": self.birth.age_text(now),
             "born": self.birth.born,
@@ -496,18 +504,9 @@ impl Hub {
     }
 
     /// What it looks like it is doing, for the creature and the status line.
+    /// What it is doing, asked of the one thing that knows.
     fn mood(&self) -> &'static str {
-        if self.napping.is_some() {
-            return "napping";
-        }
-        if !self.brain_up {
-            return "waking";
-        }
-        match &self.active {
-            Some(_) => "thinking",
-            None if self.idle_streak > 0 => "idle",
-            None => "listening",
-        }
+        self.life.state().as_str()
     }
 
     /// Read the conversation back: the last `n`, or the `n` before a time already held.
@@ -560,7 +559,7 @@ impl Hub {
     /// For tests and for a dry run: say whether the brain is answering.
     #[doc(hidden)]
     pub fn set_brain_up(&mut self, up: bool) {
-        self.brain_up = up;
+        self.life.brain(up);
     }
 
     /// Replace the clock. For tests, so time can be moved deliberately.
@@ -592,7 +591,7 @@ impl Hub {
         // Not there yet. Loading the weights takes the best part of a minute, and a turn
         // started in that window fails for a reason that has nothing to do with the turn: it
         // would be counted against the message and the message eventually set down.
-        if !self.brain_up {
+        if !self.life.awake() {
             return Ok(Duty::Idle(2.0));
         }
         // After a failure, wait before trying again, longer each time. Without this, a brain
@@ -618,6 +617,7 @@ impl Hub {
             if sig.kind.is_human() {
                 self.last_human = now;
                 self.idle_streak = 0;
+                self.life.quiet_for(0);
             }
             let id = self.begin(sig.clone(), now);
             return Ok(Duty::Turn(Box::new(sig), id));
@@ -644,6 +644,7 @@ impl Hub {
             let gap = idle_gap(self.idle_streak, self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
             if now - self.last_human >= gap {
                 self.idle_streak += 1;
+                self.life.quiet_for(self.idle_streak);
                 self.last_human = now;
                 let sig = Signal::new(SignalKind::SignalIdle,
                     "Nothing is waiting for you. Pick something small you do not understand, look it up, and try it.");
@@ -681,6 +682,7 @@ impl Hub {
             id: id.clone(), epoch: self.epoch, kind: sig.kind, started: now,
             signal: sig, claimed: false, rounds: 0, pid: None,
         });
+        self.life.turn_began();
         id
     }
 
@@ -749,9 +751,11 @@ impl Hub {
         self.guard(&out.turn, Epoch(out.epoch))?;
         let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
+        self.life.turn_ended();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
             at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
             flags: out.flags.clone(), outcome: "ok".into(),
+            tokens: out.tokens, thinking: out.thinking_seconds,
         });
         let _ = self.inbox.ack(&a.signal);
         self.fail_streak = 0;
@@ -760,6 +764,7 @@ impl Hub {
         self.fanout(Event::new(EventName::TurnEnd, json!({
             "turn": a.id, "kind": a.kind.as_str(), "final": out.final_text,
             "tools_used": out.tools_used, "seconds": now - a.started, "flags": out.flags,
+            "tokens": out.tokens, "thinking": out.thinking_seconds, "rounds": a.rounds,
         })));
         Ok(json!({"ok": true, "seconds": now - a.started}))
     }
@@ -791,11 +796,13 @@ impl Hub {
         let Some(a) = self.active.take() else {
             return Ok(json!({"ok": false, "why": "nothing is running"}));
         };
+        self.life.turn_ended();
         self.epoch = self.epoch.next();
         let now = self.now();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
             at: now, seconds: now - a.started, tools: 0, rounds: a.rounds,
             flags: vec!["interrupted".into()], outcome: "interrupted".into(),
+            ..Default::default()
         });
         let _ = self.inbox.ack(&a.signal);
 
@@ -811,11 +818,13 @@ impl Hub {
     fn abandon(&mut self, turn: &str, why: &str) {
         let Some(a) = self.active.as_ref().filter(|a| a.id == turn).cloned() else { return };
         self.active = None;
+        self.life.turn_ended();
         self.epoch = self.epoch.next();
         let now = self.now();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
             at: now, seconds: now - a.started, tools: 0, rounds: a.rounds,
             flags: vec!["abandoned".into()], outcome: why.to_string(),
+            ..Default::default()
         });
         self.fail_streak = self.fail_streak.saturating_add(1);
         self.last_failure = now;
@@ -857,6 +866,7 @@ impl Hub {
         if kind.is_human() {
             self.last_human = self.now();
             self.idle_streak = 0;
+            self.life.quiet_for(0);
         }
         Ok(json!({"ok": true, "queued": kind.as_str()}))
     }
@@ -1157,14 +1167,14 @@ mod tests {
     fn hub() -> (Hub, tempfile::TempDir) {
         let d = tempfile::tempdir().unwrap();
         let mut h = hub_for_test(d.path()).unwrap();
-        h.brain_up = true;
+        h.set_brain_up(true);
         (h, d)
     }
 
     fn hub_at(at: f64) -> (Hub, Clock, tempfile::TempDir) {
         let d = tempfile::tempdir().unwrap();
         let mut h = hub_for_test(d.path()).unwrap();
-        h.brain_up = true;
+        h.set_brain_up(true);
         let c = Clock::new(at);
         c.install(&mut h);
         (h, c, d)
@@ -1225,7 +1235,7 @@ mod tests {
         take(|reply| Cmd::Finish {
             outcome: Box::new(TurnOutcome {
                 turn: turn.clone(), epoch: epoch.0, final_text: "done".into(),
-                flags: vec![], tools_used: 0, seconds: 1.0,
+                flags: vec![], tools_used: 0, seconds: 1.0, ..Default::default()
             }), reply,
         }, &mut h).unwrap();
 
@@ -1293,7 +1303,7 @@ mod tests {
         take(|reply| Cmd::Append { turn: turn.clone(), epoch, msg: Box::new(Message::user("what is a river")), reply }, &mut h).unwrap();
         take(|reply| Cmd::Append { turn: turn.clone(), epoch, msg: Box::new(Message::assistant("water going downhill")), reply }, &mut h).unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch: epoch.0, final_text: "water going downhill".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "water going downhill".into(), flags: vec![], tools_used: 0, seconds: 1.0, ..Default::default()
         }), reply }, &mut h).unwrap();
 
         take(|reply| Cmd::Say { text: "and a lake".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
@@ -1426,7 +1436,7 @@ mod tests {
         take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
         let (turn, epoch) = h.active_turn().unwrap();
         take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-            turn, epoch: epoch.0, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+            turn, epoch: epoch.0, final_text: "done".into(), flags: vec![], tools_used: 0, seconds: 1.0, ..Default::default()
         }), reply }, &mut h).unwrap();
         assert_eq!(h.fail_streak, 0, "one good turn should clear the backoff");
     }
@@ -1434,7 +1444,7 @@ mod tests {
     #[test]
     fn nothing_is_started_before_the_brain_can_answer() {
         let (mut h, clock, _d) = hub_at(1000.0);
-        h.brain_up = false;
+        h.set_brain_up(false);
         take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
         clock.advance(10.0);
         assert!(matches!(take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap(), Duty::Idle(_)),
@@ -1461,7 +1471,7 @@ mod tests {
             "a turn was started while the brain was busy changing itself");
         let s = take(|reply| Cmd::Status { reply }, &mut h).unwrap();
         assert_eq!(s["napping"], "night");
-        assert_eq!(s["mood"], "napping");
+        assert_eq!(s["mood"], "sleeping", "a night is not a nap");
         assert_eq!(s["queue"], 1, "and what arrived meanwhile is still waiting");
 
         // When it wakes, the message is still there.
@@ -1484,7 +1494,7 @@ mod tests {
             take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
             let (turn, epoch) = h.active_turn().unwrap();
             take(|reply| Cmd::Finish { outcome: Box::new(TurnOutcome {
-                turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0,
+                turn, epoch: epoch.0, final_text: "ok".into(), flags: vec![], tools_used: 0, seconds: 1.0, ..Default::default()
             }), reply }, &mut h).unwrap();
         }
         clock.advance(10.0);
@@ -1667,7 +1677,7 @@ mod tests {
 
         {
             let mut h = restarted();
-            h.brain_up = true;
+            h.set_brain_up(true);
             for i in 0..5 {
                 take(|reply| Cmd::Say { text: format!("m{i}"), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
                 take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
@@ -1675,7 +1685,7 @@ mod tests {
                 take(|reply| Cmd::Finish {
                     outcome: Box::new(TurnOutcome {
                         turn: ctx.turn.clone(), epoch: ctx.epoch, final_text: "done".into(),
-                        flags: vec![], tools_used: 0, seconds: 1.0,
+                        flags: vec![], tools_used: 0, seconds: 1.0, ..Default::default()
                     }),
                     reply,
                 }, &mut h).unwrap();
@@ -1686,7 +1696,7 @@ mod tests {
         // A new core over the same state picks the cycle up where it was left.
         let mut h = restarted();
         assert_eq!(h.since_learned, 5, "five turns of work were forgotten");
-        h.brain_up = true;
+        h.set_brain_up(true);
 
         // Three more reaches the default of eight, and then it is owed a pass.
         for i in 0..3 {
@@ -1696,7 +1706,7 @@ mod tests {
             take(|reply| Cmd::Finish {
                 outcome: Box::new(TurnOutcome {
                     turn: ctx.turn.clone(), epoch: ctx.epoch, final_text: "done".into(),
-                    flags: vec![], tools_used: 0, seconds: 1.0,
+                    flags: vec![], tools_used: 0, seconds: 1.0, ..Default::default()
                 }),
                 reply,
             }, &mut h).unwrap();

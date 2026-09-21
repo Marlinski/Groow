@@ -104,6 +104,10 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
     let mut last_call_failed = false;
     let mut final_text = String::new();
     let mut tools_used = 0u32;
+    // What the turn cost: everything generated across every round, and the part of the wall
+    // clock spent waiting for the brain rather than running commands.
+    let mut tokens = 0u32;
+    let mut thinking = 0.0f64;
 
     for round in 0..ctx.max_rounds {
         if client.was_cancelled() {
@@ -121,6 +125,8 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
                 |_| {},
             )
             .await?;
+        tokens += generated.get("tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        thinking += generated.get("seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let raw = generated.get("text").and_then(|v| v.as_str()).unwrap_or("");
         let p = parse::parse_with_tools(raw, &tool_names);
         if p.truncated {
@@ -186,7 +192,7 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
             if call.name == "finish" {
                 final_text = tools::arg_str(&call.args, "summary");
                 flags.completed = true;
-                return report(client, settings, &ctx, final_text, flags, tools_used, started).await;
+                return report(client, settings, &ctx, final_text, flags, Cost { tools: tools_used, tokens, thinking }, started).await;
             }
         }
 
@@ -198,7 +204,7 @@ pub async fn run_turn(client: &mut Client, settings: &Settings) -> Result<TurnOu
     if final_text.is_empty() && flags.exhausted {
         final_text = "I ran out of room before I got there. What I found is above.".into();
     }
-    report(client, settings, &ctx, final_text, flags, tools_used, started).await
+    report(client, settings, &ctx, final_text, flags, Cost { tools: tools_used, tokens, thinking }, started).await
 }
 
 /// Record one message, on whichever trace this process is working on.
@@ -214,13 +220,21 @@ async fn write(
     }
 }
 
+/// What a turn cost, carried together so the three of them cannot drift apart.
+#[derive(Debug, Clone, Copy, Default)]
+struct Cost {
+    tools: u32,
+    tokens: u32,
+    thinking: f64,
+}
+
 async fn report(
     client: &mut Client,
     settings: &Settings,
     ctx: &TurnContext,
     final_text: String,
     flags: Flags,
-    tools_used: u32,
+    cost: Cost,
     started: std::time::Instant,
 ) -> Result<TurnOutcome, ClientError> {
     let out = TurnOutcome {
@@ -228,8 +242,10 @@ async fn report(
         epoch: ctx.epoch,
         final_text,
         flags: flags.to_list(),
-        tools_used,
+        tools_used: cost.tools,
         seconds: started.elapsed().as_secs_f64(),
+        tokens: cost.tokens,
+        thinking_seconds: cost.thinking,
     };
     match settings.surface {
         Surface::Main => client.end(&out).await?,
@@ -394,6 +410,8 @@ mod tests {
                                 .filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(),
                             tools_used: 0,
                             seconds: 0.0,
+                            tokens: 0,
+                            thinking_seconds: 0.0,
                         });
                         Frame::rep(id, json!({"ok": true}))
                     }

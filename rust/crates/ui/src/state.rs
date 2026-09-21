@@ -131,6 +131,53 @@ pub struct Ui {
     pub loading: bool,
 }
 
+/// What a turn cost, as one line: how long it took, how much of that was the brain, what it
+/// generated and how many commands it ran. Nothing that is zero is mentioned.
+fn cost_of(data: &Value) -> Option<String> {
+    let secs = data.get("seconds").and_then(|v| v.as_f64())?;
+    let thinking = data.get("thinking").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let tokens = data.get("tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let tools = data.get("tools_used").and_then(|v| v.as_u64()).unwrap_or(0);
+    let rounds = data.get("rounds").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    let mut parts = vec![short(secs)];
+    if thinking > 0.0 && secs - thinking > 0.5 {
+        // Where the time went. A turn that spent ten seconds thinking and four minutes waiting
+        // for a command of its own is not slow in the way it looks.
+        parts.push(format!("{} thinking", short(thinking)));
+    }
+    if tokens > 0 {
+        parts.push(tokens_said(tokens));
+    }
+    if tokens > 0 && thinking > 1.0 {
+        parts.push(format!("{:.0} tok/s", tokens as f64 / thinking));
+    }
+    match tools {
+        0 => {}
+        1 => parts.push("1 command".into()),
+        n => parts.push(format!("{n} commands")),
+    }
+    if rounds > 1 {
+        parts.push(format!("{rounds} rounds"));
+    }
+    Some(format!("  \u{2022} {}", parts.join(" \u{b7} ")))
+}
+
+fn short(seconds: f64) -> String {
+    match seconds {
+        s if s < 90.0 => format!("{s:.1}s"),
+        s => format!("{:.0}m{:02.0}s", (s / 60.0).floor(), (s % 60.0).floor()),
+    }
+}
+
+fn tokens_said(n: u64) -> String {
+    if n >= 1000 {
+        format!("{:.1}k tokens", n as f64 / 1000.0)
+    } else {
+        format!("{n} tokens")
+    }
+}
+
 /// The most messages kept on screen. Older ones are still in the journal.
 ///
 /// High enough that a day of conversation fits without paging, because the commonest thing
@@ -217,22 +264,6 @@ impl Ui {
                 }
                 self.mood = Mood::Thinking;
             }
-            "token" => {
-                let delta = s("delta");
-                if delta.is_empty() {
-                    return;
-                }
-                match self.speaking {
-                    Some(i) if i < self.bubbles.len() => {
-                        self.bubbles[i].text.push_str(delta);
-                    }
-                    _ => {
-                        self.bubbles.push(Bubble::new(Who::Groow, &self.name().to_lowercase(), delta));
-                        self.speaking = Some(self.bubbles.len() - 1);
-                    }
-                }
-                self.mood = Mood::Speaking;
-            }
             "message" => {
                 if s("role") == "assistant" {
                     let text = groow_harness::parse::visible(s("content"));
@@ -252,7 +283,7 @@ impl Ui {
                         }
                     }
                     self.speaking = None;
-                }
+                    }
             }
             "turn_end" => {
                 let text = groow_harness::parse::visible(s("final"));
@@ -267,6 +298,12 @@ impl Ui {
                 self.speaking = None;
                 self.said = None;
                 self.mood = Mood::Listening;
+                // What it cost, under what it said. A turn that took four minutes and a turn
+                // that took four seconds look identical otherwise, and the commonest question
+                // anyone has of a slow answer is what the time went on.
+                if let Some(line) = cost_of(data) {
+                    self.push(Who::System, "", &line);
+                }
             }
             "tool_call" => {
                 let args = data.get("args").map(compact).unwrap_or_default();
@@ -466,6 +503,28 @@ impl Ui {
         }
     }
 
+    /// Why nothing is happening yet, when something was said and nothing has come back.
+    ///
+    /// A message is queued, not lost: it waits for whatever is in front of it, which may be a
+    /// turn already running or a learning pass that has to finish first. Without this the
+    /// window shows what you typed and then nothing at all, which looks exactly like a message
+    /// that went nowhere.
+    pub fn waiting(&self) -> Option<String> {
+        let queue = self.status.get("queue").and_then(|v| v.as_i64()).unwrap_or(0);
+        let busy = self.status.get("busy").and_then(|v| v.as_bool()).unwrap_or(false);
+        let asleep = self.status.get("napping").and_then(|v| v.as_str());
+        let mine = match queue {
+            0 => return None,
+            1 => "your message is waiting".to_string(),
+            n => format!("{n} messages are waiting"),
+        };
+        Some(match (asleep, busy) {
+            (Some(what), _) => format!("{mine}; it is asleep ({what}) and will answer when it wakes"),
+            (None, true) => format!("{mine}; it is part way through a turn"),
+            (None, false) => format!("{mine}; it is about to start"),
+        })
+    }
+
     /// Only the commands, which is what the second pane shows.
     pub fn tool_lines(&self) -> Vec<&Bubble> {
         self.bubbles.iter().filter(|b| b.who == Who::Tool || b.who == Who::System).collect()
@@ -515,18 +574,6 @@ mod tests {
         assert_eq!(u.bubbles[0].who, Who::Human);
         assert_eq!(u.bubbles[1].who, Who::Groow);
         assert_eq!(u.bubbles[1].text, "water going downhill");
-    }
-
-    #[test]
-    fn a_streamed_answer_builds_up_in_one_place() {
-        let mut u = ui();
-        u.on_event("turn_start", &json!({"who": "user", "text": "hi"}));
-        for d in ["wa", "ter ", "flows"] {
-            u.on_event("token", &json!({"delta": d}));
-        }
-        assert_eq!(u.bubbles.len(), 2, "each piece must not become its own message");
-        assert_eq!(u.bubbles[1].text, "water flows");
-        assert_eq!(u.mood, Mood::Speaking);
     }
 
     #[test]
@@ -824,5 +871,68 @@ mod tests {
         let mut u = ui();
         u.on_event("from_the_future", &json!({"anything": 1}));
         assert!(u.bubbles.is_empty());
+    }
+
+    #[test]
+    fn an_answer_appears_when_it_is_finished_rather_than_a_character_at_a_time() {
+        // Watching a sentence type itself is watching the machinery, and half of one is not
+        // worth reading. Tokens are no longer announced at all; this is what is left.
+        let mut u = ui();
+        u.on_event("turn_start", &json!({"who": "user", "text": "how many files?", "turn": "t1"}));
+        u.on_event("token", &json!({"delta": "I will c"}));
+        assert!(
+            u.bubbles.iter().all(|b| b.who != Who::Groow),
+            "nothing should appear until it is said: {:?}", u.bubbles
+        );
+        u.on_event("message", &json!({"role": "assistant", "content": "I will count them.", "turn": "t1"}));
+        assert_eq!(u.bubbles.last().unwrap().text, "I will count them.");
+    }
+
+    #[test]
+    fn a_message_that_is_waiting_says_so_and_says_why() {
+        let mut u = ui();
+        assert_eq!(u.waiting(), None, "with nothing queued there is nothing to say");
+
+        u.status = json!({"queue": 1, "busy": true, "napping": null});
+        assert_eq!(u.waiting().unwrap(), "your message is waiting; it is part way through a turn");
+
+        u.status = json!({"queue": 2, "busy": false, "napping": "night"});
+        assert_eq!(
+            u.waiting().unwrap(),
+            "2 messages are waiting; it is asleep (night) and will answer when it wakes"
+        );
+
+        u.status = json!({"queue": 1, "busy": false, "napping": null});
+        assert!(u.waiting().unwrap().contains("about to start"));
+    }
+
+    #[test]
+    fn what_a_turn_cost_is_said_under_it() {
+        let mut u = ui();
+        u.on_event("turn_start", &json!({"who": "user", "text": "hello", "turn": "t1"}));
+        u.on_event("turn_end", &json!({
+            "turn": "t1", "final": "six", "seconds": 312.0, "thinking": 41.0,
+            "tokens": 7900, "tools_used": 4, "rounds": 5,
+        }));
+        let cost = &u.bubbles.last().unwrap().text;
+        assert!(cost.contains("5m12s"), "{cost}");
+        assert!(cost.contains("41.0s thinking"), "where the time went: {cost}");
+        assert!(cost.contains("7.9k tokens"), "{cost}");
+        assert!(cost.contains("193 tok/s"), "{cost}");
+        assert!(cost.contains("4 commands"), "{cost}");
+        assert!(cost.contains("5 rounds"), "{cost}");
+    }
+
+    #[test]
+    fn a_quick_answer_is_not_padded_with_zeroes() {
+        let mut u = ui();
+        u.on_event("turn_start", &json!({"who": "user", "text": "hello", "turn": "t1"}));
+        u.on_event("turn_end", &json!({"turn": "t1", "final": "hi", "seconds": 2.4, "thinking": 2.3,
+                                       "tokens": 12, "tools_used": 0, "rounds": 1}));
+        let cost = &u.bubbles.last().unwrap().text;
+        assert!(cost.contains("2.4s"), "{cost}");
+        assert!(!cost.contains("thinking"), "nearly all of it was: {cost}");
+        assert!(!cost.contains("command"), "{cost}");
+        assert!(!cost.contains("rounds"), "{cost}");
     }
 }

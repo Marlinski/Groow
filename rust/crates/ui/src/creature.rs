@@ -181,9 +181,10 @@ impl Mood {
     pub fn parse(s: &str) -> Option<Mood> {
         Some(match s {
             "idle" => Mood::Idle,
+            "waking" => Mood::Repair,
             "listening" => Mood::Listening,
             "thinking" => Mood::Thinking,
-            "tooling" => Mood::Tooling,
+            "tooling" | "working" => Mood::Tooling,
             "speaking" => Mood::Speaking,
             "learning" => Mood::Learning,
             "reading" => Mood::Reading,

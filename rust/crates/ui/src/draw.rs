@@ -125,6 +125,16 @@ fn conversation(f: &mut Frame, area: Rect, ui: &Ui, bubbles: Vec<&Bubble>) {
         }
         lines.push(Line::from(""));
     }
+    // Last of all, so it sits directly under what was said and is the thing the eye lands on
+    // when nothing else has happened.
+    if ui.pane == Pane::Conversation {
+        if let Some(note) = ui.waiting() {
+            lines.push(Line::from(Span::styled(
+                format!("\u{2026} {note}"),
+                Style::default().fg(AMBER).add_modifier(Modifier::ITALIC),
+            )));
+        }
+    }
 
     // Keep the newest in view unless the person has scrolled back.
     let inner_h = area.height.saturating_sub(2) as usize;
@@ -478,13 +488,19 @@ fn status(f: &mut Frame, area: Rect, ui: &Ui) {
         format!(" {} ", ui.mood.caption()),
         Style::default().fg(MINT).add_modifier(Modifier::BOLD),
     )];
+    if let Some(what) = ui.status.get("napping").and_then(|v| v.as_str()) {
+        spans.push(Span::styled(
+            format!("\u{b7} asleep ({what}) "),
+            Style::default().fg(VIOLET).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let queue = n("queue");
     spans.push(Span::styled(
-        format!(
-            "\u{b7} queue {} \u{b7} thoughts {} \u{b7} turns {} ",
-            n("queue"),
-            n("thoughts"),
-            n("turns")
-        ),
+        format!("\u{b7} queue {queue} "),
+        Style::default().fg(if queue > 0 { AMBER } else { DIM }),
+    ));
+    spans.push(Span::styled(
+        format!("\u{b7} thoughts {} \u{b7} turns {} ", n("thoughts"), n("turns")),
         Style::default().fg(DIM),
     ));
     if !ui.connected {
@@ -628,6 +644,25 @@ mod tests {
         let box_rows = s.lines().filter(|l| l.contains("word")).count();
         assert!(box_rows <= 8, "the box took over the window: {box_rows} rows");
         assert!(s.contains("something it said"), "the conversation is still there: {s}");
+    }
+
+    #[test]
+    fn nothing_happening_is_explained_rather_than_left_blank() {
+        // What the window used to do: show what you typed, then nothing, which looks exactly
+        // like a message that went nowhere.
+        let mut u = ui();
+        u.push(Who::Human, "you", "are you there?");
+        u.status = json!({"queue": 1, "busy": false, "napping": "night", "thoughts": 0, "turns": 3});
+        let s = render(100, 24, &u);
+        assert!(s.contains("are you there?"), "{s}");
+        assert!(s.contains("asleep (night)"), "{s}");
+        // The note wraps, so the end of the sentence is on the next line.
+        assert!(s.contains("when it wakes"), "{s}");
+
+        // And with nothing queued, nothing is said about it. ("waiting" on its own is one of
+        // the creature's own captions, so the note is what is checked for.)
+        u.status = json!({"queue": 0, "busy": false, "turns": 3});
+        assert!(!render(100, 24, &u).contains("message is waiting"));
     }
 
     #[test]

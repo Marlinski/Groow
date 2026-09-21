@@ -318,21 +318,23 @@ impl Conn {
         let hub = self.hub.clone();
         let turn = arg.get("turn").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-        // Deltas go two ways: back to the process that asked, so it can act on the answer, and
-        // out to every watching interface, so a person sees it appear.
+        // Deltas go back to the process that asked, if it asked to follow along. They are not
+        // announced any further: every token was one command through the hub and one event to
+        // every watching interface, which is a great deal of traffic to say a sentence one
+        // character at a time, and a sentence half written is not worth reading anyway.
         let (dtx, mut drx) = mpsc::unbounded_channel::<String>();
         let pump = tokio::spawn(async move {
             while let Some(d) = drx.recv().await {
                 if stream_out {
                     let _ = out.try_send(Frame::part(id, json!({"delta": d})));
                 }
-                hub.emit(Event::new(EventName::Token, json!({"delta": d, "turn": turn}))).await;
             }
         });
 
         let result = self.brain.complete(&req, |d| { let _ = dtx.send(d.to_string()); }).await;
         drop(dtx);
         let _ = pump.await;
+        let _ = (hub, turn);
 
         match result {
             Ok(g) => {

@@ -64,4 +64,6 @@ message TurnOutcome {
   repeated string flags = 4;
   uint32 tools_used = 5;
   double seconds = 6;
+  uint32 tokens = 7;           // everything it generated across every round of the turn
+  double thinking_seconds = 8; // of `seconds`, the part spent waiting for the brain
 }

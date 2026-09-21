@@ -6,6 +6,7 @@ pub mod conn;
 pub mod db;
 pub mod home;
 pub mod hub;
+pub mod life;
 pub mod paths;
 pub mod peer;
 pub mod server;

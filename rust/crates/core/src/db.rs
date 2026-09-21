@@ -28,6 +28,11 @@ pub struct Ended {
     pub rounds: u32,
     pub flags: Vec<String>,
     pub outcome: String,
+    /// Everything generated during the turn, and how much of the wall clock was spent waiting
+    /// for the brain rather than running commands. The difference between them is the answer
+    /// to "why was that slow".
+    pub tokens: u32,
+    pub thinking: f64,
 }
 
 impl Db {
@@ -70,7 +75,9 @@ impl Db {
                 tools     INTEGER NOT NULL DEFAULT 0,
                 rounds    INTEGER NOT NULL DEFAULT 0,
                 flags     TEXT NOT NULL DEFAULT '',
-                outcome   TEXT
+                outcome   TEXT,
+                tokens    INTEGER,
+                thinking  REAL
             );
             CREATE INDEX IF NOT EXISTS turns_started ON turns(started);
 
@@ -116,6 +123,8 @@ impl Db {
         // Sqlite has no ADD COLUMN IF NOT EXISTS, and the error for one that is already there
         // is the expected outcome rather than a problem.
         let _ = conn.execute("ALTER TABLE learning ADD COLUMN seconds REAL", []);
+        let _ = conn.execute("ALTER TABLE turns ADD COLUMN tokens INTEGER", []);
+        let _ = conn.execute("ALTER TABLE turns ADD COLUMN thinking REAL", []);
         Ok(())
     }
 
@@ -133,8 +142,10 @@ impl Db {
     /// report must not double-count a turn in the statistics.
     pub fn turn_ended(&self, id: &str, e: &Ended) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE turns SET ended=?2, seconds=?3, tools=?4, rounds=?5, flags=?6, outcome=?7 WHERE id=?1",
-            params![id, e.at, e.seconds, e.tools, e.rounds, e.flags.join(","), e.outcome],
+            "UPDATE turns SET ended=?2, seconds=?3, tools=?4, rounds=?5, flags=?6, outcome=?7, \
+             tokens=?8, thinking=?9 WHERE id=?1",
+            params![id, e.at, e.seconds, e.tools, e.rounds, e.flags.join(","), e.outcome,
+                    e.tokens, e.thinking],
         )?;
         Ok(())
     }
@@ -235,7 +246,7 @@ impl Db {
     /// The turns, most recent first, with how long each took and how it ended.
     pub fn recent_turns(&self, n: usize) -> anyhow::Result<Vec<Value>> {
         let mut st = self.conn.prepare(
-            "SELECT id, kind, started, seconds, tools, rounds, flags, outcome \
+            "SELECT id, kind, started, seconds, tools, rounds, flags, outcome, tokens, thinking \
              FROM turns ORDER BY started DESC LIMIT ?1",
         )?;
         let rows = st.query_map([n as i64], |r| {
@@ -248,6 +259,8 @@ impl Db {
                 "rounds": r.get::<_, i64>(5)?,
                 "flags": r.get::<_, String>(6)?,
                 "outcome": r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                "tokens": r.get::<_, Option<i64>>(8)?,
+                "thinking": r.get::<_, Option<f64>>(9)?,
             }))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -340,7 +353,7 @@ mod tests {
         let db = Db::memory().unwrap();
         db.turn_started("t1", "user", 100.0).unwrap();
         db.turn_ended("t1", &Ended { at: 104.5, seconds: 4.5, tools: 3, rounds: 2,
-                                     flags: vec!["completed".into()], outcome: "ok".into() }).unwrap();
+                                     flags: vec!["completed".into()], outcome: "ok".into() , ..Default::default()}).unwrap();
         assert_eq!(db.turn_count().unwrap(), 1);
     }
 
@@ -349,7 +362,7 @@ mod tests {
         let db = Db::memory().unwrap();
         db.turn_started("t1", "user", 100.0).unwrap();
         db.turn_started("t1", "user", 100.0).unwrap();
-        let done = Ended { at: 104.0, seconds: 4.0, tools: 1, rounds: 1, flags: vec![], outcome: "ok".into() };
+        let done = Ended { at: 104.0, seconds: 4.0, tools: 1, rounds: 1, flags: vec![], outcome: "ok".into() , ..Default::default()};
         db.turn_ended("t1", &done).unwrap();
         db.turn_ended("t1", &done).unwrap();
         assert_eq!(db.turn_count().unwrap(), 1, "a retried report must not invent a second turn");
@@ -366,7 +379,7 @@ mod tests {
         ] {
             db.turn_started(id, "user", 1.0).unwrap();
             db.turn_ended(id, &Ended { at: 2.0, seconds: 1.0, tools: 0, rounds: 1,
-                                       flags: vec![flags.to_string()], outcome: outcome.into() }).unwrap();
+                                       flags: vec![flags.to_string()], outcome: outcome.into() , ..Default::default()}).unwrap();
         }
         let forget = db.turns_to_forget().unwrap();
         assert!(!forget.contains("good"), "a turn that worked should stay in the window");
@@ -380,7 +393,7 @@ mod tests {
         let db = Db::memory().unwrap();
         db.turn_started("sour", "user", 1.0).unwrap();
         db.turn_ended("sour", &Ended { at: 2.0, seconds: 1.0, tools: 0, rounds: 1,
-                                       flags: vec!["completed".into()], outcome: "ok".into() }).unwrap();
+                                       flags: vec!["completed".into()], outcome: "ok".into() , ..Default::default()}).unwrap();
         assert!(!db.turns_to_forget().unwrap().contains("sour"), "nothing is wrong with it yet");
         db.felt("sour", 3.0, 0.15, Some(-0.9), -0.75).unwrap();
         assert!(db.turns_to_forget().unwrap().contains("sour"));
@@ -391,7 +404,7 @@ mod tests {
         let db = Db::memory().unwrap();
         db.turn_started("fresh", "user", 1.0).unwrap();
         db.turn_ended("fresh", &Ended { at: 2.0, seconds: 1.0, tools: 0, rounds: 1,
-                                        flags: vec!["completed".into()], outcome: "ok".into() }).unwrap();
+                                        flags: vec!["completed".into()], outcome: "ok".into() , ..Default::default()}).unwrap();
         db.felt("fresh", 3.0, 0.15, None, 0.15).unwrap();
         assert!(!db.turns_to_forget().unwrap().contains("fresh"));
     }
