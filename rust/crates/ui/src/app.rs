@@ -349,10 +349,11 @@ async fn main_loop<B: ratatui::backend::Backend>(
                         if let Some(b) = v.get("birth") {
                             ui.birth = b.clone();
                         }
+                        // A hello carries one inside it; a status reply is one.
                         if let Some(s) = v.get("status") {
-                            ui.status = s.clone();
+                            ui.status(s.clone());
                         } else if v.get("queue").is_some() {
-                            ui.status = v.clone();
+                            ui.status(v.clone());
                         }
                     }
                     FromCore::Failed(_, why) => ui.push(Who::System, "error", &why),

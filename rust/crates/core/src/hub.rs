@@ -357,8 +357,8 @@ impl Hub {
             // A turn says what it is doing as it goes, and the state follows.
             Cmd::Emit { event } => {
                 match event.name.as_str() {
-                    "tool_call" => self.stem.feel(Stimulus::ToolCalled),
-                    "tool_result" => self.stem.feel(Stimulus::ToolReturned),
+                    "tool_call" => self.feel(Stimulus::ToolCalled),
+                    "tool_result" => self.feel(Stimulus::ToolReturned),
                     _ => Reflex::Nothing,
                 };
                 self.fanout(event);
@@ -382,16 +382,12 @@ impl Hub {
             Cmd::Abandon { turn, why } => self.abandon(&turn, &why),
             Cmd::ThoughtFailed { id, why } => self.thought_failed(&id, &why),
             Cmd::BrainState { up } => {
-                let was = self.stem.state();
-                self.stem.feel(Stimulus::Brain { loaded: up });
-                if self.stem.state() != was {
-                    self.fanout(Event::new(EventName::Status, self.status()));
-                }
+                self.feel(Stimulus::Brain { loaded: up });
             }
             Cmd::Napping { what } => {
                 match &what {
-                    Some(w) => self.stem.feel(Stimulus::SleepBegan { night: w == "night" }),
-                    None => self.stem.feel(Stimulus::SleepEnded),
+                    Some(w) => self.feel(Stimulus::SleepBegan { night: w == "night" }),
+                    None => self.feel(Stimulus::SleepEnded),
                 };
                 self.fanout(Event::new(EventName::Status, self.status()));
             }
@@ -439,7 +435,7 @@ impl Hub {
                 let _ = self.db.tool_call(&turn, groow_proto::event::now(), &name, &actor, ok, seconds);
             }
             Cmd::Shutdown { reply } => {
-                self.stem.feel(Stimulus::Stop);
+                self.feel(Stimulus::Stop);
                 self.running = false;
                 self.fanout(Event::new(EventName::Log, json!({"level": "info", "text": "going to sleep"})));
                 send(reply, Ok(json!({"ok": true})));
@@ -510,6 +506,21 @@ impl Hub {
     }
 
     /// What it looks like it is doing, for the creature and the status line.
+    /// Tell the brainstem what happened, and tell everyone watching if that changed what it is
+    /// doing.
+    ///
+    /// Every window draws the state, so a change nobody announces is a window that shows the
+    /// wrong thing until it next asks — which is up to four seconds of a creature that looks
+    /// idle while it thinks.
+    fn feel(&mut self, s: Stimulus) -> Reflex {
+        let was = self.stem.state();
+        let reflex = self.stem.feel(s);
+        if self.stem.state() != was {
+            self.fanout(Event::new(EventName::Status, self.status()));
+        }
+        reflex
+    }
+
     /// What it is doing, asked of the one thing that knows.
     fn mood(&self) -> &'static str {
         self.stem.state().as_str()
@@ -565,7 +576,7 @@ impl Hub {
     /// For tests and for a dry run: say whether the brain is answering.
     #[doc(hidden)]
     pub fn set_brain_up(&mut self, up: bool) {
-        self.stem.feel(Stimulus::Brain { loaded: up });
+        self.feel(Stimulus::Brain { loaded: up });
     }
 
     /// Replace the clock. For tests, so time can be moved deliberately.
@@ -587,7 +598,7 @@ impl Hub {
         // The scheduler does not decide anything: it says it is asking, and does what comes
         // back. Every rule about when work may begin lives in the one state that was in when
         // the question arrived.
-        match self.stem.feel(Stimulus::Asked) {
+        match self.feel(Stimulus::Asked) {
             Reflex::Rest(seconds) => return Ok(Duty::Idle(seconds)),
             Reflex::Halt => return Ok(Duty::Idle(3600.0)),
             Reflex::Begin | Reflex::Nothing => {}
@@ -614,7 +625,7 @@ impl Hub {
         if let Some(sig) = self.inbox.pop().map_err(io)? {
             if sig.kind.is_human() {
                 self.last_human = now;
-                self.stem.feel(Stimulus::Spoke);
+                self.feel(Stimulus::Spoke);
             }
             let id = self.begin(sig.clone(), now);
             return Ok(Duty::Turn(Box::new(sig), id));
@@ -640,7 +651,7 @@ impl Hub {
         if self.cfg.curiosity {
             let gap = idle_gap(self.stem.unanswered(), self.cfg.sense_idle_minutes, self.cfg.sense_idle_max_minutes);
             if now - self.last_human >= gap {
-                self.stem.feel(Stimulus::Nudged);
+                self.feel(Stimulus::Nudged);
                 self.last_human = now;
                 let sig = Signal::new(SignalKind::SignalIdle,
                     "Nothing is waiting for you. Pick something small you do not understand, look it up, and try it.");
@@ -678,7 +689,7 @@ impl Hub {
             id: id.clone(), epoch: self.epoch, kind: sig.kind, started: now,
             signal: sig, claimed: false, rounds: 0, pid: None,
         });
-        self.stem.feel(Stimulus::TurnBegan);
+        self.feel(Stimulus::TurnBegan);
         id
     }
 
@@ -747,7 +758,7 @@ impl Hub {
         self.guard(&out.turn, Epoch(out.epoch))?;
         let now = self.now();
         let a = self.active.take().expect("guard proved there is an active turn");
-        self.stem.feel(Stimulus::TurnEnded);
+        self.feel(Stimulus::TurnEnded);
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
             at: now, seconds: now - a.started, tools: out.tools_used, rounds: a.rounds,
             flags: out.flags.clone(), outcome: "ok".into(),
@@ -792,7 +803,7 @@ impl Hub {
         let Some(a) = self.active.take() else {
             return Ok(json!({"ok": false, "why": "nothing is running"}));
         };
-        self.stem.feel(Stimulus::TurnEnded);
+        self.feel(Stimulus::TurnEnded);
         self.epoch = self.epoch.next();
         let now = self.now();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
@@ -814,7 +825,7 @@ impl Hub {
     fn abandon(&mut self, turn: &str, why: &str) {
         let Some(a) = self.active.as_ref().filter(|a| a.id == turn).cloned() else { return };
         self.active = None;
-        self.stem.feel(Stimulus::TurnEnded);
+        self.feel(Stimulus::TurnEnded);
         self.epoch = self.epoch.next();
         let now = self.now();
         let _ = self.db.turn_ended(&a.id, &crate::db::Ended {
@@ -861,7 +872,7 @@ impl Hub {
         self.inbox.push(&sig).map_err(io)?;
         if kind.is_human() {
             self.last_human = self.now();
-            self.stem.feel(Stimulus::Spoke);
+            self.feel(Stimulus::Spoke);
         }
         Ok(json!({"ok": true, "queued": kind.as_str()}))
     }
@@ -1749,6 +1760,26 @@ mod tests {
 
         h.handle(Cmd::Emit { event: Event::new(EventName::ToolResult, json!({"ok": true})) });
         assert_eq!(take(|reply| Cmd::Status { reply }, &mut h).unwrap()["state"], "thinking");
+    }
+
+    #[test]
+    fn a_change_of_state_is_announced_to_everyone_watching() {
+        // Every window draws the state. A change nobody announces is a window showing the
+        // wrong thing until it next asks, which is a creature that looks idle while it thinks.
+        let (mut h, _d) = hub();
+        let mut watching = take(|reply| Cmd::Subscribe { reply }, &mut h).unwrap();
+        while watching.try_recv().is_ok() {}
+
+        take(|reply| Cmd::Say { text: "hello".into(), kind: SignalKind::SignalUser, meta: json!({}), reply }, &mut h).unwrap();
+        take(|reply| Cmd::NextDuty { reply }, &mut h).unwrap();
+
+        let mut states = Vec::new();
+        while let Ok(ev) = watching.try_recv() {
+            if ev.name == "status" {
+                states.push(ev.data["state"].as_str().unwrap_or("").to_string());
+            }
+        }
+        assert!(states.contains(&"thinking".to_string()), "the turn beginning was not announced: {states:?}");
     }
 
     #[test]

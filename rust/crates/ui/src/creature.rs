@@ -161,71 +161,32 @@ fn grid(art: &str) -> Vec<Vec<char>> {
 }
 
 // ---------------------------------------------------------------- mood
-/// What the creature is doing. Drives the mutation, the overlay and the caption.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mood {
-    Idle,
-    Listening,
-    Thinking,
-    Tooling,
-    Speaking,
-    Learning,
-    Reading,
-    Dreaming,
-    Sleeping,
-    Napping,
-    Repair,
+/// What the creature is doing, which is the brainstem's word for it and not a second one.
+///
+/// The window used to keep its own list and set it from events as they arrived: its own little
+/// state machine, running beside the real one and disagreeing with it whenever an event was
+/// missed. There is one vocabulary now, and the creature simply wears it.
+pub use groow_core::brainstem::State as Mood;
+
+/// How the creature looks in each of them.
+pub trait Looks {
+    fn caption(&self) -> &'static str;
+    fn overlay(&self) -> Option<(&'static [&'static str], Color)>;
+    fn eyes_closed(&self, tick: u64) -> bool;
+    fn bobs(&self) -> bool;
 }
 
-impl Mood {
-    pub fn parse(s: &str) -> Option<Mood> {
-        Some(match s {
-            "idle" => Mood::Idle,
-            "waking" => Mood::Repair,
-            "stopping" => Mood::Sleeping,
-            "listening" => Mood::Listening,
-            "thinking" => Mood::Thinking,
-            "tooling" | "working" => Mood::Tooling,
-            "speaking" => Mood::Speaking,
-            "learning" => Mood::Learning,
-            "reading" => Mood::Reading,
-            "dreaming" => Mood::Dreaming,
-            "sleeping" => Mood::Sleeping,
-            "napping" => Mood::Napping,
-            "repair" => Mood::Repair,
-            _ => return None,
-        })
-    }
-
-    pub fn as_str(&self) -> &'static str {
+impl Looks for Mood {
+    fn caption(&self) -> &'static str {
         match self {
-            Mood::Idle => "idle",
-            Mood::Listening => "listening",
-            Mood::Thinking => "thinking",
-            Mood::Tooling => "tooling",
-            Mood::Speaking => "speaking",
-            Mood::Learning => "learning",
-            Mood::Reading => "reading",
-            Mood::Dreaming => "dreaming",
-            Mood::Sleeping => "sleeping",
-            Mood::Napping => "napping",
-            Mood::Repair => "repair",
-        }
-    }
-
-    pub fn caption(&self) -> &'static str {
-        match self {
+            Mood::Waking => "waking up (loading its weights)",
             Mood::Idle => "waiting",
             Mood::Listening => "listening",
             Mood::Thinking => "thinking",
-            Mood::Tooling => "using a tool",
-            Mood::Speaking => "speaking",
-            Mood::Learning => "learning",
-            Mood::Reading => "reading the world",
-            Mood::Dreaming => "inner thoughts",
-            Mood::Sleeping => "sleeping (night: replay, merge)",
+            Mood::Working => "running a command",
             Mood::Napping => "napping (weights updating)",
-            Mood::Repair => "repairing itself",
+            Mood::Sleeping => "sleeping (night: replay, merge)",
+            Mood::Stopping => "stopping",
         }
     }
 
@@ -233,21 +194,19 @@ impl Mood {
     fn overlay(&self) -> Option<(&'static [&'static str], Color)> {
         Some(match self {
             Mood::Thinking => (&[" .", " . .", " . . ."], BODY_LIGHT),
-            Mood::Tooling => (&[" \u{2699}", "  \u{2699}"], GEAR),
-            Mood::Reading => (&[" \u{25a4}", " \u{25a5}"], BOOK),
-            Mood::Dreaming => (&["  \u{25cb}", " \u{25cb} ", "\u{25cb}  "], BUBBLE),
+            Mood::Working => (&[" \u{2699}", "  \u{2699}"], GEAR),
             Mood::Sleeping => (&[" z", " z z", " z z z"], ZED),
             Mood::Napping => (&[" z", "  z"], ZED),
-            Mood::Repair => (&[" \u{271a}", "  \u{271a}"], WRENCH),
-            Mood::Learning => (&[" \u{2726}", "  \u{2726}"], SPARK),
-            Mood::Speaking => (&[" \u{25aa}", " \u{25aa}\u{25aa}", " \u{25aa}\u{25aa}\u{25aa}"], BODY_LIGHT),
+            Mood::Waking => (&[" \u{271a}", "  \u{271a}"], WRENCH),
+            Mood::Stopping => (&[" \u{00b7}", "  \u{00b7}"], ZED),
             Mood::Idle | Mood::Listening => return None,
         })
     }
 
     /// Eyes shut for the whole of a sleep, and for one frame in six otherwise.
     fn eyes_closed(&self, tick: u64) -> bool {
-        matches!(self, Mood::Sleeping | Mood::Napping) || (tick.is_multiple_of(6) && *self != Mood::Repair)
+        matches!(self, Mood::Sleeping | Mood::Napping)
+            || (tick.is_multiple_of(6) && *self != Mood::Waking)
     }
 
     /// A sleeping creature does not breathe visibly.
@@ -256,7 +215,7 @@ impl Mood {
     }
 }
 
-/// Sparkle positions for the learning mood, drawn on alternating frames.
+/// Sparkle positions for a learning pass, drawn on alternating frames.
 const SPARKS: [(usize, usize); 4] = [(0, 1), (1, 10), (3, 0), (4, 11)];
 
 fn apply_mood(g: &mut [Vec<char>], mood: Mood, tick: u64) {
@@ -268,13 +227,8 @@ fn apply_mood(g: &mut [Vec<char>], mood: Mood, tick: u64) {
             g[*y][*x] = 'G';
         }
     }
+    let _ = &mouth;
     match mood {
-        Mood::Speaking => {
-            let open = tick % 2 == 1;
-            for (y, x) in &mouth {
-                g[*y][*x] = if open { 'e' } else { 'm' };
-            }
-        }
         Mood::Thinking => {
             if tick % 2 == 1 {
                 for (y, x) in &eyes {
@@ -285,14 +239,15 @@ fn apply_mood(g: &mut [Vec<char>], mood: Mood, tick: u64) {
                 }
             }
         }
-        Mood::Learning => {
+        // A pass is the weights changing, which is the one thing worth sparkling about.
+        Mood::Napping | Mood::Sleeping => {
             for (i, (y, x)) in SPARKS.iter().enumerate() {
                 if (i as u64 + tick).is_multiple_of(2) && *y < H && *x < W {
                     g[*y][*x] = '*';
                 }
             }
         }
-        Mood::Repair => {
+        Mood::Waking => {
             for (y, x) in &eyes {
                 g[*y][*x] = 'r';
             }
@@ -399,11 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn it_blinks_every_sixth_frame_but_never_while_repairing() {
+    fn it_blinks_every_sixth_frame_but_never_while_waking() {
         assert!(Mood::Idle.eyes_closed(0));
         assert!(Mood::Idle.eyes_closed(6));
         assert!(!Mood::Idle.eyes_closed(1));
-        assert!(!Mood::Repair.eyes_closed(0), "a repairing creature keeps its eyes open");
+        assert!(!Mood::Waking.eyes_closed(0), "a creature loading its weights keeps them open");
         assert!(Mood::Sleeping.eyes_closed(1), "a sleeping creature keeps them shut");
     }
 
@@ -415,13 +370,16 @@ mod tests {
     }
 
     #[test]
-    fn moods_round_trip_and_all_have_captions() {
+    fn every_state_the_core_can_be_in_can_be_drawn_and_named() {
+        // The window shows the brainstem's states and no others. A state the core can reach
+        // and the window cannot draw would be a creature with no face for what it is doing.
         for m in [
-            Mood::Idle, Mood::Listening, Mood::Thinking, Mood::Tooling, Mood::Speaking,
-            Mood::Learning, Mood::Reading, Mood::Dreaming, Mood::Sleeping, Mood::Napping, Mood::Repair,
+            Mood::Waking, Mood::Idle, Mood::Listening, Mood::Thinking,
+            Mood::Working, Mood::Napping, Mood::Sleeping, Mood::Stopping,
         ] {
             assert_eq!(Mood::parse(m.as_str()), Some(m));
-            assert!(!m.caption().is_empty());
+            assert!(!m.caption().is_empty(), "{} has no caption", m.as_str());
+            let _ = render(0.0, m, 1, true);
         }
         assert_eq!(Mood::parse("euphoric"), None);
     }

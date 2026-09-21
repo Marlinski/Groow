@@ -57,21 +57,21 @@ The least role that may call each one. This table is checked against the code; s
 | op | least role | what it does |
 |---|---|---|
 | `hello` | agent | identify; the reply states the role the core assigned |
-| `status` | agent | a snapshot: age, queue, turns, feeling, whether it is napping |
+| `status` | agent | a snapshot: its [state](brainstem.md), age, queue, turns, feeling |
 | `watch` | viewer | follow the event stream on this connection, as `push` frames |
 | `turn.claim` | agent | take the turn this process was spawned for |
 | `turn.append` | agent | record one message in the conversation |
 | `turn.end` | agent | close the turn out |
-| `complete` | agent | generate; the core relays to the brain and streams `part` frames |
+| `complete` | agent | generate; the core relays to the brain and answers with the text, what it cost and how long it took |
 | `thought.claim` | agent | take the next step of an inner thought |
 | `thought.append` | agent | record one message on that thought's own trace |
 | `thought.end` | agent | close out one step |
-| `ask` | agent | put a question to the mentor |
 | `think` | agent | start an inner thought |
 | `thought` | agent | read, pause, resume, kill, focus or finish a thought |
-| `recall` | viewer | read the conversation back |
+| `recall` | viewer | read the conversation back, a page at a time |
 | `schedule` | agent | list, add or cancel an alarm |
-| `inbox` | viewer | list, answer, drop or clear the open questions |
+| `stats` | mentor | the measurements: learning passes, turns, feeling, tool health |
+| `interrupt` | mentor | stop the turn that is running |
 | `say` | viewer | speak to it |
 | `command` | viewer | run a mentor command |
 | `consolidate` | mentor | merge the overlay into the base |
@@ -110,8 +110,12 @@ string, and this one is read straight out of the JSON by things expecting a numb
 
 Carried up as `ev` from a turn, fanned out to watchers as `push`. Names are stable:
 
-`turn_start`, `turn_end`, `message`, `token`, `tool_call`, `tool_result`, `thought`,
-`feeling`, `learned`, `question`, `log`, `status`.
+`turn_start`, `turn_end`, `message`, `tool_call`, `tool_result`, `thought`,
+`feeling`, `learned`, `log`, `status`.
 
-`token` and `log` may be dropped when a watcher falls behind; the others may not. A watcher
+`status` is sent whenever what it is doing changes, as well as when asked, so a window never
+draws a state it has already left. What the states are and what moves between them is
+[brainstem.md](brainstem.md).
+
+`log` may be dropped when a watcher falls behind; the others may not. A watcher
 that has stopped reading loses events and can never slow down a turn.

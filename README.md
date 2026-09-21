@@ -16,10 +16,11 @@ make start               wake it in the container it ships with. The first time 
                          builds its body and fetches its base model, which takes a
                          while and happens once.
 ./groow ui               open the window onto it. F1 what was said, F2 every
-                         command it ran, F3 what the learning has been doing.
-                         Esc stops whatever it is doing; the line you type in
-                         edits like any other (arrows, alt-arrows, ctrl-a/e/u/w,
-                         up and down for what you said before)
+                         command it ran, F3 the operator's view: what is ticking
+                         now, every alarm, what the learning has been doing and
+                         what it cost. Esc stops whatever it is doing; the line
+                         you type in edits like any other (arrows, alt-arrows,
+                         ctrl-a/e/u/w, up and down for what you said before)
 ./groow say "hello"      say something
 ./groow status           what it is doing. --json, on any of these, prints the
                          core's reply instead of something to read

@@ -75,19 +75,46 @@ from it. Nothing a caller says about itself is ever used to grant access.</p>
 <tr><th>Role</th><th>Who</th><th>May</th></tr>
 <tr><td>mentor</td><td>root, or whoever started the core</td><td>everything, including stopping it</td></tr>
 <tr><td>agent</td><td>the mind, uid 1000</td><td>run its turn, generate, ask, think, set alarms, read back</td></tr>
-<tr><td>viewer</td><td>a window</td><td>watch, speak, look at the questions</td></tr>
+<tr><td>viewer</td><td>a window</td><td>watch, speak, read the conversation back</td></tr>
 </table>
 <p>The roles are an explicit table, not a ranking. An early version ordered them and compared, which
 quietly let a terminal claim a turn.</p>
 
+<h2>What it is doing: the brainstem</h2>
+<p>Everything above the brainstem decides what to think. The brainstem decides whether it is in
+any condition to think at all &mdash; awake or asleep, free or already busy &mdash; and what each
+thing that happens means in that condition. In an animal that is the organ keeping the sleep and
+waking cycle and gating what reaches the rest of the brain, which is exactly the job.</p>
+<p>It is one pure function holding no journal, no queue and no clock. A stimulus arrives, the
+state it is in decides what becomes of it, and out come the next state and a reflex for the core
+to carry out: <em>nothing</em>, <em>begin</em>, <em>rest for this long</em>, or <em>halt</em>.
+Nothing asks it what state it is in and then decides for itself; that is the whole point.</p>
+<pre><code>waking      the weights are loading. Nothing can happen yet
+listening   nothing to do, and the conversation is warm
+idle        nothing to do, and nobody has said anything for a while
+thinking    in a turn, waiting for the brain
+working     in a turn, waiting for a command of its own
+napping     a short learning pass between turns
+sleeping    the long pass, ending in the merge that makes it permanent
+stopping    asked to stop. Nothing new begins</code></pre>
+<p>The rule for <em>a message arrived while it was asleep</em> is written once, in the state that
+was asleep, rather than in every place that has to ask whether it is asleep. And because the same
+function both describes and enforces, the word the creature shows you cannot disagree with the
+rule it is following: it cannot say it is listening while something holds your message back.
+Details in <a href="https://github.com/Marlinski/Groow/blob/main/nervous_system/brainstem.md">nervous_system/brainstem.md</a>.</p>
+
 <h2>State</h2>
 <p>Files stay the source of truth and stay readable with ordinary tools: the conversation is
-rotating JSON-lines files, the queue is a directory with one file per waiting signal, and the
-questions, alarms, thoughts and certificate are each their own file. Every write fills a
-temporary file, fsyncs it and renames it over the target, so a crash cannot leave a truncated
-one.</p>
-<p>Beside them is a database of everything measured: turn durations, which tools fail, what each
-turn felt like, whether questions get answered. It is readable only by the core, so the mind can
-neither see nor edit how it is being scored, and nothing in it is irreplaceable, because it could
-be rebuilt by replaying the journal.</p>
+rotating JSON-lines files, its inbox is a directory with one file per waiting signal, and the
+alarms, thoughts and certificate are each their own file. Every write fills a temporary file,
+fsyncs it and renames it over the target, so a crash cannot leave a truncated one.</p>
+<p>Beside them is a database of everything measured: turn durations, what each turn cost in
+tokens and seconds, which tools fail, what each turn felt like, and every learning pass with how
+long it took. It is readable only by the core, so the mind can neither see nor edit how it is
+being scored, and nothing in it is irreplaceable, because it could be rebuilt by replaying the
+journal.</p>
+<p>What survives a restart is deliberately only what is on disk. The live state begins at
+<em>waking</em> on every start and is rebuilt from the first few stimuli, while the things that
+must not be forgotten &mdash; the queue, the journal, how far the learning cycle has got &mdash;
+live in files and in the database rather than in the process.</p>
 </main></body></html>

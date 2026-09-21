@@ -195,7 +195,7 @@ impl Default for Ui {
             thoughts: BTreeMap::new(),
             status: Value::Null,
             birth: Value::Null,
-            mood: Mood::Idle,
+            mood: Mood::Waking,
             tick: 0,
             input: Editor::default(),
             connected: false,
@@ -262,7 +262,6 @@ impl Ui {
                 } else {
                     self.push(Who::Signal, &format!("signal \u{b7} {}", s("kind")), s("text"));
                 }
-                self.mood = Mood::Thinking;
             }
             "message" => {
                 if s("role") == "assistant" {
@@ -297,7 +296,6 @@ impl Ui {
                 }
                 self.speaking = None;
                 self.said = None;
-                self.mood = Mood::Listening;
                 // What it cost, under what it said. A turn that took four minutes and a turn
                 // that took four seconds look identical otherwise, and the commonest question
                 // anyone has of a slow answer is what the time went on.
@@ -308,7 +306,6 @@ impl Ui {
             "tool_call" => {
                 let args = data.get("args").map(compact).unwrap_or_default();
                 self.push(Who::Tool, "", &format!("\u{2699} {}({})", s("name"), clip(&args, 100)));
-                self.mood = Mood::Tooling;
             }
             "tool_result" => {
                 if data.get("actor").and_then(|v| v.as_str()).unwrap_or("main") == "main" {
@@ -341,9 +338,6 @@ impl Ui {
                     let body = if s("text").is_empty() { s("goal") } else { s("text") };
                     self.push(Who::Signal, &format!("thought {id}"), &format!("{ev}: {body}"));
                 }
-                if matches!(self.mood, Mood::Idle | Mood::Listening) {
-                    self.mood = Mood::Dreaming;
-                }
             }
             "learned" => {
                 let loss = data.get("loss").and_then(|v| v.as_f64());
@@ -353,17 +347,11 @@ impl Ui {
                     None => format!("  \u{21ba} learned from {n} samples"),
                 };
                 self.push(Who::System, "", &text);
-                self.mood = Mood::Learning;
             }
             "feeling" => {
                 self.status["feeling"] = data.clone();
             }
-            "status" => {
-                self.status = data.clone();
-                if let Some(m) = data.get("mood").and_then(|v| v.as_str()).and_then(Mood::parse) {
-                    self.mood = m;
-                }
-            }
+            "status" => self.status(data.clone()),
             "log" => {
                 let level = s("level");
                 let text = s("text");
@@ -501,6 +489,19 @@ impl Ui {
             made.append(&mut self.bubbles);
             self.bubbles = made;
         }
+    }
+
+    /// Everything the core says about itself, from wherever it came.
+    ///
+    /// The one place the state comes from. The window used to guess it from the events going
+    /// past — a second state machine with its own opinion — and then set it in two places,
+    /// which meant the first status of a session, which arrives as a reply rather than an
+    /// event, left the creature looking as though it were still loading its weights.
+    pub fn status(&mut self, v: Value) {
+        if let Some(m) = v.get("state").and_then(|s| s.as_str()).and_then(Mood::parse) {
+            self.mood = m;
+        }
+        self.status = v;
     }
 
     /// Why nothing is happening yet, when something was said and nothing has come back.
@@ -886,6 +887,22 @@ mod tests {
         );
         u.on_event("message", &json!({"role": "assistant", "content": "I will count them.", "turn": "t1"}));
         assert_eq!(u.bubbles.last().unwrap().text, "I will count them.");
+    }
+
+    #[test]
+    fn the_state_arrives_the_same_way_whether_it_is_an_event_or_an_answer() {
+        // The first status of a session comes back as a reply to a question, not as an event.
+        // When only the event path set it, a window opened onto a creature that had been awake
+        // for hours showed it as still loading its weights.
+        let mut u = ui();
+        assert_eq!(u.mood, Mood::Waking, "before it has heard anything, it says so");
+
+        u.status(json!({"state": "listening", "queue": 0}));
+        assert_eq!(u.mood, Mood::Listening);
+
+        u.on_event("status", &json!({"state": "working", "queue": 1}));
+        assert_eq!(u.mood, Mood::Working);
+        assert_eq!(u.status["queue"], 1, "and the rest of it arrives with it");
     }
 
     #[test]

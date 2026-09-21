@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::creature;
+use crate::creature::Looks;
 use crate::state::{Bubble, Pane, Ui, Who};
 
 pub const MINT: Color = Color::Rgb(0x7e, 0xe8, 0xc8);
@@ -846,11 +847,15 @@ mod tests {
 
     #[test]
     fn the_creature_is_drawn_whole_with_its_caption() {
-        let u = ui();
+        // A window that has not heard from the core yet says so rather than guessing: until a
+        // status arrives, all it knows is that something is still coming up.
+        let mut u = ui();
         let s = render(100, 34, &u);
-        assert!(s.contains("waiting \u{b7} young") || s.contains("listening \u{b7} young"),
-            "the caption under the creature is missing:\n{s}");
+        assert!(s.contains("waking up"), "the caption under the creature is missing:\n{s}");
         assert!(s.contains("\u{2588}\u{2588}"), "the creature should be drawn");
+
+        u.on_event("status", &json!({"state": "listening", "queue": 0}));
+        assert!(render(100, 34, &u).contains("listening \u{b7} young"));
     }
 
     #[test]

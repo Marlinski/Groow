@@ -14,13 +14,13 @@
 <pre class="mermaid">
 flowchart LR
   P["person<br/>groow ui"] --> C
-  A["alarms · inner thoughts<br/>expired questions"] --> C
+  A["alarms · inner thoughts<br/>curiosity"] --> C
   C["<b>core</b> (rust, root)<br/>owns the state<br/>decides what happens next"] -- spawns --> H["<b>harness</b> (rust, uid 1000)<br/>one turn, one process<br/>holds nothing"]
   H -- shell --> S["skills<br/>any executable"]
   H -- generate --> B["<b>brain</b> (python)<br/>the card, the weights"]
   C -- between turns --> L["<b>learning</b> (python)<br/>feel · harvest · train"]
   L --> B
-  C --- ST[("state/<br/>journal · queue · questions<br/>alarms · statistics")]
+  C --- ST[("state/<br/>journal · inbox<br/>alarms · statistics")]
 </pre>
 
 <p>The core is the only writer of state. The mind cannot edit its own history, because it has no

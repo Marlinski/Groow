@@ -97,9 +97,9 @@ with <code>cat</code>.</p>
 silence. Three endpoints, and they are all the same kind of request: generate, train,
 consolidate. They go into one queue served by one worker, because there is one GPU.</p>
 <p><b>The mind never reaches the brain itself.</b> It asks the core to generate, and the core
-relays. That indirection is not ceremony: it is why the core can stream the tokens to a window
-while they arrive, count what the turn cost, and refuse a turn that is no longer current. The
-mind has no address for the brain at all.</p>
+relays. That indirection is not ceremony: it is why the core can count what the turn cost, know
+whether it is thinking or waiting on a command of its own, and refuse a turn that is no longer
+current. The mind has no address for the brain at all.</p>
 <p>The exception is a skill playing in the background, which does call the brain directly, at
 the lowest priority. A game is not a turn and must never come before a person.</p>
 <pre><code>POST /generate    {"messages":[…], "tools":[…], "priority":0}
