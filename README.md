@@ -1,3 +1,8 @@
+![groow ui: the conversation, the journal and the operator's view, side by side](docs/ui.png)
+
+<p align="center"><em><code>groow ui</code> — F1 what it said, F2 every run it has ever done and the exact
+request behind each one, F3 what is happening to its weights.</em></p>
+
 # Groow
 
 A small mind that learns by changing its own weights.
